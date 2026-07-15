@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -104,7 +105,16 @@ func (s *Server) Handler() http.Handler {
 		s.handleRoot(w, r)
 	})
 
-	return mux
+	// Wrap with panic recovery
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[goprox] panic: %v\n%s", rec, debug.Stack())
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
