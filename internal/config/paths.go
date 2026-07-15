@@ -22,7 +22,7 @@ const (
 	LogFile             = "goprox.log"
 )
 
-var usernameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+var usernameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$`)
 
 func HomePrefix() string {
 	if _, err := os.Stat("/Users"); err == nil {
