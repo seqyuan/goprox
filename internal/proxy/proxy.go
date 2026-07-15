@@ -114,11 +114,6 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			if loc != "" && strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !strings.HasPrefix(loc, "/proxy/") {
 				resp.Header.Set("Location", fc.Prefix+loc)
 			}
-
-			// Add route cookie to Set-Cookie
-			routeCookie := auth.SetRouteCookie(fc.Prefix)
-			resp.Header.Add("Set-Cookie", routeCookie)
-
 			return nil
 		},
 	}

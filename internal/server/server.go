@@ -74,6 +74,10 @@ func (s *Server) Handler() http.Handler {
 			http.Redirect(w, r, "/", http.StatusFound)
 			return
 		}
+		// If already logged in, forward to backend service (e.g. Jupyter login form)
+		if s.handleBackendLogin(w, r) {
+			return
+		}
 		s.handleLogin(w, r)
 	})
 
@@ -116,6 +120,71 @@ func (s *Server) Handler() http.Handler {
 		}()
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// handleBackendLogin detects POST /login from a proxied backend (e.g. Jupyter login form).
+// If the user already has a valid session and the Referer or route cookie points to a
+// backend service, the request is forwarded there instead of being handled by goprox.
+func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool {
+	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	if !session.Valid || session.UserID == "" {
+		return false
+	}
+
+	// Check if this looks like a backend login (no username field from goprox)
+	if err := r.ParseForm(); err == nil {
+		if r.FormValue("username") != "" {
+			return false // Normal goprox login form
+		}
+	}
+
+	// Try to find target service from referer or route cookie
+	match := s.findBackendService(r, session.UserID)
+	if match == nil {
+		return false
+	}
+
+	s.proxyRequest(w, r, match)
+	return true
+}
+
+// findBackendService tries to locate the target service from Referer or route cookie.
+func (s *Server) findBackendService(r *http.Request, username string) *config.ServiceMatch {
+	// Try route cookie first
+	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
+	if route, ok := cookies[auth.RouteCookieName]; ok && route != "" {
+		match := s.registry.FindService(route)
+		if match == nil {
+			match = s.registry.FindLegacyService(route, username)
+		}
+		if match != nil {
+			pathUser := config.UsernameFromProxyPath(route)
+			if pathUser == "" || pathUser == username {
+				return match
+			}
+		}
+	}
+
+	// Try Referer
+	referer := r.Header.Get("Referer")
+	if referer == "" {
+		return nil
+	}
+	refPath := "/"
+	if u, err := url.Parse(referer); err == nil && u.Path != "" {
+		refPath = u.Path
+	}
+	match := s.registry.FindService(refPath)
+	if match == nil {
+		match = s.registry.FindLegacyService(refPath, username)
+	}
+	if match != nil {
+		pathUser := config.UsernameFromProxyPath(refPath)
+		if pathUser == "" || pathUser == username {
+			return match
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +277,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
+
+	// Set route cookie proactively (before proxy, ensures it's set even on errors)
+	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
 
 	// Rewrite URL path to the proxied path
 	r.URL.Path = match.RemainingPath
