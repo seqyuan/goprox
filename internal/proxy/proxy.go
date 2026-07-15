@@ -11,19 +11,6 @@ import (
 	"github.com/seqyuan/goprox/internal/config"
 )
 
-// hop-by-hop headers that should not be forwarded
-var hopByHopHeaders = map[string]bool{
-	"connection":          true,
-	"keep-alive":          true,
-	"proxy-authenticate":  true,
-	"proxy-authorization": true,
-	"te":                  true,
-	"trailers":            true,
-	"transfer-encoding":   true,
-	"upgrade":             true,
-	"proxy-connection":    true,
-}
-
 // stripGatewayCookie removes gateway cookies from a Cookie header.
 func stripGatewayCookie(cookieHeader string) string {
 	parts := strings.Split(cookieHeader, ";")
@@ -89,13 +76,6 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			// Strip gateway cookies
 			if cookie := pr.In.Header.Get("Cookie"); cookie != "" {
 				pr.Out.Header.Set("Cookie", stripGatewayCookie(cookie))
-			}
-
-			// Remove hop-by-hop headers
-			for key := range pr.In.Header {
-				if hopByHopHeaders[strings.ToLower(key)] {
-					pr.Out.Header.Del(key)
-				}
 			}
 
 			// Set forwarded headers
