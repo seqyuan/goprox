@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/seqyuan/goprox/internal/auth"
@@ -299,6 +300,9 @@ func parseBody(r *http.Request, v interface{}) error {
 }
 
 func isWritable(path string) bool {
-	// Try to check write permission
-	return true // Simplified: assume writable; the file operations will error if not
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().Perm()&0222 != 0
 }

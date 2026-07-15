@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -126,7 +127,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		writable := false
 		if user != nil {
 			services = user.Config.Services
-			writable = true // simplified
+			// Check if config file is writable by checking write permission
+			if info, err := os.Stat(user.ConfigPath); err == nil {
+				writable = info.Mode().Perm()&0222 != 0
+			}
 		}
 		sendHTML(w, 200, web.DashboardPage(session.UserID, services, writable))
 	} else {
@@ -249,13 +253,6 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 	pathUser := config.UsernameFromProxyPath(refPath)
 	if pathUser != "" && pathUser != session.UserID {
 		return false
-	}
-
-	if r.Method == "GET" && r.URL.Path == "/" {
-		// Redirect to service root
-		forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
-		http.Redirect(w, r, forwardCtx.Prefix+"/"+strings.TrimPrefix(r.URL.RawQuery, "?"), http.StatusFound)
-		return true
 	}
 
 	s.proxyRequest(w, r, match)
