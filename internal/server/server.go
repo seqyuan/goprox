@@ -131,20 +131,33 @@ func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool
 		return false
 	}
 
-	// Check if this looks like a backend login (no username field from goprox)
-	if err := r.ParseForm(); err == nil {
-		if r.FormValue("username") != "" {
-			return false // Normal goprox login form
-		}
-	}
-
 	// Try to find target service from referer or route cookie
 	match := s.findBackendService(r, session.UserID)
 	if match == nil {
 		return false
 	}
 
-	s.proxyRequest(w, r, match)
+	// Check if this looks like a backend login (no username field from goprox)
+	// Must defer body read until after we know we need it
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+	r.Body.Close()
+
+	// Check for username field without consuming the body permanently
+	if strings.Contains(string(bodyBytes), "username=") {
+		// Restore body for potential goprox login processing
+		r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+		r.ContentLength = int64(len(bodyBytes))
+		return false // Let normal login handle it
+	}
+
+	// Restore body for backend forwarding
+	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+	r.ContentLength = int64(len(bodyBytes))
+
+	s.forwardAsIs(w, r, match)
 	return true
 }
 
@@ -275,24 +288,29 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyRequest(w, r, legacyMatch)
 }
 
+// proxyRequest forwards a direct /proxy/{user}/{service}/... request, rewriting the path.
 func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
-
-	// Set route cookie proactively (before proxy, ensures it's set even on errors)
 	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
-
-	// Rewrite URL path to the proxied path
 	r.URL.Path = match.RemainingPath
+	s.forwardToBackend(w, r, match.Service, forwardCtx)
+}
 
-	rp := proxy.NewReverseProxy(match.Service, forwardCtx)
+// forwardAsIs forwards a request to the backend keeping the current request path intact.
+// Used for referer-based, route-cookie-based, and backend-login routing.
+func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
+	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
+	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
+	s.forwardToBackend(w, r, match.Service, forwardCtx)
+}
 
-	// Set a 30-second timeout for backend connections
+func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
+	rp := proxy.NewReverseProxy(svc, fc)
 	rp.Transport = &http.Transport{
 		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	}
-
 	rp.ServeHTTP(w, r)
 }
 
@@ -327,7 +345,7 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 		return false
 	}
 
-	s.proxyRequest(w, r, match)
+	s.forwardAsIs(w, r, match)
 	return true
 }
 
@@ -357,7 +375,7 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 		return false
 	}
 
-	s.proxyRequest(w, r, match)
+	s.forwardAsIs(w, r, match)
 	return true
 }
 
