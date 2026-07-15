@@ -545,35 +545,83 @@ func fixSharedPermissions(configPath string) {
 		return
 	}
 
-	// Fix permission chain: home → .config → goprox → config.yaml
-	home := currentUser.HomeDir
-	paths := []struct {
+	// Resolve real paths (防符号链接绕过)
+	configReal, err := filepath.EvalSymlinks(configPath)
+	if err != nil {
+		// Config file might not exist yet; use resolved path
+		configReal = configPath
+		if p, err := filepath.Abs(configPath); err == nil {
+			configReal = p
+		}
+	}
+
+	homeReal, err := filepath.EvalSymlinks(currentUser.HomeDir)
+	if err != nil {
+		fmt.Println("[goprox] cannot resolve home directory; skipping permissions")
+		return
+	}
+
+	// 如果 config 不在当前用户的 home 内，跳过权限修复
+	if !isUnderDir(configReal, homeReal) {
+		fmt.Printf("[goprox] config is outside home (%s); shared-gateway permissions not modified\n", configReal)
+		return
+	}
+
+	// Build target list: home → .config → goprox → config.yaml
+	seen := make(map[string]bool)
+	var targets []struct {
 		path     string
 		wantMode os.FileMode
-	}{
-		{home, 0711},
-		{filepath.Join(home, ".config"), 0711},
-		{filepath.Join(home, ".config", "goprox"), 0711},
-		{configPath, 0666},
 	}
+
+	addTarget := func(p string, mode os.FileMode) {
+		if seen[p] {
+			return
+		}
+		seen[p] = true
+		targets = append(targets, struct {
+			path     string
+			wantMode os.FileMode
+		}{p, mode})
+	}
+
+	addTarget(homeReal, 0711)
+
+	configDir := filepath.Dir(configReal)          // ~/.config/goprox
+	dotConfig := filepath.Dir(configDir)           // ~/.config
+
+	// 只修复确实在 home 下的目录
+	if isUnderDir(dotConfig, homeReal) && dotConfig != homeReal {
+		if info, err := os.Stat(dotConfig); err == nil && info.IsDir() {
+			addTarget(dotConfig, 0711)
+		}
+	}
+	if isUnderDir(configDir, homeReal) && configDir != homeReal {
+		if info, err := os.Stat(configDir); err == nil && info.IsDir() {
+			addTarget(configDir, 0711)
+		}
+	}
+
+	addTarget(configReal, 0666)
 
 	changed := false
 	var permLines []string
-	for _, p := range paths {
-		info, err := os.Stat(p.path)
+	for _, t := range targets {
+		info, err := os.Stat(t.path)
 		if err != nil {
 			continue
 		}
 		currentMode := info.Mode().Perm()
 		needFix := false
 		if info.IsDir() {
+			// others 没有 --x 权限 → 需要修复
 			needFix = currentMode&0001 != 0001
 		} else {
 			needFix = currentMode != 0666
 		}
 		if needFix {
-			os.Chmod(p.path, p.wantMode)
-			permLines = append(permLines, fmt.Sprintf("  %s -> %04o", p.path, p.wantMode))
+			os.Chmod(t.path, t.wantMode)
+			permLines = append(permLines, fmt.Sprintf("  %s -> %04o", t.path, t.wantMode))
 			changed = true
 		}
 	}
@@ -586,6 +634,15 @@ func fixSharedPermissions(configPath string) {
 	} else {
 		fmt.Println("[goprox] home/config permissions already sufficient for shared gateway")
 	}
+}
+
+// isUnderDir checks if child path is under (or equal to) parent.
+func isUnderDir(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
 func getProcessOwner(pid int) string {

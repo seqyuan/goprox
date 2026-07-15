@@ -7,8 +7,6 @@ GoProx 是面向实验室、登录节点的**多用户认证反向代理**网关
 
 ## 安装
 
-### 方式一：go install（推荐，需要 Go 1.21+）
-
 ```bash
 go install github.com/seqyuan/goprox@latest
 ```
@@ -18,35 +16,6 @@ go install github.com/seqyuan/goprox@latest
 ```bash
 export PATH=$PATH:$(go env GOPATH)/bin
 ```
-
-### 方式二：下载预编译二进制
-
-从 [Releases](https://github.com/seqyuan/goprox/releases) 页面下载对应平台的二进制文件，直接运行：
-
-```bash
-# Linux x86_64
-wget https://github.com/seqyuan/goprox/releases/download/v0.1.0/goprox_linux_amd64
-chmod +x goprox_linux_amd64
-sudo mv goprox_linux_amd64 /usr/local/bin/goprox
-```
-
-### 方式三：从源码编译
-
-```bash
-git clone https://github.com/seqyuan/goprox.git
-cd goprox
-go build -o goprox .
-sudo mv goprox /usr/local/bin/
-```
-
-## 与 MultiProx 的关系
-
-GoProx 是 [MultiProx](https://github.com/seqyuan/multiprox)（Node.js 版）的 Go 语言重写版。相比 Node.js 版：
-
-- **WebSocket 更可靠**：使用 Go 标准库 `httputil.ReverseProxy` 原生处理 WebSocket 升级，不再手写帧转发
-- **单二进制部署**：7MB 单文件，无需 Node.js / npm
-- **Goroutine 并发**：每个连接独立 goroutine，无 event loop 阻塞
-- **零外部依赖服务**：仅依赖 `gopkg.in/yaml.v3`
 
 ## 快速开始
 
