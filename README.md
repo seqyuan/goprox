@@ -97,8 +97,67 @@ auth:
   session_ttl: 86400
 users:
   home_prefix: "/home"
-  scan_homes: true
 ```
+
+## WebSocket 代理
+
+Jupyter、RStudio 等需要 WebSocket 的服务，添加时必须**勾选 WebSocket**，或设置 `websocket: true`。
+
+关闭此选项后，WebSocket 升级请求会被拒绝（返回 403）。
+
+## 后端服务配置指南
+
+代理能正确转发 HTTP 请求，但后端服务生成的页面链接默认是绝对路径（如 `/lab`），需要配置服务的 `base_url` 使其与代理前缀一致。
+
+### Jupyter Lab
+
+```bash
+jupyter lab \
+  --ip=0.0.0.0 \
+  --port=8888 \
+  --NotebookApp.base_url='/proxy/<用户>/<服务路径>/' \
+  --NotebookApp.token='' \
+  --no-browser
+```
+
+或在 `~/.jupyter/jupyter_lab_config.py` 中：
+
+```python
+c.ServerApp.base_url = '/proxy/用户名/jupyter/'
+c.ServerApp.token = ''
+```
+
+### Jupyter Notebook
+
+```bash
+jupyter notebook \
+  --ip=0.0.0.0 \
+  --port=8888 \
+  --NotebookApp.base_url='/proxy/<用户>/<服务路径>/' \
+  --NotebookApp.token='' \
+  --no-browser
+```
+
+### RStudio Server
+
+在 `/etc/rstudio/rserver.conf` 中：
+
+```
+www-address=127.0.0.1
+www-port=8787
+www-root-path=/proxy/<用户>/rstudio/
+```
+
+### Code Server (VS Code)
+
+```bash
+code-server \
+  --bind-addr 127.0.0.1:8080 \
+  --auth none \
+  --base-path '/proxy/<用户>/code/'
+```
+
+> **注意**：将 `<用户>` 替换为 Linux 用户名，`<服务路径>` 替换为卡片中设置的 path 值。
 
 ## License
 
