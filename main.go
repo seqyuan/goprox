@@ -33,7 +33,7 @@ Options:
   -s, --state <path>     State file path (default: ~/.local/state/goprox/state.yaml)
   -c, --config <path>    User config path (default: ~/.config/goprox/config.yaml)
   --host <host>          Listen address (default: 0.0.0.0)
-  --port <port>          Gateway listen port (default: 1907)
+  --port <port>          Gateway listen port (default: 1908)
   -h, --help             Show this help
 
 Manage services via the web dashboard at http://host:port/

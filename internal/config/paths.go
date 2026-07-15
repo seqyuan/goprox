@@ -10,7 +10,7 @@ import (
 
 const (
 	DefaultHost         = "0.0.0.0"
-	DefaultPort         = 1907
+	DefaultPort         = 1908
 	DefaultSessionTTL   = 86400
 	DefaultHomePrefix   = "/home"
 	DefaultHomePrefixMac = "/Users"
