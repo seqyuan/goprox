@@ -64,10 +64,11 @@
       ? '<div class="card-toolbar"><span class="drag-handle" draggable="true" data-drag-handle="1" title="拖动排序">⋮⋮</span><div class="card-actions"><button type="button" class="card-edit" data-edit-id="' + esc(s.id) + '" title="编辑">✎</button><button type="button" class="card-delete" data-delete-id="' + esc(s.id) + '" title="删除">×</button></div></div>'
       : '';
     var thumbSrc = '/proxy/' + encodeURIComponent(boot.username) + s.path + '/favicon.ico';
+    var fl = (s.name || '?').charAt(0).toUpperCase();
     return '<div class="service-card" data-id="' + esc(s.id) + '" data-category="' + esc(s.category || "未分类") + '">' +
       toolbar +
       '<a class="card-link" href="' + esc(proxyUrl) + '" target="_blank" rel="noopener noreferrer">' +
-      '<div class="card-icon"><img src="' + thumbSrc + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'inline\'" alt=""><span class="card-emoji">🔗</span></div>' +
+      '<div class="card-icon"><img src="' + thumbSrc + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'" alt=""><span class="card-letter" data-letter="' + esc(fl) + '">' + esc(fl) + '</span></div>' +
       '<div class="card-body"><h2>' + esc(s.name) + '</h2>' +
       desc + '<div class="card-meta"><span class="endpoint">' + esc(s.host) + ':' + s.port + '</span>' + ws + '</div></div></a></div>';
   }

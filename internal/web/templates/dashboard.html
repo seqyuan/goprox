@@ -104,9 +104,19 @@
     text-decoration: none;
   }
   .card-link:hover { text-decoration: none; }
-  .card-icon { width: 2.5rem; height: 2.5rem; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .card-icon { width: 2.5rem; height: 2.5rem; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 6px; }
   .card-icon img { width: 100%%; height: 100%%; object-fit: contain; }
-  .card-emoji { display: none; font-size: 2rem; line-height: 1; }
+  .card-letter { display: none; width: 100%%; height: 100%%; align-items: center; justify-content: center; font-weight: 700; font-size: 1.3rem; color: #fff; border-radius: 6px; }
+  .card-letter[data-letter="A"] { background: #e74c3c; } .card-letter[data-letter="B"] { background: #3498db; } .card-letter[data-letter="C"] { background: #2ecc71; }
+  .card-letter[data-letter="D"] { background: #9b59b6; } .card-letter[data-letter="E"] { background: #e67e22; } .card-letter[data-letter="F"] { background: #1abc9c; }
+  .card-letter[data-letter="G"] { background: #e74c3c; } .card-letter[data-letter="H"] { background: #3498db; } .card-letter[data-letter="I"] { background: #2ecc71; }
+  .card-letter[data-letter="J"] { background: #e67e22; } .card-letter[data-letter="K"] { background: #9b59b6; } .card-letter[data-letter="L"] { background: #1abc9c; }
+  .card-letter[data-letter="M"] { background: #e74c3c; } .card-letter[data-letter="N"] { background: #3498db; } .card-letter[data-letter="O"] { background: #2ecc71; }
+  .card-letter[data-letter="P"] { background: #9b59b6; } .card-letter[data-letter="Q"] { background: #e67e22; } .card-letter[data-letter="R"] { background: #1abc9c; }
+  .card-letter[data-letter="S"] { background: #e74c3c; } .card-letter[data-letter="T"] { background: #3498db; } .card-letter[data-letter="U"] { background: #2ecc71; }
+  .card-letter[data-letter="V"] { background: #9b59b6; } .card-letter[data-letter="W"] { background: #e67e22; } .card-letter[data-letter="X"] { background: #1abc9c; }
+  .card-letter[data-letter="Y"] { background: #e74c3c; } .card-letter[data-letter="Z"] { background: #3498db; }
+  .card-letter[data-letter="?"] { background: #95a5a6; }
   .card-body { flex: 1; min-width: 0; }
   .card-body h2 { font-size: 1.1rem; margin-bottom: 0.35rem; }
   .card-desc { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.6rem; }

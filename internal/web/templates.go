@@ -178,11 +178,15 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
       </div>`, esc(s.ID), esc(s.ID))
 	}
 
+	firstChar := "?"
+	if len(s.Name) > 0 {
+		firstChar = strings.ToUpper(s.Name[:1])
+	}
 	return fmt.Sprintf(`
   <div class="service-card" data-id="%s" data-category="%s">
     %s
     <a class="card-link" href="%s" target="_blank" rel="noopener noreferrer">
-      <div class="card-icon"><img src="/proxy/%s%s/favicon.ico" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" alt=""><span class="card-emoji">🔗</span></div>
+      <div class="card-icon"><img src="/proxy/%s%s/favicon.ico" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" alt=""><span class="card-letter" data-letter="%s">%s</span></div>
       <div class="card-body">
         <h2>%s</h2>
         %s
@@ -198,6 +202,7 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
 		toolbar,
 		esc(proxyURL),
 		esc(username), esc(s.Path),
+		esc(firstChar), firstChar,
 		esc(s.Name),
 		desc,
 		esc(s.Host), s.Port,
