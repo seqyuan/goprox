@@ -508,50 +508,105 @@ func getLocalIP() string {
 }
 
 func fixSharedPermissions(configPath string) {
-	// Check if gateway process is running under a different user
 	statePath := config.DefaultStatePath()
 	pidPath := config.GetPidPath(statePath)
-	pid, err := readPidFile(pidPath)
-	if err != nil || pid <= 0 || !processRunning(pid) {
-		return // Not running under shared gateway
-	}
 
-	currentUser, _ := user.Current()
-	if currentUser == nil {
+	currentUser, err := user.Current()
+	if err != nil || currentUser == nil {
 		return
 	}
 
-	// Fix home directory permissions
+	// Check if running under shared gateway (daemon operator != current user)
+	isShared := false
+
+	// Method 1: check running daemon process owner
+	pid, _ := readPidFile(pidPath)
+	if pid > 0 && processRunning(pid) {
+		procOwner := getProcessOwner(pid)
+		if procOwner != "" && procOwner != currentUser.Username {
+			isShared = true
+		}
+	}
+
+	// Method 2: check state file owner (daemon not running)
+	if !isShared {
+		if info, err := os.Stat(statePath); err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				stateOwner := fmt.Sprintf("%d", stat.Uid)
+				if stateOwner != currentUser.Uid {
+					isShared = true
+				}
+			}
+		}
+	}
+
+	if !isShared {
+		fmt.Println("[goprox] gateway operator is current user; home/config permissions unchanged")
+		return
+	}
+
+	// Fix permission chain: home → .config → goprox → config.yaml
 	home := currentUser.HomeDir
-	parts := []string{
-		home,
-		filepath.Join(home, ".config"),
-		filepath.Join(home, ".config", "goprox"),
+	paths := []struct {
+		path     string
+		wantMode os.FileMode
+	}{
+		{home, 0711},
+		{filepath.Join(home, ".config"), 0711},
+		{filepath.Join(home, ".config", "goprox"), 0711},
+		{configPath, 0666},
 	}
 
-	for _, p := range parts {
-		fixDirPerms(p)
+	changed := false
+	var permLines []string
+	for _, p := range paths {
+		info, err := os.Stat(p.path)
+		if err != nil {
+			continue
+		}
+		currentMode := info.Mode().Perm()
+		needFix := false
+		if info.IsDir() {
+			needFix = currentMode&0001 != 0001
+		} else {
+			needFix = currentMode != 0666
+		}
+		if needFix {
+			os.Chmod(p.path, p.wantMode)
+			permLines = append(permLines, fmt.Sprintf("  %s -> %04o", p.path, p.wantMode))
+			changed = true
+		}
 	}
 
-	// Fix config file
-	os.Chmod(configPath, 0666)
-	fmt.Printf("[goprox] updated shared-gateway permissions:\n")
-	for _, p := range parts {
-		fmt.Printf("  %s\n", p)
+	if changed {
+		fmt.Println("[goprox] updated shared-gateway permissions:")
+		for _, line := range permLines {
+			fmt.Println(line)
+		}
+	} else {
+		fmt.Println("[goprox] home/config permissions already sufficient for shared gateway")
 	}
-	fmt.Printf("  %s -> 0666\n", configPath)
 }
 
-func fixDirPerms(path string) {
-	info, err := os.Stat(path)
+func getProcessOwner(pid int) string {
+	// Read /proc/<pid>/status to find Uid
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
-		return
+		return ""
 	}
-	mode := info.Mode().Perm()
-	// If not traversable by others, fix it
-	if mode&0005 != 0005 {
-		os.Chmod(path, mode|0055) // Add r-x for group and others
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "Uid:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				uid := fields[1]
+				if u, err := user.LookupId(uid); err == nil {
+					return u.Username
+				}
+				return uid
+			}
+		}
 	}
+	return ""
 }
 
 
