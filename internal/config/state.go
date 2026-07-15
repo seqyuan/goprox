@@ -28,7 +28,6 @@ type AuthState struct {
 
 type UsersState struct {
 	HomePrefix string `yaml:"home_prefix"`
-	ScanHomes  bool   `yaml:"scan_homes"`
 }
 
 func defaultState() StateConfig {
@@ -43,7 +42,6 @@ func defaultState() StateConfig {
 		},
 		Users: UsersState{
 			HomePrefix: HomePrefix(),
-			ScanHomes:  true,
 		},
 	}
 }
@@ -111,7 +109,6 @@ func LoadState(path string) (*StateConfig, error) {
 		}
 		raw["users"] = map[string]interface{}{
 			"home_prefix": s.Users.HomePrefix,
-			"scan_homes":  s.Users.ScanHomes,
 		}
 		out, _ := yaml.Marshal(raw)
 		os.WriteFile(path, out, 0644)

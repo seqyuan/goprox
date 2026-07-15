@@ -32,10 +32,6 @@ func (r *UserRegistry) Reload() {
 
 	r.users = make(map[string]*UserRecord)
 
-	if !r.state.Users.ScanHomes {
-		return
-	}
-
 	homeRoot := r.state.Users.HomePrefix
 	entries, err := os.ReadDir(homeRoot)
 	if err != nil {
@@ -166,8 +162,6 @@ type ServiceMatch struct {
 // FindService finds a service matching /proxy/{user}/{service}/...
 func (r *UserRegistry) FindService(requestPath string) *ServiceMatch {
 	r.EnsureFresh()
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 
 	prefix := "/proxy/"
 	if !strings.HasPrefix(requestPath, prefix) {
@@ -185,7 +179,7 @@ func (r *UserRegistry) FindService(requestPath string) *ServiceMatch {
 		return nil
 	}
 
-	user := r.users[username]
+	user := r.GetUser(username)
 	if user == nil {
 		return nil
 	}
@@ -223,10 +217,8 @@ func (r *UserRegistry) FindService(requestPath string) *ServiceMatch {
 // FindLegacyService finds a service via legacy /proxy{path} format.
 func (r *UserRegistry) FindLegacyService(requestPath, username string) *ServiceMatch {
 	r.EnsureFresh()
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 
-	user := r.users[username]
+	user := r.GetUser(username)
 	if user == nil {
 		return nil
 	}
