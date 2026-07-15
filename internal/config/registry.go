@@ -79,11 +79,50 @@ func (r *UserRegistry) EnsureFresh() {
 }
 
 // GetUser returns a user record by username.
+// If the user is not in the cache, tries to load them on-demand.
 func (r *UserRegistry) GetUser(username string) *UserRecord {
 	r.EnsureFresh()
+
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.users[username]
+	user := r.users[username]
+	r.mu.RUnlock()
+
+	if user != nil {
+		return user
+	}
+
+	// Cache miss: try loading this user directly
+	return r.loadUser(username)
+}
+
+// loadUser loads a single user config from the filesystem directly.
+func (r *UserRegistry) loadUser(username string) *UserRecord {
+	if !IsValidUsername(username) {
+		return nil
+	}
+
+	configPath := GetUserConfigPath(username, r.state.Users.HomePrefix)
+	if _, err := os.Stat(configPath); err != nil {
+		return nil
+	}
+
+	cfg, err := LoadUserConfig(configPath)
+	if err != nil {
+		return nil
+	}
+
+	record := &UserRecord{
+		Username:   username,
+		ConfigPath: configPath,
+		Config:     *cfg,
+	}
+
+	// Insert into cache for subsequent lookups
+	r.mu.Lock()
+	r.users[username] = record
+	r.mu.Unlock()
+
+	return record
 }
 
 // ListUsers returns all loaded users.
