@@ -12,7 +12,7 @@
   }
   .header h1 { font-size: 1.35rem; }
   .header-actions { display: flex; gap: 0.5rem; align-items: center; }
-  .logout-btn, .theme-btn, .fab-add {
+  .logout-btn, .theme-btn, .add-btn {
     padding: 0.45rem 1rem;
     border-radius: 8px;
     font-size: 0.875rem;
@@ -24,21 +24,14 @@
     text-decoration: none;
   }
   .logout-btn:hover { background: var(--bg); text-decoration: none; }
-  .fab-add {
-    position: fixed;
-    right: 1.5rem;
-    bottom: 1.5rem;
-    width: 3.25rem;
-    height: 3.25rem;
-    border-radius: 50%%;
+  .add-btn {
     background: var(--accent);
     color: #fff;
-    font-size: 1.75rem;
+    font-weight: 600;
+    font-size: 1.1rem;
     line-height: 1;
-    box-shadow: var(--shadow);
-    z-index: 20;
   }
-  .fab-add:hover { background: var(--accent-hover); }
+  .add-btn:hover { background: var(--accent-hover); }
   .main {
     max-width: 1100px;
     margin: 0 auto;
@@ -207,11 +200,12 @@
   .read-only .drag-handle,
   .read-only .card-edit,
   .read-only .card-delete,
-  .read-only .fab-add { display: none; }
+  .read-only .add-btn { display: none; }
 </style>
 <header class="header">
   <h1>GoProx</h1>
   <div class="header-actions">
+    <button type="button" class="add-btn" id="fab-add" title="添加服务">+</button>
     <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>
     <a href="/logout" class="logout-btn">退出</a>
   </div>
@@ -220,7 +214,6 @@
   <p class="hint" id="dashboard-hint">%s</p>
   <div id="dashboard">%s</div>
 </main>
-%s
 <div class="modal-backdrop" id="add-modal">
   <form class="modal" id="add-form">
     <h2>添加端口转发</h2>

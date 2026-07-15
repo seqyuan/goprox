@@ -84,28 +84,22 @@ func DashboardPage(username string, services []config.ServiceConfig, writable bo
 
 	categoriesHTML := renderCategories(grouped, username, writable)
 	if categoriesHTML == "" {
-		categoriesHTML = `<p class="empty">暂无服务。点击右下角 + 添加，或在终端执行 <code>goprox add</code>。</p>`
+		categoriesHTML = `<p class="empty">暂无服务。点击顶部 + 添加，或在终端执行 <code>goprox add</code>。</p>`
 	}
 
 	hintText := ""
 	readOnlyClass := ""
 	if writable {
-		hintText = "点击卡片访问服务；拖动卡片调整顺序与分类，点击右下角 + 添加。"
+		hintText = "点击卡片访问服务；拖动卡片调整顺序与分类，点击顶部 + 添加。"
 	} else {
 		hintText = "当前配置不可由网关写入。请执行 <code>goprox passwd</code> 修复权限，或使用 CLI 管理。"
 		readOnlyClass = " read-only"
-	}
-
-	fabBtn := ""
-	if writable {
-		fabBtn = `<button type="button" class="fab-add" id="fab-add" title="添加服务">+</button>`
 	}
 
 	body := fmt.Sprintf(dashboardTpl,
 		readOnlyClass,
 		hintText,
 		categoriesHTML,
-		fabBtn,
 		bootJSON,
 		dashboardScript,
 	)
