@@ -24,19 +24,19 @@ const usage = `GoProx - Multi-service authenticated reverse proxy hub
 
 Usage:
   goprox [options]              Start the gateway server
+  goprox start [options]        Start in background
   goprox stop [options]         Stop the running gateway
   goprox status [options]       Show gateway status
   goprox passwd [options]       Set login password
-  goprox add [options]          Add a backend service (interactive)
-  goprox list [options]         List configured services
-  goprox remove <name> [options] Remove a backend service
-  
+
 Options:
   -s, --state <path>     State file path (default: ~/.local/state/goprox/state.yaml)
   -c, --config <path>    User config path (default: ~/.config/goprox/config.yaml)
   --host <host>          Listen address (default: 0.0.0.0)
   --port <port>          Gateway listen port (default: 1907)
   -h, --help             Show this help
+
+Manage services via the web dashboard at http://host:port/
 `
 
 func main() {
@@ -66,7 +66,6 @@ func main() {
 	switch cmd {
 	case "serve", "start":
 		if cmd == "start" {
-			// Daemonize by forking
 			daemonize(opts)
 			return
 		}
@@ -77,12 +76,6 @@ func main() {
 		runStatus(opts)
 	case "passwd":
 		runPasswd(opts)
-	case "add":
-		runAdd(opts)
-	case "list":
-		runList(opts)
-	case "remove":
-		runRemove(args, opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		fmt.Print(usage)
@@ -359,102 +352,7 @@ func runPasswd(opts options) {
 
 // ---- add ----
 
-func runAdd(opts options) {
-	configPath := opts.configPath
-	if err := config.EnsureUserConfig(configPath); err != nil {
-		log.Fatalf("ensure config: %v", err)
-	}
-
-	reader := bufio.NewReader(os.Stdin)
-
-	name := prompt(reader, "服务名称", "")
-	description := prompt(reader, "说明 (可选)", "")
-	host := prompt(reader, "后端地址", "127.0.0.1")
-	portStr := prompt(reader, "端口", "")
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 {
-		log.Fatal("无效端口")
-	}
-
-	wsInput := prompt(reader, "WebSocket 代理 (y/n)", "y")
-	websocket := strings.ToLower(wsInput) == "y" || wsInput == ""
-
-	category := prompt(reader, "分类 (可选)", "")
-
-	svc := config.ServiceConfig{
-		ID:          config.SlugifyName(name),
-		Name:        name,
-		Description: description,
-		Host:        host,
-		Port:        port,
-		Path:        config.ServicePathFromName(name),
-		WebSocket:   websocket,
-		Category:    category,
-	}
-
-	if err := config.AddService(configPath, svc); err != nil {
-		log.Fatalf("add service: %v", err)
-	}
-
-	fmt.Printf("[goprox] added service: %s -> %s:%d%s\n", svc.Name, svc.Host, svc.Port, svc.Path)
-}
-
-// ---- list ----
-
-func runList(opts options) {
-	configPath := opts.configPath
-
-	cfg, err := config.LoadUserConfig(configPath)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-
-	if len(cfg.Services) == 0 {
-		fmt.Println("(no services configured)")
-		return
-	}
-
-	for _, s := range cfg.Services {
-		wsTag := ""
-		if s.WebSocket {
-			wsTag = " [ws]"
-		}
-		fmt.Printf("  %-15s %s:%d%s%s\n", s.Name, s.Host, s.Port, s.Path, wsTag)
-	}
-}
-
-// ---- remove ----
-
-func runRemove(args []string, opts options) {
-	configPath := opts.configPath
-
-	if len(args) == 0 {
-		log.Fatal("usage: goprox remove <name>")
-	}
-
-	name := args[0]
-	if err := config.RemoveService(configPath, name); err != nil {
-		log.Fatalf("remove service: %v", err)
-	}
-
-	fmt.Printf("[goprox] removed service: %s\n", name)
-}
-
 // ---- helpers ----
-
-func prompt(reader *bufio.Reader, label, defaultVal string) string {
-	if defaultVal != "" {
-		fmt.Printf("%s [%s]: ", label, defaultVal)
-	} else {
-		fmt.Printf("%s: ", label)
-	}
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-	if input == "" && defaultVal != "" {
-		return defaultVal
-	}
-	return input
-}
 
 func readPassword() (string, error) {
 	// Disable echo

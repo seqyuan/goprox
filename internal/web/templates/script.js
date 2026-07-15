@@ -40,7 +40,7 @@
     var groups = groupServices(state.services);
     var keys = Object.keys(groups);
     if (keys.length === 0) {
-      root.innerHTML = '<p class="empty">暂无服务。点击右下角 + 添加，或在终端执行 <code>goprox add</code>。</p>';
+      root.innerHTML = '<p class="empty">暂无服务。点击顶部 + 添加转发。</p>';
       return;
     }
     var html = [];

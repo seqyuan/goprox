@@ -2,7 +2,7 @@
 
 **一台 Linux 服务器，一个 Web 入口，每人管理自己的 Jupyter / RStudio / 内网服务。**
 
-GoProx 是面向实验室、登录节点的**多用户认证反向代理**网关，用 Go 语言编写。运维启动一个共享网关，普通用户登录网页管理转发（添加卡片、拖动排序），也可选用 CLI，无需每人记不同端口。
+GoProx 是面向实验室、登录节点的**多用户认证反向代理**网关，用 Go 语言编写。运维启动一个共享网关，普通用户登录网页管理转发（添加卡片、拖动排序），无需每人记不同端口。
 
 
 ## 安装
@@ -28,11 +28,6 @@ export PATH=$PATH:$(go env GOPATH)/bin
 
 # ③ 浏览器管理
 http://lab.example.com:1907/  →  登录  →  点 + 添加、拖动排序、点击卡片访问
-
-# ③ 备选：终端 CLI
-./goprox add          # 交互式添加服务
-./goprox list         # 列出服务
-./goprox remove <id>  # 删除服务
 ```
 
 ## 命令参考
@@ -43,9 +38,6 @@ goprox start [options]          # 后台启动
 goprox stop [options]           # 停止网关
 goprox status [options]         # 查看状态
 goprox passwd [options]         # 设置登录密码
-goprox add [options]            # 交互式添加转发
-goprox list [options]           # 列出服务
-goprox remove <id> [options]    # 删除服务
 
 Options:
   -s, --state <path>    状态文件（默认 ~/.local/state/goprox/state.yaml）
@@ -64,7 +56,7 @@ Options:
         │
         ├──────────────────────┐
         ▼                      ▼
-网页：+ 添加 / 拖动 / 删除     CLI：add / remove / list
+网页：+ 添加 / 拖动 / 删除
         │                      │
         └──────────┬───────────┘
                    ▼
