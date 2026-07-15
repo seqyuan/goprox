@@ -1,0 +1,275 @@
+<style>
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 2rem;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .header h1 { font-size: 1.35rem; }
+  .header-actions { display: flex; gap: 0.5rem; align-items: center; }
+  .logout-btn, .theme-btn, .fab-add {
+    padding: 0.45rem 1rem;
+    border-radius: 8px;
+    font-size: 0.875rem;
+  }
+  .logout-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    text-decoration: none;
+  }
+  .logout-btn:hover { background: var(--bg); text-decoration: none; }
+  .fab-add {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    width: 3.25rem;
+    height: 3.25rem;
+    border-radius: 50%%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 1.75rem;
+    line-height: 1;
+    box-shadow: var(--shadow);
+    z-index: 20;
+  }
+  .fab-add:hover { background: var(--accent-hover); }
+  .main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4.5rem;
+  }
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 1.5rem;
+  }
+  .hint code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.82rem;
+  }
+  .category-block { margin-bottom: 2rem; }
+  .category-title {
+    font-size: 1rem;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+    font-weight: 600;
+  }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.25rem;
+    min-height: 3rem;
+  }
+  .card-grid.drop-target { outline: 2px dashed var(--accent); outline-offset: 4px; }
+  .service-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    transition: border-color 0.15s, opacity 0.15s;
+    position: relative;
+  }
+  .service-card:hover { border-color: var(--accent); }
+  .service-card.dragging { opacity: 0.45; }
+  .card-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.45rem 0.65rem 0;
+  }
+  .drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    user-select: none;
+    padding: 0.2rem 0.35rem;
+  }
+  .card-actions { display: flex; gap: 0.15rem; }
+  .card-edit, .card-delete {
+    background: transparent;
+    border: none;
+    font-size: 1.05rem;
+    line-height: 1;
+    padding: 0.2rem 0.45rem;
+    cursor: pointer;
+  }
+  .card-edit { color: var(--accent); }
+  .card-edit:hover { opacity: 0.8; }
+  .card-delete { color: var(--danger); }
+  .card-delete:hover { opacity: 0.8; }
+  .card-link {
+    display: flex;
+    gap: 1rem;
+    padding: 0.35rem 1.25rem 1.25rem;
+    color: inherit;
+    text-decoration: none;
+  }
+  .card-link:hover { text-decoration: none; }
+  .card-icon { font-size: 2rem; line-height: 1; }
+  .card-body { flex: 1; min-width: 0; }
+  .card-body h2 { font-size: 1.1rem; margin-bottom: 0.35rem; }
+  .card-desc { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.6rem; }
+  .card-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8rem; }
+  .endpoint { color: var(--text-muted); font-family: ui-monospace, monospace; }
+  .badge {
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge.ws { background: rgba(59,110,245,0.15); color: var(--accent); }
+  .empty { text-align: center; color: var(--text-muted); padding: 3rem; }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 30;
+    padding: 1rem;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    width: 100%%;
+    max-width: 420px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 1.5rem;
+  }
+  .modal h2 { margin-bottom: 1rem; font-size: 1.15rem; }
+  .modal label {
+    display: block;
+    margin: 0.75rem 0 0.35rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+  .modal input[type="text"],
+  .modal input[type="number"] {
+    width: 100%%;
+    padding: 0.65rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .modal .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.85rem;
+    font-size: 0.9rem;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    margin-top: 1.25rem;
+  }
+  .btn-secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
+  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .toast {
+    position: fixed;
+    left: 50%%;
+    bottom: 5rem;
+    transform: translateX(-50%%);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    padding: 0.65rem 1rem;
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    display: none;
+    z-index: 25;
+    font-size: 0.9rem;
+  }
+  .toast.show { display: block; }
+  .read-only .drag-handle,
+  .read-only .card-edit,
+  .read-only .card-delete,
+  .read-only .fab-add { display: none; }
+</style>
+<header class="header">
+  <h1>GoProx</h1>
+  <div class="header-actions">
+    <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>
+    <a href="/logout" class="logout-btn">退出</a>
+  </div>
+</header>
+<main class="main%s">
+  <p class="hint" id="dashboard-hint">%s</p>
+  <div id="dashboard">%s</div>
+</main>
+%s
+<div class="modal-backdrop" id="add-modal">
+  <form class="modal" id="add-form">
+    <h2>添加端口转发</h2>
+    <label for="add-name">显示名称</label>
+    <input id="add-name" name="name" type="text" required>
+    <label for="add-description">说明</label>
+    <input id="add-description" name="description" type="text">
+    <label for="add-host">后端地址</label>
+    <input id="add-host" name="host" type="text" value="127.0.0.1" required>
+    <label for="add-port">端口</label>
+    <input id="add-port" name="port" type="number" min="1" max="65535" required>
+    <label for="add-category">分类</label>
+    <input id="add-category" name="category" type="text">
+    <label class="checkbox-row">
+      <input id="add-ws" name="websocket" type="checkbox" checked>
+      <span>WebSocket 代理</span>
+      <small style="color:var(--text-muted);font-size:0.75rem;display:block;margin-top:2px">默认开启，关闭后将拒绝 WebSocket 连接。Jupyter、RStudio 等需保持开启</small>
+    </label>
+    <div class="modal-actions">
+      <button type="button" class="btn-secondary" id="add-cancel">取消</button>
+      <button type="submit" class="btn-primary">添加</button>
+    </div>
+  </form>
+</div>
+<div class="modal-backdrop" id="edit-modal">
+  <form class="modal" id="edit-form">
+    <h2>编辑端口转发</h2>
+    <input type="hidden" id="edit-id" value="">
+    <label for="edit-name">显示名称</label>
+    <input id="edit-name" name="name" type="text" required>
+    <label for="edit-description">说明</label>
+    <input id="edit-description" name="description" type="text">
+    <label for="edit-host">后端地址</label>
+    <input id="edit-host" name="host" type="text" required>
+    <label for="edit-port">端口</label>
+    <input id="edit-port" name="port" type="number" min="1" max="65535" required>
+    <label for="edit-category">分类</label>
+    <input id="edit-category" name="category" type="text">
+    <label class="checkbox-row">
+      <input id="edit-ws" name="websocket" type="checkbox">
+      <span>WebSocket 代理</span>
+      <small style="color:var(--text-muted);font-size:0.75rem;display:block;margin-top:2px">默认开启，关闭后将拒绝 WebSocket 连接。Jupyter、RStudio 等需保持开启</small>
+    </label>
+    <div class="modal-actions">
+      <button type="button" class="btn-secondary" id="edit-cancel">取消</button>
+      <button type="submit" class="btn-primary">保存</button>
+    </div>
+  </form>
+</div>
+<div class="toast" id="toast"></div>
+<script>window.__GOPROX_BOOT__ = %s;</script>
+<script>%s</script>

@@ -1,0 +1,13 @@
+auth:
+  password_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+
+services:
+  - id: jupyter
+    name: "Jupyter Lab"
+    description: "交互式笔记本"
+    host: "127.0.0.1"
+    port: 8888
+    path: "/jupyter"
+    websocket: true
+    category: "开发工具"
+    order: 0

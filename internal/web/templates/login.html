@@ -1,0 +1,89 @@
+<style>
+  .login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  .login-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    padding: 2.5rem 2rem;
+    width: 100%%;
+    max-width: 400px;
+    position: relative;
+  }
+  .login-card h1 {
+    font-size: 1.75rem;
+    margin-bottom: 0.25rem;
+    text-align: center;
+  }
+  .login-card .subtitle {
+    color: var(--text-muted);
+    text-align: center;
+    margin-bottom: 2rem;
+    font-size: 0.9rem;
+  }
+  .login-card label {
+    display: block;
+    margin-bottom: 0.4rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+  .login-card input[type="password"],
+  .login-card input[type="text"] {
+    width: 100%%;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .login-card input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .login-card .submit-btn {
+    width: 100%%;
+    padding: 0.75rem;
+    background: var(--accent);
+    color: #fff;
+  }
+  .login-card .submit-btn:hover { background: var(--accent-hover); }
+  .error {
+    color: var(--danger);
+    background: rgba(229,72,77,0.1);
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+  }
+  .top-actions {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+  }
+</style>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="top-actions">
+      <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>
+    </div>
+    <h1>GoProx</h1>
+    <p class="subtitle">多服务认证反向代理入口</p>
+    %s
+    <form method="POST" action="/login">
+      <label for="username">用户名</label>
+      <input type="text" id="username" name="username" required autofocus autocomplete="username">
+      <label for="password">密码</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password">
+      <button type="submit" class="submit-btn">登录</button>
+    </form>
+  </div>
+</div>

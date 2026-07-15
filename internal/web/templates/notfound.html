@@ -1,0 +1,39 @@
+<style>
+  .nf-wrap {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 2rem;
+  }
+  .nf-code {
+    font-size: 6rem;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 0.5rem;
+  }
+  .nf-msg {
+    color: var(--text-muted);
+    margin-bottom: 2rem;
+    font-size: 1.1rem;
+  }
+  .nf-link {
+    display: inline-block;
+    padding: 0.6rem 1.25rem;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 8px;
+    text-decoration: none;
+  }
+  .nf-link:hover { background: var(--accent-hover); text-decoration: none; }
+  .nf-theme { position: fixed; top: 1rem; right: 1rem; }
+</style>
+<div class="nf-wrap">
+  <button type="button" class="theme-btn nf-theme" id="theme-toggle" onclick="toggleTheme()">🌙</button>
+  <div class="nf-code">404</div>
+  <p class="nf-msg">页面未找到</p>
+  <a href="/" class="nf-link">返回仪表盘</a>
+</div>

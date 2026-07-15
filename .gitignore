@@ -1,0 +1,26 @@
+# Binaries
+goprox
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# State/config (user-specific)
+state.yaml
+config.yaml
