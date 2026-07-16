@@ -20,8 +20,10 @@ const (
 
 // SessionResult holds session validation result.
 type SessionResult struct {
-	Valid  bool
-	UserID string
+	Valid      bool
+	UserID     string
+	ExpiresAt  int64  // Unix timestamp when session expires
+	IssuedAt   int64  // Unix timestamp when session was created
 }
 
 // base64URLEncode encodes bytes to URL-safe base64 without padding.
@@ -99,11 +101,20 @@ func ValidateSessionToken(token, secret string) SessionResult {
 		return SessionResult{Valid: false}
 	}
 
-	if time.Now().Unix() > expiry {
+	now := time.Now().Unix()
+	if now > expiry {
 		return SessionResult{Valid: false}
 	}
 
-	return SessionResult{Valid: true, UserID: userID}
+	// Calculate when this token was issued (approximation)
+	issuedAt := expiry - int64(86400) // Assume default TTL if not stored
+
+	return SessionResult{
+		Valid:     true,
+		UserID:    userID,
+		ExpiresAt: expiry,
+		IssuedAt:  issuedAt,
+	}
 }
 
 // ParseCookies parses cookie header into a map.
@@ -171,9 +182,29 @@ func ClearSessionCookie() string {
 }
 
 // SetRouteCookie creates a Set-Cookie for tracking proxy route.
+// The cookie is scoped to the service path to avoid conflicts between services.
 func SetRouteCookie(prefix string) string {
-	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax",
-		RouteCookieName, prefix)
+	// Scope cookie to the service path to prevent cross-service conflicts
+	path := prefix
+	if path == "" {
+		path = "/"
+	}
+	return fmt.Sprintf("%s=%s; HttpOnly; Path=%s; SameSite=Lax",
+		RouteCookieName, prefix, path)
+}
+
+// ShouldRefreshSession checks if a session should be refreshed.
+// Returns true if the session is valid but will expire within 25% of its TTL.
+func ShouldRefreshSession(session SessionResult, ttlSec int) bool {
+	if !session.Valid || session.ExpiresAt == 0 {
+		return false
+	}
+
+	now := time.Now().Unix()
+	timeRemaining := session.ExpiresAt - now
+	refreshThreshold := int64(float64(ttlSec) * 0.25)
+
+	return timeRemaining > 0 && timeRemaining < refreshThreshold
 }
 
 // ClientIP extracts the client IP from a request.

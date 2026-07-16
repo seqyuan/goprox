@@ -118,6 +118,7 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		Host:        body.Host,
 		Port:        body.Port,
 		Path:        config.ServicePathFromName(body.Name),
+		BackendPath: body.BackendPath,
 		WebSocket:   body.WebSocket,
 		Category:    body.Category,
 	}
@@ -227,6 +228,7 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 		Host:        body.Host,
 		Port:        body.Port,
 		Path:        body.Path,
+		BackendPath: body.BackendPath,
 		WebSocket:   body.WebSocket,
 		Category:    body.Category,
 	}
@@ -258,6 +260,7 @@ type addServiceBody struct {
 	Host        string `json:"host,omitempty"`
 	Port        int    `json:"port"`
 	Path        string `json:"path,omitempty"`
+	BackendPath string `json:"backend_path,omitempty"`
 	WebSocket   bool   `json:"websocket"`
 	Category    string `json:"category,omitempty"`
 }
@@ -278,6 +281,7 @@ type updateBody struct {
 	Host        *string `json:"host,omitempty"`
 	Port        *int    `json:"port,omitempty"`
 	Path        *string `json:"path,omitempty"`
+	BackendPath *string `json:"backend_path,omitempty"`
 	WebSocket   *bool   `json:"websocket,omitempty"`
 	Category    *string `json:"category,omitempty"`
 }

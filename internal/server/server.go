@@ -47,12 +47,42 @@ func New(state *config.StateConfig) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// API routes (handled by api.Handler); unknown /api/ paths may belong to backend services
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		if s.apiHandler.ServeHTTP(w, r) {
+	// API routes (handled by api.Handler)
+	// Use specific exact matches to avoid conflicts with backend service APIs
+	mux.HandleFunc("/api/services", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" || r.Method == "POST" {
+			s.apiHandler.ServeHTTP(w, r)
 			return
 		}
-		// Not a goprox API: try forwarding to a backend service (e.g. Next.js SPA)
+		http.NotFound(w, r)
+	})
+
+	mux.HandleFunc("/api/services/", func(w http.ResponseWriter, r *http.Request) {
+		// Handle /api/services/{id} and /api/services/layout
+		path := r.URL.Path
+		if path == "/api/services/layout" || strings.HasPrefix(path, "/api/services/") {
+			if s.apiHandler.ServeHTTP(w, r) {
+				return
+			}
+		}
+		// Not a goprox API: try forwarding to backend service
+		if s.handleRouteCookieProxy(w, r) {
+			return
+		}
+		if s.handleRefererProxy(w, r) {
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	// Other /api/* paths: forward to backend services (e.g., Next.js API routes)
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		// Skip if it's a goprox API path (already handled above)
+		if r.URL.Path == "/api/services" || strings.HasPrefix(r.URL.Path, "/api/services/") {
+			http.NotFound(w, r)
+			return
+		}
+		// Try to forward to backend service
 		if s.handleRouteCookieProxy(w, r) {
 			return
 		}
@@ -153,26 +183,26 @@ func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool
 		return false
 	}
 
-	// Check if this looks like a backend login (no username field from goprox)
-	// Must defer body read until after we know we need it
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
+	// Improved detection: check if this is a GoProx login vs backend login
+	ct := r.Header.Get("Content-Type")
+	origin := r.Header.Get("Origin")
+	referer := r.Header.Get("Referer")
+
+	// GoProx login characteristics:
+	// 1. Path is exactly /login (not /proxy/.../login)
+	// 2. Origin/Referer doesn't contain /proxy/ path
+	// 3. Content-Type is form data
+	isGoProxLogin := r.URL.Path == "/login" &&
+		strings.Contains(ct, "application/x-www-form-urlencoded") &&
+		!strings.Contains(origin, "/proxy/") &&
+		!strings.Contains(referer, "/proxy/")
+
+	if isGoProxLogin {
+		// Let GoProx handle this login
 		return false
 	}
-	r.Body.Close()
 
-	// Check for username field without consuming the body permanently
-	if strings.Contains(string(bodyBytes), "username=") {
-		// Restore body for potential goprox login processing
-		r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
-		r.ContentLength = int64(len(bodyBytes))
-		return false // Let normal login handle it
-	}
-
-	// Restore body for backend forwarding
-	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
-	r.ContentLength = int64(len(bodyBytes))
-
+	// This appears to be a backend service login form, forward it
 	s.forwardAsIs(w, r, match)
 	return true
 }
@@ -218,6 +248,13 @@ func (s *Server) findBackendService(r *http.Request, username string) *config.Se
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+
+	// Refresh session if needed
+	if session.Valid && session.UserID != "" && auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		secure := auth.IsSecureRequest(r)
+		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		w.Header().Add("Set-Cookie", cookie)
+	}
 
 	if session.Valid && session.UserID != "" {
 		user := s.registry.GetUser(session.UserID)
@@ -277,6 +314,13 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refresh session if needed
+	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		secure := auth.IsSecureRequest(r)
+		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		w.Header().Add("Set-Cookie", cookie)
+	}
+
 	path := r.URL.Path
 
 	// Try multi-user path: /proxy/{user}/{service}/...
@@ -303,6 +347,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 // proxyRequest forwards a direct /proxy/{user}/{service}/... request, rewriting the path.
 func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
+	// Check WebSocket upgrade requests
+	if isWebSocketUpgrade(r) && !match.Service.WebSocket {
+		http.Error(w, "WebSocket not enabled for this service", http.StatusForbidden)
+		return
+	}
+
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
 	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
 	r.URL.Path = match.RemainingPath
@@ -312,6 +362,12 @@ func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *con
 // forwardAsIs forwards a request to the backend keeping the current request path intact.
 // Used for referer-based, route-cookie-based, and backend-login routing.
 func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
+	// Check WebSocket upgrade requests
+	if isWebSocketUpgrade(r) && !match.Service.WebSocket {
+		http.Error(w, "WebSocket not enabled for this service", http.StatusForbidden)
+		return
+	}
+
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
 	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
@@ -324,6 +380,17 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	}
+	// Add error handler for better debugging
+	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("[goprox] proxy error: service=%s, path=%s, error=%v", svc.ID, r.URL.Path, err)
+		if strings.Contains(err.Error(), "connection refused") {
+			http.Error(w, "Service unavailable: backend not responding", http.StatusBadGateway)
+		} else if strings.Contains(err.Error(), "timeout") {
+			http.Error(w, "Service timeout: backend took too long to respond", http.StatusGatewayTimeout)
+		} else {
+			http.Error(w, "Proxy error: "+err.Error(), http.StatusBadGateway)
+		}
+	}
 	rp.ServeHTTP(w, r)
 }
 
@@ -331,6 +398,13 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
 	if !session.Valid || session.UserID == "" {
 		return false
+	}
+
+	// Refresh session if needed
+	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		secure := auth.IsSecureRequest(r)
+		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		w.Header().Add("Set-Cookie", cookie)
 	}
 
 	referer := r.Header.Get("Referer")
@@ -381,9 +455,16 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 		return false
 	}
 
-	// If session exists, verify user matches
+	// If session exists, verify user matches and refresh if needed
 	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
 	if session.Valid && session.UserID != "" {
+		// Refresh session if needed
+		if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+			secure := auth.IsSecureRequest(r)
+			cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+			w.Header().Add("Set-Cookie", cookie)
+		}
+
 		pathUser := config.UsernameFromProxyPath(route)
 		if pathUser != "" && pathUser != session.UserID {
 			return false
@@ -450,4 +531,11 @@ func sendHTML(w http.ResponseWriter, status int, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	io.WriteString(w, html)
+}
+
+// isWebSocketUpgrade checks if the request is a WebSocket upgrade request.
+func isWebSocketUpgrade(r *http.Request) bool {
+	connection := strings.ToLower(r.Header.Get("Connection"))
+	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
+	return strings.Contains(connection, "upgrade") && upgrade == "websocket"
 }

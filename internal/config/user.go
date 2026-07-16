@@ -20,7 +20,8 @@ type ServiceConfig struct {
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	Host        string `yaml:"host" json:"host"`
 	Port        int    `yaml:"port" json:"port"`
-	Path        string `yaml:"path" json:"path"`
+	Path        string `yaml:"path" json:"path"`                               // Frontend path (e.g., /jupyter)
+	BackendPath string `yaml:"backend_path,omitempty" json:"backend_path,omitempty"` // Backend path prefix (e.g., /app/index.html)
 	WebSocket   bool   `yaml:"websocket" json:"websocket"`
 	Category    string `yaml:"category,omitempty" json:"category,omitempty"`
 	Order       int    `yaml:"order,omitempty" json:"order,omitempty"`
@@ -288,6 +289,7 @@ type ServiceUpdate struct {
 	Host        *string `json:"host,omitempty"`
 	Port        *int    `json:"port,omitempty"`
 	Path        *string `json:"path,omitempty"`
+	BackendPath *string `json:"backend_path,omitempty"`
 	WebSocket   *bool   `json:"websocket,omitempty"`
 	Category    *string `json:"category,omitempty"`
 }
@@ -321,6 +323,9 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 				}
 				if update.Path != nil && *update.Path != "" {
 					cfg.Services[i].Path = NormalizePath(*update.Path)
+				}
+				if update.BackendPath != nil {
+					cfg.Services[i].BackendPath = *update.BackendPath
 				}
 				if update.WebSocket != nil {
 					cfg.Services[i].WebSocket = *update.WebSocket
@@ -397,6 +402,9 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 		}
 		if s.Description != "" {
 			m["description"] = s.Description
+		}
+		if s.BackendPath != "" {
+			m["backend_path"] = s.BackendPath
 		}
 		if s.Category != "" {
 			m["category"] = s.Category

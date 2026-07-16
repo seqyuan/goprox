@@ -68,10 +68,27 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 		Host:   svc.Host + ":" + strconv.Itoa(svc.Port),
 	}
 
+	// If BackendPath is specified, it will be prepended to all requests
+	backendPath := svc.BackendPath
+	if backendPath != "" {
+		backendPath = strings.TrimRight(backendPath, "/")
+	}
+
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
+
+			// Prepend backend path if specified
+			if backendPath != "" {
+				// If the remaining path is just "/", use backend path as-is
+				if pr.Out.URL.Path == "/" || pr.Out.URL.Path == "" {
+					pr.Out.URL.Path = backendPath
+				} else {
+					// Append the remaining path to backend path
+					pr.Out.URL.Path = backendPath + pr.Out.URL.Path
+				}
+			}
 
 			// Strip gateway cookies
 			if cookie := pr.In.Header.Get("Cookie"); cookie != "" {
@@ -92,6 +109,13 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			// Rewrite redirect locations
 			loc := resp.Header.Get("Location")
 			if loc != "" && strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !strings.HasPrefix(loc, "/proxy/") {
+				// If backend path is set, strip it from redirects before adding prefix
+				if backendPath != "" && strings.HasPrefix(loc, backendPath) {
+					loc = strings.TrimPrefix(loc, backendPath)
+					if loc == "" {
+						loc = "/"
+					}
+				}
 				resp.Header.Set("Location", fc.Prefix+loc)
 			}
 			return nil

@@ -138,6 +138,19 @@
       });
     });
 
+    // Add click handler for service cards to show loading state
+    $$(".card-link").forEach(function(link) {
+      link.addEventListener("click", function(ev) {
+        var url = link.getAttribute("href");
+        // Show visual feedback that the service is being accessed
+        var card = link.closest(".service-card");
+        if (card) {
+          card.style.opacity = "0.6";
+          setTimeout(function() { card.style.opacity = "1"; }, 1000);
+        }
+      });
+    });
+
     $$("[data-drag-handle]").forEach(function(handle) {
       handle.addEventListener("dragstart", function(ev) {
         var card = handle.closest(".service-card");
@@ -197,12 +210,14 @@
     form.addEventListener("submit", function(ev) {
       ev.preventDefault();
       var path = ($("#add-path").value || "").trim();
+      var backendPath = ($("#add-backend-path").value || "").trim();
       var payload = {
         name: $("#add-name").value.trim(),
         description: ($("#add-description").value || "").trim() || undefined,
         host: ($("#add-host").value || "").trim() || "127.0.0.1",
         port: parseInt($("#add-port").value, 10),
         path: path || undefined,
+        backend_path: backendPath || undefined,
         category: ($("#add-category").value || "").trim() || undefined,
         websocket: $("#add-ws").checked
       };
@@ -228,6 +243,7 @@
     $("#edit-host").value = svc.host || "127.0.0.1";
     $("#edit-port").value = svc.port;
     $("#edit-path").value = svc.path || "";
+    $("#edit-backend-path").value = svc.backend_path || "";
     $("#edit-category").value = svc.category || "";
     $("#edit-ws").checked = !!svc.websocket;
     $("#edit-modal").classList.add("open");
@@ -250,6 +266,7 @@
       payload.host = ($("#edit-host").value || "").trim() || "127.0.0.1";
       payload.port = parseInt($("#edit-port").value, 10);
       payload.path = ($("#edit-path").value || "").trim();
+      payload.backend_path = ($("#edit-backend-path").value || "").trim();
       payload.category = ($("#edit-category").value || "").trim();
       payload.websocket = $("#edit-ws").checked;
 
@@ -264,6 +281,43 @@
         renderDashboard();
         showToast("已保存");
       }).catch(function(err) { showToast(err.message); });
+    });
+  }
+
+  // Add keyboard shortcuts
+  document.addEventListener("keydown", function(ev) {
+    // ESC to close modals
+    if (ev.key === "Escape") {
+      if (modal && modal.classList.contains("open")) {
+        modal.classList.remove("open");
+        if (form) {
+          form.reset();
+          $("#add-host").value = "127.0.0.1";
+        }
+      }
+      if (editModal && editModal.classList.contains("open")) {
+        editModal.classList.remove("open");
+      }
+    }
+  });
+
+  // Click outside to close modals
+  if (modal) {
+    modal.addEventListener("click", function(ev) {
+      if (ev.target === modal) {
+        modal.classList.remove("open");
+        if (form) {
+          form.reset();
+          $("#add-host").value = "127.0.0.1";
+        }
+      }
+    });
+  }
+  if (editModal) {
+    editModal.addEventListener("click", function(ev) {
+      if (ev.target === editModal) {
+        editModal.classList.remove("open");
+      }
     });
   }
 
