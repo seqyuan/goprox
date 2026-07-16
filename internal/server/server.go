@@ -104,12 +104,9 @@ func (s *Server) Handler() http.Handler {
 			if s.handleRouteCookieProxy(w, r) {
 				return
 			}
-			// Try referer-based routing for subresources
 			if s.handleRefererProxy(w, r) {
 				return
 			}
-			// Try route-cookie-based routing
-			// Try redirect bare service paths
 			session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
 			if session.Valid && session.UserID != "" && r.Method == "GET" {
 				if s.redirectBareService(w, r, session.UserID) {
@@ -117,6 +114,13 @@ func (s *Server) Handler() http.Handler {
 				}
 			}
 			sendHTML(w, 404, web.NotFoundPage())
+			return
+		}
+		// GET /: check for backend app redirect (SPA login callback redirects here)
+		if s.handleRouteCookieProxy(w, r) {
+			return
+		}
+		if s.handleRefererProxy(w, r) {
 			return
 		}
 		s.handleRoot(w, r)
