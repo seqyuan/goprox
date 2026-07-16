@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -45,6 +46,25 @@ type UserRecord struct {
 func HashPassword(password string) string {
 	h := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(h[:])
+}
+
+// IsWritable checks if the config file is writable by the current process.
+// For shared gateway: group/others write bits. For self gateway: owner write bit.
+func IsWritable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	mode := info.Mode().Perm()
+	if mode&0222 != 0 {
+		return true // group or others can write
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if stat.Uid == uint32(os.Getuid()) && mode&0200 != 0 {
+			return true // process is owner and owner can write
+		}
+	}
+	return false
 }
 
 func normalizePath(p string) string {
@@ -86,6 +106,7 @@ func EnsureUserConfig(path string) error {
 	if err := os.WriteFile(path, data, 0666); err != nil {
 		return err
 	}
+	os.Chmod(path, 0666)
 	fmt.Printf("[goprox] created user config: %s\n", path)
 	fmt.Printf("[goprox] run \"goprox passwd\" to set your login password\n")
 	return nil
@@ -151,7 +172,12 @@ func saveRawConfig(path string, raw map[string]interface{}) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0666)
+	if err := os.WriteFile(path, data, 0666); err != nil {
+		return err
+	}
+	// Ensure 0666 regardless of umask
+	os.Chmod(path, 0666)
+	return nil
 }
 
 // UpdatePasswordHash updates only the password hash in a user config.

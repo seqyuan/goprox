@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -209,10 +208,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		writable := false
 		if user != nil {
 			services = user.Config.Services
-			// Check if config file is writable by checking write permission
-			if info, err := os.Stat(user.ConfigPath); err == nil {
-				writable = info.Mode().Perm()&0222 != 0
-			}
+			writable = config.IsWritable(user.ConfigPath)
 		}
 		sendHTML(w, 200, web.DashboardPage(session.UserID, services, writable))
 	} else {
