@@ -47,9 +47,16 @@ func New(state *config.StateConfig) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// API routes (handled by api.Handler)
+	// API routes (handled by api.Handler); unknown /api/ paths may belong to backend services
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		if s.apiHandler.ServeHTTP(w, r) {
+			return
+		}
+		// Not a goprox API: try forwarding to a backend service (e.g. Next.js SPA)
+		if s.handleRouteCookieProxy(w, r) {
+			return
+		}
+		if s.handleRefererProxy(w, r) {
 			return
 		}
 		http.NotFound(w, r)
@@ -88,14 +95,14 @@ func (s *Server) Handler() http.Handler {
 	// Root route (dashboard/login page)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
+			if s.handleRouteCookieProxy(w, r) {
+				return
+			}
 			// Try referer-based routing for subresources
 			if s.handleRefererProxy(w, r) {
 				return
 			}
 			// Try route-cookie-based routing
-			if s.handleRouteCookieProxy(w, r) {
-				return
-			}
 			// Try redirect bare service paths
 			session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
 			if session.Valid && session.UserID != "" && r.Method == "GET" {
@@ -346,11 +353,6 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) bool {
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
-	if !session.Valid || session.UserID == "" {
-		return false
-	}
-
 	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
 	route, ok := cookies[auth.RouteCookieName]
 	if !ok || route == "" {
@@ -359,16 +361,23 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 
 	match := s.registry.FindService(route)
 	if match == nil {
-		match = s.registry.FindLegacyService(route, session.UserID)
+		// Try with session user if available
+		session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+		if session.Valid && session.UserID != "" {
+			match = s.registry.FindLegacyService(route, session.UserID)
+		}
 	}
 	if match == nil {
 		return false
 	}
 
-	// Verify user
-	pathUser := config.UsernameFromProxyPath(route)
-	if pathUser != "" && pathUser != session.UserID {
-		return false
+	// If session exists, verify user matches
+	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	if session.Valid && session.UserID != "" {
+		pathUser := config.UsernameFromProxyPath(route)
+		if pathUser != "" && pathUser != session.UserID {
+			return false
+		}
 	}
 
 	s.forwardAsIs(w, r, match)
