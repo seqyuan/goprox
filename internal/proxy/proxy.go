@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 
@@ -24,7 +25,7 @@ func stripGatewayCookie(cookieHeader string) string {
 		if idx := strings.Index(part, "="); idx != -1 {
 			name = part[:idx]
 		}
-		if name == auth.SessionCookieName || name == auth.RouteCookieName {
+		if name == auth.SessionCookieName || name == auth.RouteCookieName || strings.HasPrefix(name, auth.RouteCookiePrefix) {
 			continue
 		}
 		kept = append(kept, part)
@@ -68,26 +69,16 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 		Host:   svc.Host + ":" + strconv.Itoa(svc.Port),
 	}
 
-	// If BackendPath is specified, it will be prepended to all requests
 	backendPath := svc.BackendPath
-	if backendPath != "" {
-		backendPath = strings.TrimRight(backendPath, "/")
-	}
 
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
 
-			// Prepend backend path if specified
+			// Map frontend remaining path onto an optional backend base path.
 			if backendPath != "" {
-				// If the remaining path is just "/", use backend path as-is
-				if pr.Out.URL.Path == "/" || pr.Out.URL.Path == "" {
-					pr.Out.URL.Path = backendPath
-				} else {
-					// Append the remaining path to backend path
-					pr.Out.URL.Path = backendPath + pr.Out.URL.Path
-				}
+				pr.Out.URL.Path = joinBackendPath(backendPath, pr.Out.URL.Path)
 			}
 
 			// Strip gateway cookies
@@ -123,3 +114,26 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 	}
 }
 
+func joinBackendPath(backendPath, remainingPath string) string {
+	backendPath = strings.TrimSpace(backendPath)
+	if backendPath == "" || backendPath == "/" {
+		if remainingPath == "" {
+			return "/"
+		}
+		return remainingPath
+	}
+	if !strings.HasPrefix(backendPath, "/") {
+		backendPath = "/" + backendPath
+	}
+	if remainingPath == "" || remainingPath == "/" {
+		return pathpkg.Clean(backendPath)
+	}
+
+	base := backendPath
+	// If backend_path points to a file (e.g. /app/index.html), sub-resources
+	// should resolve under that file's directory, not under index.html/...
+	if !strings.HasSuffix(backendPath, "/") && strings.Contains(pathpkg.Base(backendPath), ".") {
+		base = pathpkg.Dir(backendPath)
+	}
+	return pathpkg.Join(base, remainingPath)
+}

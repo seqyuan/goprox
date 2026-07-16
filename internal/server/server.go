@@ -146,10 +146,7 @@ func (s *Server) Handler() http.Handler {
 			sendHTML(w, 404, web.NotFoundPage())
 			return
 		}
-		// GET /: check for backend app redirect (SPA login callback redirects here)
-		if s.handleRouteCookieProxy(w, r) {
-			return
-		}
+		// GET / is the GoProx dashboard. Only a clear backend referer may route it.
 		if s.handleRefererProxy(w, r) {
 			return
 		}
@@ -209,41 +206,38 @@ func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool
 
 // findBackendService tries to locate the target service from Referer or route cookie.
 func (s *Server) findBackendService(r *http.Request, username string) *config.ServiceMatch {
-	// Try route cookie first
-	route := auth.GetRouteCookieFromRequest(r.Header.Get("Cookie"))
-	if route != "" {
-		match := s.registry.FindService(route)
-		if match == nil {
-			match = s.registry.FindLegacyService(route, username)
-		}
-		if match != nil {
-			pathUser := config.UsernameFromProxyPath(route)
-			if pathUser == "" || pathUser == username {
-				return match
-			}
-		}
-	}
-
-	// Try Referer
+	// Referer is the strongest signal for backend-originated login posts.
 	referer := r.Header.Get("Referer")
-	if referer == "" {
-		return nil
-	}
-	refPath := "/"
-	if u, err := url.Parse(referer); err == nil && u.Path != "" {
-		refPath = u.Path
-	}
-	match := s.registry.FindService(refPath)
-	if match == nil {
-		match = s.registry.FindLegacyService(refPath, username)
-	}
-	if match != nil {
-		pathUser := config.UsernameFromProxyPath(refPath)
-		if pathUser == "" || pathUser == username {
+	if referer != "" {
+		refPath := "/"
+		if u, err := url.Parse(referer); err == nil && u.Path != "" {
+			refPath = u.Path
+		}
+		if match := s.matchRouteForUser(refPath, username); match != nil {
 			return match
 		}
 	}
-	return nil
+
+	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, referer)
+	if route == "" {
+		return nil
+	}
+	return s.matchRouteForUser(route, username)
+}
+
+func (s *Server) matchRouteForUser(route, username string) *config.ServiceMatch {
+	match := s.registry.FindService(route)
+	if match == nil {
+		match = s.registry.FindLegacyService(route, username)
+	}
+	if match == nil {
+		return nil
+	}
+	pathUser := config.UsernameFromProxyPath(route)
+	if pathUser != "" && pathUser != username {
+		return nil
+	}
+	return match
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -376,7 +370,7 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
 	rp := proxy.NewReverseProxy(svc, fc)
 	rp.Transport = &http.Transport{
-		DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	}
@@ -437,7 +431,7 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) bool {
-	route := auth.GetRouteCookieFromRequest(r.Header.Get("Cookie"))
+	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
 	if route == "" {
 		return false
 	}

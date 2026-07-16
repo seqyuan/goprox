@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -21,10 +22,10 @@ const (
 
 // SessionResult holds session validation result.
 type SessionResult struct {
-	Valid      bool
-	UserID     string
-	ExpiresAt  int64  // Unix timestamp when session expires
-	IssuedAt   int64  // Unix timestamp when session was created
+	Valid     bool
+	UserID    string
+	ExpiresAt int64 // Unix timestamp when session expires
+	IssuedAt  int64 // Unix timestamp when session was created
 }
 
 // base64URLEncode encodes bytes to URL-safe base64 without padding.
@@ -203,27 +204,75 @@ func RouteCookieNameForPrefix(prefix string) string {
 	return RouteCookiePrefix + hex.EncodeToString(h[:4]) // 8 chars
 }
 
-// GetRouteCookieFromRequest extracts the route prefix from all route cookies.
-// Returns the most specific (longest) matching prefix.
-func GetRouteCookieFromRequest(cookieHeader string) string {
-	cookies := ParseCookies(cookieHeader)
-	
-	// Check for legacy single route cookie
-	if route, ok := cookies[RouteCookieName]; ok && route != "" {
+// GetRouteCookieForRequest extracts the route prefix that belongs to this request.
+// Global route cookies are intentionally not used for "/" because that is the dashboard.
+// If multiple service cookies exist, the request or referer must disambiguate them.
+func GetRouteCookieForRequest(cookieHeader, requestPath, referer string) string {
+	if requestPath == "/" {
+		return ""
+	}
+
+	routes := routeCookieValues(cookieHeader)
+	if len(routes) == 0 {
+		return ""
+	}
+
+	if route := bestRouteForPath(routes, requestPath); route != "" {
 		return route
 	}
-	
-	// Check all service-specific route cookies and return the longest match
-	longestRoute := ""
+
+	refPath := ""
+	if referer != "" {
+		if u, err := url.Parse(referer); err == nil {
+			refPath = u.Path
+		}
+	}
+	if route := bestRouteForPath(routes, refPath); route != "" {
+		return route
+	}
+
+	if len(routes) == 1 {
+		return routes[0]
+	}
+	return ""
+}
+
+func routeCookieValues(cookieHeader string) []string {
+	cookies := ParseCookies(cookieHeader)
+	seen := make(map[string]bool)
+	routes := make([]string, 0, len(cookies))
+
+	addRoute := func(route string) {
+		if route == "" || seen[route] {
+			return
+		}
+		seen[route] = true
+		routes = append(routes, route)
+	}
+
+	addRoute(cookies[RouteCookieName])
 	for name, value := range cookies {
-		if strings.HasPrefix(name, RouteCookiePrefix) && value != "" {
-			if len(value) > len(longestRoute) {
-				longestRoute = value
+		if strings.HasPrefix(name, RouteCookiePrefix) {
+			addRoute(value)
+		}
+	}
+	return routes
+}
+
+func bestRouteForPath(routes []string, requestPath string) string {
+	if requestPath == "" {
+		return ""
+	}
+	best := ""
+	for _, route := range routes {
+		prefix := strings.TrimRight(route, "/")
+		if requestPath == prefix || strings.HasPrefix(requestPath, prefix+"/") {
+			if len(route) > len(best) {
+				best = route
 			}
 		}
 	}
-	
-	return longestRoute
+	return best
 }
 
 // ShouldRefreshSession checks if a session should be refreshed.
