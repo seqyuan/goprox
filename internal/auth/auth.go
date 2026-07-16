@@ -16,6 +16,7 @@ import (
 const (
 	SessionCookieName = "goprox_session"
 	RouteCookieName   = "goprox_route"
+	RouteCookiePrefix = "goprox_route_" // Prefix for service-specific route cookies
 )
 
 // SessionResult holds session validation result.
@@ -182,15 +183,47 @@ func ClearSessionCookie() string {
 }
 
 // SetRouteCookie creates a Set-Cookie for tracking proxy route.
-// The cookie is scoped to the service path to avoid conflicts between services.
+// Uses a service-specific cookie name to avoid conflicts between services.
+// The cookie is scoped to "/" so it's available for all request paths.
 func SetRouteCookie(prefix string) string {
-	// Scope cookie to the service path to prevent cross-service conflicts
-	path := prefix
-	if path == "" {
-		path = "/"
+	// Create a unique cookie name based on the service prefix
+	// This prevents cookie conflicts when using multiple services
+	cookieName := RouteCookieNameForPrefix(prefix)
+	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax",
+		cookieName, prefix)
+}
+
+// RouteCookieNameForPrefix generates a cookie name for a specific service prefix.
+func RouteCookieNameForPrefix(prefix string) string {
+	if prefix == "" {
+		return RouteCookieName
 	}
-	return fmt.Sprintf("%s=%s; HttpOnly; Path=%s; SameSite=Lax",
-		RouteCookieName, prefix, path)
+	// Use hash to create a stable, short identifier
+	h := sha256.Sum256([]byte(prefix))
+	return RouteCookiePrefix + hex.EncodeToString(h[:4]) // 8 chars
+}
+
+// GetRouteCookieFromRequest extracts the route prefix from all route cookies.
+// Returns the most specific (longest) matching prefix.
+func GetRouteCookieFromRequest(cookieHeader string) string {
+	cookies := ParseCookies(cookieHeader)
+	
+	// Check for legacy single route cookie
+	if route, ok := cookies[RouteCookieName]; ok && route != "" {
+		return route
+	}
+	
+	// Check all service-specific route cookies and return the longest match
+	longestRoute := ""
+	for name, value := range cookies {
+		if strings.HasPrefix(name, RouteCookiePrefix) && value != "" {
+			if len(value) > len(longestRoute) {
+				longestRoute = value
+			}
+		}
+	}
+	
+	return longestRoute
 }
 
 // ShouldRefreshSession checks if a session should be refreshed.

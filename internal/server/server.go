@@ -210,8 +210,8 @@ func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool
 // findBackendService tries to locate the target service from Referer or route cookie.
 func (s *Server) findBackendService(r *http.Request, username string) *config.ServiceMatch {
 	// Try route cookie first
-	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	if route, ok := cookies[auth.RouteCookieName]; ok && route != "" {
+	route := auth.GetRouteCookieFromRequest(r.Header.Get("Cookie"))
+	if route != "" {
 		match := s.registry.FindService(route)
 		if match == nil {
 			match = s.registry.FindLegacyService(route, username)
@@ -437,9 +437,8 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) bool {
-	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	route, ok := cookies[auth.RouteCookieName]
-	if !ok || route == "" {
+	route := auth.GetRouteCookieFromRequest(r.Header.Get("Cookie"))
+	if route == "" {
 		return false
 	}
 
