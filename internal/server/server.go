@@ -76,15 +76,21 @@ func (s *Server) Handler() http.Handler {
 
 	// Login
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			http.Redirect(w, r, "/", http.StatusFound)
+		if r.Method == "POST" {
+			if s.handleBackendLogin(w, r) {
+				return
+			}
+			s.handleLogin(w, r)
 			return
 		}
-		// If already logged in, forward to backend service (e.g. Jupyter login form)
-		if s.handleBackendLogin(w, r) {
+		// GET /login: may be a backend service login page (e.g. AnnoVibe redirect)
+		if s.handleRouteCookieProxy(w, r) {
 			return
 		}
-		s.handleLogin(w, r)
+		if s.handleRefererProxy(w, r) {
+			return
+		}
+		http.Redirect(w, r, "/", http.StatusFound)
 	})
 
 	// Proxy routes
