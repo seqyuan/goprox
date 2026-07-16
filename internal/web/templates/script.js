@@ -196,11 +196,13 @@
   if (form) {
     form.addEventListener("submit", function(ev) {
       ev.preventDefault();
+      var path = ($("#add-path").value || "").trim();
       var payload = {
         name: $("#add-name").value.trim(),
         description: ($("#add-description").value || "").trim() || undefined,
         host: ($("#add-host").value || "").trim() || "127.0.0.1",
         port: parseInt($("#add-port").value, 10),
+        path: path || undefined,
         category: ($("#add-category").value || "").trim() || undefined,
         websocket: $("#add-ws").checked
       };
@@ -225,6 +227,7 @@
     $("#edit-description").value = svc.description || "";
     $("#edit-host").value = svc.host || "127.0.0.1";
     $("#edit-port").value = svc.port;
+    $("#edit-path").value = svc.path || "";
     $("#edit-category").value = svc.category || "";
     $("#edit-ws").checked = !!svc.websocket;
     $("#edit-modal").classList.add("open");
@@ -246,6 +249,7 @@
       payload.description = ($("#edit-description").value || "").trim();
       payload.host = ($("#edit-host").value || "").trim() || "127.0.0.1";
       payload.port = parseInt($("#edit-port").value, 10);
+      payload.path = ($("#edit-path").value || "").trim();
       payload.category = ($("#edit-category").value || "").trim();
       payload.websocket = $("#edit-ws").checked;
 

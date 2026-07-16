@@ -121,6 +121,9 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		WebSocket:   body.WebSocket,
 		Category:    body.Category,
 	}
+	if body.Path != "" {
+		svc.Path = config.NormalizePath(body.Path)
+	}
 
 	if err := config.AddService(configPath, svc); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
@@ -223,6 +226,7 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 		Description: body.Description,
 		Host:        body.Host,
 		Port:        body.Port,
+		Path:        body.Path,
 		WebSocket:   body.WebSocket,
 		Category:    body.Category,
 	}
@@ -253,6 +257,7 @@ type addServiceBody struct {
 	Description string `json:"description,omitempty"`
 	Host        string `json:"host,omitempty"`
 	Port        int    `json:"port"`
+	Path        string `json:"path,omitempty"`
 	WebSocket   bool   `json:"websocket"`
 	Category    string `json:"category,omitempty"`
 }
@@ -272,6 +277,7 @@ type updateBody struct {
 	Description *string `json:"description,omitempty"`
 	Host        *string `json:"host,omitempty"`
 	Port        *int    `json:"port,omitempty"`
+	Path        *string `json:"path,omitempty"`
 	WebSocket   *bool   `json:"websocket,omitempty"`
 	Category    *string `json:"category,omitempty"`
 }

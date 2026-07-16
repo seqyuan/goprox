@@ -67,7 +67,8 @@ func IsWritable(path string) bool {
 	return false
 }
 
-func normalizePath(p string) string {
+// NormalizePath ensures a path starts with / and has no trailing /.
+func NormalizePath(p string) string {
 	p = strings.TrimSpace(p)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -77,6 +78,10 @@ func normalizePath(p string) string {
 		p = "/"
 	}
 	return p
+}
+
+func normalizePath(p string) string {
+	return NormalizePath(p)
 }
 
 // EnsureUserConfig creates a default user config if it doesn't exist.
@@ -282,6 +287,7 @@ type ServiceUpdate struct {
 	Description *string `json:"description,omitempty"`
 	Host        *string `json:"host,omitempty"`
 	Port        *int    `json:"port,omitempty"`
+	Path        *string `json:"path,omitempty"`
 	WebSocket   *bool   `json:"websocket,omitempty"`
 	Category    *string `json:"category,omitempty"`
 }
@@ -312,6 +318,9 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 				}
 				if update.Port != nil && *update.Port > 0 {
 					cfg.Services[i].Port = *update.Port
+				}
+				if update.Path != nil && *update.Path != "" {
+					cfg.Services[i].Path = NormalizePath(*update.Path)
 				}
 				if update.WebSocket != nil {
 					cfg.Services[i].WebSocket = *update.WebSocket
