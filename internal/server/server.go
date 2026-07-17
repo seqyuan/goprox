@@ -147,27 +147,13 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		// GET / is the GoProx dashboard. Only a clear backend referer may route it.
-		if s.handleRefererProxy(w, r) {
+		// Cookie redirect must run BEFORE handleRefererProxy so the browser
+		// address bar is updated to the real proxy URL (not stuck at /?xxx).
+		if s.handleProxyEscape(w, r) {
 			return
 		}
-		// If the user landed on /?xxx (e.g. /?refresh=1) after escaping the proxy
-		// prefix, try to redirect them back via the route cookie.
-		if r.URL.RawQuery != "" {
-			session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
-			if session.Valid && session.UserID != "" {
-				route := auth.GetRouteCookieForRequest(
-					r.Header.Get("Cookie"), "", r.Header.Get("Referer"),
-				)
-				if route != "" && strings.HasPrefix(route, "/proxy/"+session.UserID+"/") {
-					target := route
-					if !strings.HasSuffix(target, "/") {
-						target += "/"
-					}
-					target += "?" + r.URL.RawQuery
-					http.Redirect(w, r, target, http.StatusFound)
-					return
-				}
-			}
+		if s.handleRefererProxy(w, r) {
+			return
 		}
 		s.handleRoot(w, r)
 	})
@@ -257,6 +243,31 @@ func (s *Server) matchRouteForUser(route, username string) *config.ServiceMatch 
 		return nil
 	}
 	return match
+}
+
+func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool {
+	// When a user lands on /?xxx (e.g. /?refresh=1) after escaping the proxy
+	// prefix, redirect them back to the correct proxy URL via the route cookie.
+	if r.URL.RawQuery == "" {
+		return false
+	}
+	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	if !session.Valid || session.UserID == "" {
+		return false
+	}
+	route := auth.GetRouteCookieForRequest(
+		r.Header.Get("Cookie"), "", r.Header.Get("Referer"),
+	)
+	if route == "" || !strings.HasPrefix(route, "/proxy/"+session.UserID+"/") {
+		return false
+	}
+	target := route
+	if !strings.HasSuffix(target, "/") {
+		target += "/"
+	}
+	target += "?" + r.URL.RawQuery
+	http.Redirect(w, r, target, http.StatusFound)
+	return true
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
