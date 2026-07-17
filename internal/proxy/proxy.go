@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -109,9 +112,68 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				}
 				resp.Header.Set("Location", fc.Prefix+loc)
 			}
+
+			// Inject <base> tag for HTML responses so that relative/absolute paths
+			// in the body resolve under the proxy prefix instead of root.
+			ct := resp.Header.Get("Content-Type")
+			if !strings.Contains(ct, "text/html") {
+				return nil
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return err
+			}
+
+			// Skip if the backend already supplies its own <base> tag.
+			if bytes.Contains(bytes.ToLower(body), []byte("<base")) {
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				return nil
+			}
+
+			baseTag := fmt.Sprintf("<base href=\"%s/\">", fc.Prefix)
+			modified := injectBaseTag(body, []byte(baseTag))
+
+			resp.Body = io.NopCloser(bytes.NewReader(modified))
+			resp.ContentLength = int64(len(modified))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(modified)))
 			return nil
 		},
 	}
+}
+
+// injectBaseTag inserts a <base> tag into an HTML body.
+// It tries </head>, then <body, then <html>, falling back to prepending.
+func injectBaseTag(body, baseTag []byte) []byte {
+	lower := bytes.ToLower(body)
+
+	if idx := bytes.Index(lower, []byte("</head>")); idx != -1 {
+		result := make([]byte, 0, len(body)+len(baseTag))
+		result = append(result, body[:idx]...)
+		result = append(result, baseTag...)
+		result = append(result, body[idx:]...)
+		return result
+	}
+
+	if idx := bytes.Index(lower, []byte("<body")); idx != -1 {
+		result := make([]byte, 0, len(body)+len(baseTag))
+		result = append(result, body[:idx]...)
+		result = append(result, baseTag...)
+		result = append(result, body[idx:]...)
+		return result
+	}
+
+	if idx := bytes.Index(lower, []byte("<html")); idx != -1 {
+		closeIdx := idx + bytes.IndexByte(body[idx:], '>') + 1
+		result := make([]byte, 0, len(body)+len(baseTag))
+		result = append(result, body[:closeIdx]...)
+		result = append(result, baseTag...)
+		result = append(result, body[closeIdx:]...)
+		return result
+	}
+
+	return append(baseTag, body...)
 }
 
 func joinBackendPath(backendPath, remainingPath string) string {

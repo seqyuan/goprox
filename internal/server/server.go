@@ -150,6 +150,25 @@ func (s *Server) Handler() http.Handler {
 		if s.handleRefererProxy(w, r) {
 			return
 		}
+		// If the user landed on /?xxx (e.g. /?refresh=1) after escaping the proxy
+		// prefix, try to redirect them back via the route cookie.
+		if r.URL.RawQuery != "" {
+			session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+			if session.Valid && session.UserID != "" {
+				route := auth.GetRouteCookieForRequest(
+					r.Header.Get("Cookie"), "", r.Header.Get("Referer"),
+				)
+				if route != "" && strings.HasPrefix(route, "/proxy/"+session.UserID+"/") {
+					target := route
+					if !strings.HasSuffix(target, "/") {
+						target += "/"
+					}
+					target += "?" + r.URL.RawQuery
+					http.Redirect(w, r, target, http.StatusFound)
+					return
+				}
+			}
+		}
 		s.handleRoot(w, r)
 	})
 
