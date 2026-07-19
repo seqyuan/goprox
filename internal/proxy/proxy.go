@@ -144,10 +144,23 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 }
 
 // injectBaseTag inserts a <base> tag into an HTML body.
-// It tries </head>, then <body, then <html>, falling back to prepending.
+// Priority: right after <head> opening tag (to precede all <script>/<link>),
+// then before </head>, then before <body, then after <html>, finally prepend.
 func injectBaseTag(body, baseTag []byte) []byte {
 	lower := bytes.ToLower(body)
 
+	// 1. Right after <head> or <head ...> — sets base before any resources are loaded.
+	if idx := bytes.Index(lower, []byte("<head")); idx != -1 {
+		// find the '>' that closes the <head ...> opening tag
+		closeIdx := idx + bytes.IndexByte(body[idx:], '>') + 1
+		result := make([]byte, 0, len(body)+len(baseTag))
+		result = append(result, body[:closeIdx]...)
+		result = append(result, baseTag...)
+		result = append(result, body[closeIdx:]...)
+		return result
+	}
+
+	// 2. Before </head> (fallback)
 	if idx := bytes.Index(lower, []byte("</head>")); idx != -1 {
 		result := make([]byte, 0, len(body)+len(baseTag))
 		result = append(result, body[:idx]...)
@@ -156,6 +169,7 @@ func injectBaseTag(body, baseTag []byte) []byte {
 		return result
 	}
 
+	// 3. Before <body
 	if idx := bytes.Index(lower, []byte("<body")); idx != -1 {
 		result := make([]byte, 0, len(body)+len(baseTag))
 		result = append(result, body[:idx]...)
@@ -164,6 +178,7 @@ func injectBaseTag(body, baseTag []byte) []byte {
 		return result
 	}
 
+	// 4. After <html ...>
 	if idx := bytes.Index(lower, []byte("<html")); idx != -1 {
 		closeIdx := idx + bytes.IndexByte(body[idx:], '>') + 1
 		result := make([]byte, 0, len(body)+len(baseTag))
@@ -173,6 +188,7 @@ func injectBaseTag(body, baseTag []byte) []byte {
 		return result
 	}
 
+	// 5. Prepend
 	return append(baseTag, body...)
 }
 
