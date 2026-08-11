@@ -20,9 +20,14 @@ import (
 	"github.com/seqyuan/goprox/internal/server"
 )
 
-const usage = `GoProx - Multi-service authenticated reverse proxy hub
+// version is injected at build time so it matches the git tag, e.g.:
+//
+//	go build -ldflags "-X main.version=$(git describe --tags --abbrev=0)"
+//
+// Local builds (go run / go install without ldflags) report "dev".
+var version = "dev"
 
-Usage:
+const usage = `Usage:
   goprox serve [options]        Start the gateway server (foreground)
   goprox start [options]        Start in background
   goprox stop [options]         Stop the running gateway
@@ -44,6 +49,10 @@ directory - do NOT use a symlink (symlinks are resolved to the real path).
 Manage services via the web dashboard at http://host:port/
 `
 
+func printUsage() {
+	fmt.Printf("GoProx %s - Multi-service authenticated reverse proxy hub\n\n%s", version, usage)
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags)
 	log.SetPrefix("[goprox] ")
@@ -53,7 +62,7 @@ func main() {
 	// Parse for help flag
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
-			fmt.Print(usage)
+			printUsage()
 			return
 		}
 	}
@@ -71,7 +80,7 @@ func main() {
 	case "user", "passwd", "del":
 		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 			fmt.Fprintf(os.Stderr, "error: %s requires a username\n", cmd)
-			fmt.Print(usage)
+			printUsage()
 			os.Exit(1)
 		}
 		username = args[0]
@@ -86,7 +95,7 @@ func main() {
 	opts, err := parseOptions(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		fmt.Print(usage)
+		printUsage()
 		os.Exit(1)
 	}
 
@@ -109,7 +118,7 @@ func main() {
 		runUserDel(opts, username)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
-		fmt.Print(usage)
+		printUsage()
 		os.Exit(1)
 	}
 }

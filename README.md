@@ -22,6 +22,16 @@ cp ~/go/bin/goprox /opt/goprox/
 
 如果 `go install` 后直接在 `~/go/bin` 里运行，配置会写在 `~/go/bin/config/`，也可以接受，但建议放到独立目录。
 
+## 版本
+
+`goprox --help` 第一行显示版本号。版本来自最近的 git tag，构建时注入：
+
+```bash
+make build        # 等价于 go build -ldflags "-X main.version=$(git describe --tags --abbrev=0)"
+```
+
+本地直接用 `go build` / `go install`（不带 ldflags）时版本显示为 `dev`。
+
 ## 快速开始
 
 ```bash
