@@ -40,6 +40,8 @@ Options:
   -d, --config-dir <dir>  Config directory (default: <program dir>/config)
   --host <host>           Listen address (default: 0.0.0.0)
   --port <port>           Gateway listen port (default: 1908)
+  --trusted-proxy <cidr>  Trusted reverse-proxy CIDR (e.g. 127.0.0.1/32);
+                          enables X-Forwarded-For/Proto trust (default: none)
   -h, --help              Show this help
 
 All config (state, pid, log, users/) lives in the config directory next to
@@ -124,9 +126,10 @@ func main() {
 }
 
 type options struct {
-	configDir string
-	host      string
-	port      int
+	configDir    string
+	host         string
+	port         int
+	trustedProxy string
 }
 
 func parseOptions(args []string) (options, error) {
@@ -167,6 +170,12 @@ func parseOptions(args []string) (options, error) {
 				return opts, fmt.Errorf("invalid port %q (must be 1-65535)", v)
 			}
 			opts.port = p
+		case "--trusted-proxy":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.trustedProxy = v
 		default:
 			return opts, fmt.Errorf("unknown option: %s", a)
 		}
@@ -249,7 +258,7 @@ func runServer(opts options) {
 	statePath := config.StatePath(configDir)
 
 	// Persist server config
-	config.PersistServerConfig(statePath, opts.host, opts.port)
+	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy)
 
 	// Check if already running
 	pidPath := config.PidPath(configDir)
@@ -271,12 +280,19 @@ func runServer(opts options) {
 	if opts.port > 0 {
 		state.Server.Port = opts.port
 	}
+	if opts.trustedProxy != "" {
+		state.Server.TrustedProxy = opts.trustedProxy
+	}
 
 	srv := server.New(state, configDir)
 
 	httpServer := &http.Server{
-		Addr:    net.JoinHostPort(state.Server.Host, strconv.Itoa(state.Server.Port)),
-		Handler: srv.Handler(),
+		Addr:              net.JoinHostPort(state.Server.Host, strconv.Itoa(state.Server.Port)),
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second, // slowloris protection
+		IdleTimeout:       120 * time.Second,
+		// No ReadTimeout/WriteTimeout: they would kill long-lived WebSocket
+		// connections to proxied services.
 	}
 
 	// Bind the listener before writing the pidfile so that a failed bind
@@ -315,6 +331,11 @@ func runServer(opts options) {
 	log.Printf("config: %s", configDir)
 	log.Printf("users: %s", config.UsersDir(configDir))
 	log.Printf("%d user(s) loaded", srv.UserCount())
+	if state.Server.TrustedProxy != "" {
+		log.Printf("trusted proxy: %s (X-Forwarded-For/Proto trusted only from this CIDR)", state.Server.TrustedProxy)
+	} else {
+		log.Printf("trusted proxy: none (X-Forwarded-* headers ignored)")
+	}
 
 	if err := httpServer.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
@@ -340,6 +361,9 @@ func daemonize(opts options) {
 	}
 	if opts.port != config.DefaultPort {
 		childArgs = append(childArgs, "--port", strconv.Itoa(opts.port))
+	}
+	if opts.trustedProxy != "" {
+		childArgs = append(childArgs, "--trusted-proxy", opts.trustedProxy)
 	}
 
 	// Open log file

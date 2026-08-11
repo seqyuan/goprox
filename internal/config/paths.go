@@ -1,11 +1,13 @@
 package config
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -81,22 +83,14 @@ var localHosts = map[string]bool{
 	"::1":       true,
 }
 
-func IsPrivateOrLocal(host string) bool {
-	lower := strings.ToLower(host)
-	if localHosts[lower] {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-
+// privateIP reports whether an IP is loopback, link-local, or in a private
+// (RFC 1918 / IPv6 ULA) range.
+func privateIP(ip net.IP) bool {
 	ip4 := ip.To4()
 	if ip4 == nil {
-		return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+		return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsPrivate() // covers IPv6 fd00::/8 ULA and fc00::/7
 	}
-
 	if ip4[0] == 10 {
 		return true
 	}
@@ -106,7 +100,36 @@ func IsPrivateOrLocal(host string) bool {
 	if ip4[0] == 192 && ip4[1] == 168 {
 		return true
 	}
-	return ip.IsLoopback()
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast()
+}
+
+// IsPrivateOrLocal accepts loopback/private IPs and hostnames that resolve
+// entirely to private addresses (deny-by-default: unresolvable or partially
+// public hostnames are rejected).
+func IsPrivateOrLocal(host string) bool {
+	lower := strings.ToLower(strings.TrimSpace(host))
+	if localHosts[lower] || strings.HasSuffix(lower, ".localhost") {
+		return true
+	}
+
+	if ip := net.ParseIP(lower); ip != nil {
+		return privateIP(ip)
+	}
+
+	// Hostname: require every resolved address to be private/local so a name
+	// can't smuggle a public endpoint past the allowlist.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, lower)
+	if err != nil || len(addrs) == 0 {
+		return false
+	}
+	for _, a := range addrs {
+		if !privateIP(a.IP) {
+			return false
+		}
+	}
+	return true
 }
 
 func AssertAllowedHost(host string) error {

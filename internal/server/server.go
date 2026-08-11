@@ -33,6 +33,11 @@ type Server struct {
 // New creates a new Server from state config. configDir is where the shared
 // user configs live (configDir/users/*.yaml).
 func New(state *config.StateConfig, configDir string) *Server {
+	// Forwarded headers are only trusted from the configured proxy; with no
+	// trusted proxy configured, client IPs and HTTPS detection use the TCP
+	// peer directly (X-Forwarded-* is spoofable by any direct client).
+	auth.ConfigureTrustedProxy(state.Server.TrustedProxy)
+
 	registry := config.NewUserRegistry(configDir)
 	registry.Reload()
 
@@ -112,6 +117,11 @@ func (s *Server) Handler() http.Handler {
 	// Logout
 	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", auth.ClearSessionCookie())
+		// Route cookies outlive the session and would keep forwarding bare
+		// paths to backends after logout; clear every one the browser holds.
+		for _, c := range auth.ClearRouteCookies(r.Header.Get("Cookie")) {
+			w.Header().Add("Set-Cookie", c)
+		}
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
 
@@ -124,12 +134,17 @@ func (s *Server) Handler() http.Handler {
 			s.handleLogin(w, r)
 			return
 		}
-		// GET /login: may be a backend service login page (e.g. AnnoVibe redirect)
-		if s.handleRouteCookieProxy(w, r) {
-			return
-		}
-		if s.handleRefererProxy(w, r) {
-			return
+		// GET /login: may be a backend service login page (e.g. AnnoVibe redirect).
+		// Only forward when a valid session exists; otherwise a stale route
+		// cookie would hijack the GoProx login page after logout.
+		session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+		if session.Valid && session.UserID != "" {
+			if s.handleRouteCookieProxy(w, r) {
+				return
+			}
+			if s.handleRefererProxy(w, r) {
+				return
+			}
 		}
 		s.handleLoginPage(w, r)
 	})
@@ -437,15 +452,17 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
 	rp := proxy.NewReverseProxy(svc, fc)
 	rp.Transport = s.transport
-	// Add error handler for better debugging
+	// Add error handler: log the full error server-side, reply generically so
+	// backend host/port details are not leaked to clients.
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("[goprox] proxy error: service=%s, path=%s, error=%v", svc.ID, r.URL.Path, err)
-		if strings.Contains(err.Error(), "connection refused") {
+		switch {
+		case strings.Contains(err.Error(), "connection refused"):
 			http.Error(w, "Service unavailable: backend not responding", http.StatusBadGateway)
-		} else if strings.Contains(err.Error(), "timeout") {
+		case strings.Contains(err.Error(), "timeout"):
 			http.Error(w, "Service timeout: backend took too long to respond", http.StatusGatewayTimeout)
-		} else {
-			http.Error(w, "Proxy error: "+err.Error(), http.StatusBadGateway)
+		default:
+			http.Error(w, "Proxy error", http.StatusBadGateway)
 		}
 	}
 	rp.ServeHTTP(w, r)
@@ -499,32 +516,34 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 		return false
 	}
 
+	// Route cookies are context hints, not credentials: without a valid
+	// session they must never grant backend access (the session may have
+	// expired or the user may have logged out).
+	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	if !session.Valid || session.UserID == "" {
+		next := r.URL.RequestURI()
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
+		return true
+	}
+
+	// Refresh session if needed
+	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		secure := auth.IsSecureRequest(r)
+		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		w.Header().Add("Set-Cookie", cookie)
+	}
+
 	match := s.registry.FindService(route)
 	if match == nil {
-		// Try with session user if available
-		session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
-		if session.Valid && session.UserID != "" {
-			match = s.registry.FindLegacyService(route, session.UserID)
-		}
+		match = s.registry.FindLegacyService(route, session.UserID)
 	}
 	if match == nil {
 		return false
 	}
 
-	// If session exists, verify user matches and refresh if needed
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
-	if session.Valid && session.UserID != "" {
-		// Refresh session if needed
-		if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-			secure := auth.IsSecureRequest(r)
-			cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
-			w.Header().Add("Set-Cookie", cookie)
-		}
-
-		pathUser := config.UsernameFromProxyPath(route)
-		if pathUser != "" && pathUser != session.UserID {
-			return false
-		}
+	pathUser := config.UsernameFromProxyPath(route)
+	if pathUser != "" && pathUser != session.UserID {
+		return false
 	}
 
 	s.forwardAsIs(w, r, match)

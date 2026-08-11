@@ -7,11 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -25,7 +28,6 @@ type SessionResult struct {
 	Valid     bool
 	UserID    string
 	ExpiresAt int64 // Unix timestamp when session expires
-	IssuedAt  int64 // Unix timestamp when session was created
 }
 
 // base64URLEncode encodes bytes to URL-safe base64 without padding.
@@ -45,15 +47,44 @@ func base64URLDecode(s string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(s)
 }
 
-// HashPassword hashes a password with SHA-256.
+// bcryptPasswordMax is bcrypt's input limit (72 bytes); longer passwords are
+// truncated consistently on both hash and verify, so login still works.
+const bcryptPasswordMax = 72
+
+// HashPassword hashes a password with bcrypt (cost 10). New accounts and
+// password resets use bcrypt; legacy SHA-256 hashes remain verifiable via
+// VerifyPassword's fallback path.
 func HashPassword(password string) string {
-	h := sha256.Sum256([]byte(password))
-	return hex.EncodeToString(h[:])
+	pw := []byte(password)
+	if len(pw) > bcryptPasswordMax {
+		pw = pw[:bcryptPasswordMax]
+	}
+	hash, err := bcrypt.GenerateFromPassword(pw, bcrypt.DefaultCost)
+	if err != nil {
+		// Unreachable for valid input; keep a SHA-256 hash so the account
+		// stays locked rather than crashing the CLI.
+		h := sha256.Sum256(pw)
+		return hex.EncodeToString(h[:])
+	}
+	return string(hash)
 }
 
-// VerifyPassword compares a password against a SHA-256 hash.
+// VerifyPassword checks a password against a stored hash. bcrypt hashes
+// (starting with "$2") are verified with bcrypt; 64-char hex strings are
+// treated as legacy unsalted SHA-256 hashes for backward compatibility.
 func VerifyPassword(password, expectedHash string) bool {
-	hash := HashPassword(password)
+	if strings.HasPrefix(expectedHash, "$2") {
+		pw := []byte(password)
+		if len(pw) > bcryptPasswordMax {
+			pw = pw[:bcryptPasswordMax]
+		}
+		return bcrypt.CompareHashAndPassword([]byte(expectedHash), pw) == nil
+	}
+
+	// Legacy unsalted SHA-256 hex (pre-bcrypt format), verified directly:
+	// HashPassword now returns bcrypt and must not be reused here.
+	h := sha256.Sum256([]byte(password))
+	hash := hex.EncodeToString(h[:])
 	expected, err := hex.DecodeString(expectedHash)
 	if err != nil {
 		return false
@@ -108,14 +139,10 @@ func ValidateSessionToken(token, secret string) SessionResult {
 		return SessionResult{Valid: false}
 	}
 
-	// Calculate when this token was issued (approximation)
-	issuedAt := expiry - int64(86400) // Assume default TTL if not stored
-
 	return SessionResult{
 		Valid:     true,
 		UserID:    userID,
 		ExpiresAt: expiry,
-		IssuedAt:  issuedAt,
 	}
 }
 
@@ -153,16 +180,59 @@ func GetSessionFromCookies(cookieHeader, secret string) SessionResult {
 	return ValidateSessionToken(token, secret)
 }
 
-// IsSecureRequest checks if the request came over TLS.
+// trustedProxy holds the CIDR of a trusted reverse proxy in front of the
+// gateway (configured via ConfigureTrustedProxy). When nil, forwarded headers
+// are ignored because any direct client can spoof them.
+var trustedProxy *net.IPNet
+
+// ConfigureTrustedProxy sets the CIDR (or single IP) of a trusted reverse
+// proxy. Only requests arriving from this proxy have their X-Forwarded-*
+// headers honored (for client IP and HTTPS detection); with an empty or
+// invalid value, forwarded headers are ignored entirely.
+func ConfigureTrustedProxy(cidr string) {
+	trustedProxy = nil
+	cidr = strings.TrimSpace(cidr)
+	if cidr == "" {
+		return
+	}
+	if _, ipnet, err := net.ParseCIDR(cidr); err == nil {
+		trustedProxy = ipnet
+		return
+	}
+	if ip := net.ParseIP(cidr); ip != nil {
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		trustedProxy = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+	}
+}
+
+// fromTrustedProxy reports whether the request's peer address is inside the
+// configured trusted-proxy range.
+func fromTrustedProxy(r *http.Request) bool {
+	if trustedProxy == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && trustedProxy.Contains(ip)
+}
+
+// IsSecureRequest checks if the request came over TLS. X-Forwarded-Proto is
+// only honored when the request arrived from the configured trusted proxy.
 func IsSecureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if strings.HasPrefix(strings.ToLower(proto), "https") {
-		return true
+	if !fromTrustedProxy(r) {
+		return false
 	}
-	return false
+	proto := r.Header.Get("X-Forwarded-Proto")
+	return strings.HasPrefix(strings.ToLower(proto), "https")
 }
 
 // SetSessionCookie creates a Set-Cookie header value for the session.
@@ -181,6 +251,19 @@ func SetSessionCookie(secret string, ttlSec int, userID string, secure bool) str
 func ClearSessionCookie() string {
 	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
 		SessionCookieName)
+}
+
+// ClearRouteCookies returns the Set-Cookie headers needed to clear every
+// route cookie present in the request's Cookie header. Route cookies persist
+// beyond logout and would otherwise keep forwarding bare paths to backends.
+func ClearRouteCookies(cookieHeader string) []string {
+	var out []string
+	for name := range ParseCookies(cookieHeader) {
+		if name == RouteCookieName || strings.HasPrefix(name, RouteCookiePrefix) {
+			out = append(out, fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT", name))
+		}
+	}
+	return out
 }
 
 // SetRouteCookie creates a Set-Cookie for tracking proxy route.
@@ -289,21 +372,26 @@ func ShouldRefreshSession(session SessionResult, ttlSec int) bool {
 	return timeRemaining > 0 && timeRemaining < refreshThreshold
 }
 
-// ClientIP extracts the client IP from a request.
+// ClientIP extracts the client IP from a request. Forwarded headers are only
+// trusted when the request arrives from the configured trusted proxy;
+// otherwise the TCP peer address is used (X-Forwarded-* is spoofable by any
+// direct client).
 func ClientIP(r *http.Request) string {
-	// Check X-Forwarded-For first
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+	if fromTrustedProxy(r) {
+		// Check X-Forwarded-For first
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[0])
+		}
+		// Check X-Real-IP
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return xri
+		}
 	}
-	// Check X-Real-IP
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	// Fall back to RemoteAddr
-	host := r.RemoteAddr
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		return host[:idx]
+	// Fall back to the TCP peer address.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
 	return host
 }

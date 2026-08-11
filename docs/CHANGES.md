@@ -1,3 +1,26 @@
+# GoProx v0.2.1 变更日志（2026-08-11）
+
+## 安全修复（P0/P1）
+
+- **修复 gzip 压缩的 HTML 被 `<base>` 注入破坏**：浏览器携带 `Accept-Encoding` 时，后端 gzip 压缩的页面会被注入逻辑写坏导致打不开；现在由 Transport 自行协商压缩并透明解压，注入正常生效（并防御性跳过带 `Content-Encoding` 的响应）
+- **修复 route cookie 认证绕过**：无有效会话、仅残留 route cookie 的请求此前会被直接转发到后端（会话过期/登出后仍可访问后端裸路径）；现在一律重定向到登录页
+- **修复登出后 `/login` 被残留 route cookie 劫持**：`GET /login` 仅在会话有效时才走后端转发；`/logout` 现在同时清除所有 `goprox_route*` cookie
+- **登录限流加固**：新增 `--trusted-proxy <cidr>` 配置（写入 `state.yaml`），默认不再信任 `X-Forwarded-For/Proto`（可被直连客户端伪造绕过限流、伪造 Secure Cookie）；限流器增加全局清扫 + 10k 硬上限，杜绝伪造 IP 刷爆内存
+- **密码哈希升级为 bcrypt**：`goprox user`/`passwd` 生成 bcrypt 哈希（自动兼容旧版 SHA-256 哈希，登录不受影响）
+
+## 健壮性修复
+
+- `state.yaml`（含 session_secret）权限 0644 → 0600
+- HTTP Server 增加 `ReadHeaderTimeout`/`IdleTimeout`（慢速连接防占用；不设读写超时以免影响 WebSocket 长连接）
+- HEAD 请求不再做 HTML 注入（避免 Content-Length 与实际不符）
+- 代理错误响应不再回显后端 host/port 细节，仅日志记录
+- 后端地址支持主机名（解析结果必须全部为私网地址，deny-by-default）
+- 移除仓库内误提交的 `goprox-test` 二进制（10.7MB）
+- 清理死代码（`SessionResult.IssuedAt` 近似值字段）
+- 新增 14 个回归测试（gzip 注入、route cookie 认证、登出清理、bcrypt/旧哈希兼容、可信代理门控、限流有界性等），`go vet`/全量测试通过
+
+---
+
 # GoProx v0.2.0 变更日志（2026-08-11）
 
 ## 架构调整：配置集中到程序目录

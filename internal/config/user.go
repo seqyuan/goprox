@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,9 +44,35 @@ type UserRecord struct {
 	Config     UserConfig
 }
 
+// HashPassword hashes a password with bcrypt (cost 10). Kept here for the
+// CLI commands; the auth package is the canonical implementation.
 func HashPassword(password string) string {
-	h := sha256.Sum256([]byte(password))
-	return hex.EncodeToString(h[:])
+	pw := []byte(password)
+	if len(pw) > 72 { // bcrypt input limit; truncate consistently with auth
+		pw = pw[:72]
+	}
+	hash, err := bcrypt.GenerateFromPassword(pw, bcrypt.DefaultCost)
+	if err != nil {
+		// Unreachable for valid input; keep the account locked.
+		h := sha256.Sum256(pw)
+		return hex.EncodeToString(h[:])
+	}
+	return string(hash)
+}
+
+// IsValidPasswordHash accepts bcrypt hashes ("$2...", 60 chars) and legacy
+// unsalted SHA-256 hex hashes (64 chars).
+func IsValidPasswordHash(hash string) bool {
+	hash = strings.TrimSpace(hash)
+	if strings.HasPrefix(hash, "$2") && len(hash) == 60 {
+		return true
+	}
+	if len(hash) == 64 {
+		if _, err := hex.DecodeString(hash); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // IsWritable checks if the config file can actually be written by this process.
@@ -122,11 +149,14 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
-	// Validate password hash
-	if len(cfg.Auth.PasswordHash) != 64 {
+	// Validate password hash: bcrypt or legacy SHA-256 hex; otherwise the
+	// account is locked until the operator runs `goprox passwd`.
+	if !IsValidPasswordHash(cfg.Auth.PasswordHash) {
 		cfg.Auth.PasswordHash = "0000000000000000000000000000000000000000000000000000000000000000"
+	} else if !strings.HasPrefix(cfg.Auth.PasswordHash, "$2") {
+		// Legacy SHA-256 hex is case-insensitive; bcrypt is not.
+		cfg.Auth.PasswordHash = strings.ToLower(cfg.Auth.PasswordHash)
 	}
-	cfg.Auth.PasswordHash = strings.ToLower(cfg.Auth.PasswordHash)
 
 	// Ensure services array is not nil
 	if cfg.Services == nil {

@@ -16,8 +16,9 @@ type StateConfig struct {
 }
 
 type ServerState struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host         string `yaml:"host"`
+	Port         int    `yaml:"port"`
+	TrustedProxy string `yaml:"trusted_proxy,omitempty"` // CIDR of a trusted reverse proxy; enables X-Forwarded-* header trust
 }
 
 type AuthState struct {
@@ -89,22 +90,23 @@ func LoadState(path string) (*StateConfig, error) {
 		// Persist it
 		raw := make(map[string]interface{})
 		raw["server"] = map[string]interface{}{
-			"host": s.Server.Host,
-			"port": s.Server.Port,
+			"host":          s.Server.Host,
+			"port":          s.Server.Port,
+			"trusted_proxy": s.Server.TrustedProxy,
 		}
 		raw["auth"] = map[string]interface{}{
 			"session_secret": s.Auth.SessionSecret,
 			"session_ttl":    s.Auth.SessionTTL,
 		}
 		out, _ := yaml.Marshal(raw)
-		os.WriteFile(path, out, 0644)
+		os.WriteFile(path, out, 0600)
 		fmt.Printf("[goprox] persisted generated session_secret to %s\n", path)
 	}
 
 	return &s, nil
 }
 
-func PersistServerConfig(path, host string, port int) error {
+func PersistServerConfig(path, host string, port int, trustedProxy string) error {
 	// Load existing or create default
 	var raw map[string]interface{}
 	data, err := os.ReadFile(path)
@@ -125,6 +127,9 @@ func PersistServerConfig(path, host string, port int) error {
 	if port > 0 {
 		server["port"] = port
 	}
+	if trustedProxy != "" {
+		server["trusted_proxy"] = trustedProxy
+	}
 	raw["server"] = server
 
 	return writeStateFile(path, raw)
@@ -139,5 +144,9 @@ func writeStateFile(path string, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// 0600: state.yaml holds the session_secret.
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
 }

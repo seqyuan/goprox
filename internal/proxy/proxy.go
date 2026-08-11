@@ -79,6 +79,13 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
 
+			// Let the Transport negotiate compression itself: it requests gzip
+			// only when no Accept-Encoding is set, and transparently decompresses
+			// what it requested. Passing the browser's Accept-Encoding through
+			// would leave HTML bodies gzip-compressed, and <base> injection in
+			// ModifyResponse would corrupt the compressed stream.
+			pr.Out.Header.Del("Accept-Encoding")
+
 			// Map frontend remaining path onto an optional backend base path.
 			if backendPath != "" {
 				pr.Out.URL.Path = joinBackendPath(backendPath, pr.Out.URL.Path)
@@ -100,6 +107,12 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// HEAD responses carry no body; injecting would advertise a
+			// Content-Length the client never receives.
+			if resp.Request != nil && resp.Request.Method == "HEAD" {
+				return nil
+			}
+
 			// Rewrite redirect locations
 			loc := resp.Header.Get("Location")
 			if loc != "" && strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !strings.HasPrefix(loc, "/proxy/") {
@@ -117,6 +130,12 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			// in the body resolve under the proxy prefix instead of root.
 			ct := resp.Header.Get("Content-Type")
 			if !strings.Contains(ct, "text/html") {
+				return nil
+			}
+
+			// Defense in depth: never touch a compressed body (the Rewrite hook
+			// already strips Accept-Encoding, so this should not happen).
+			if resp.Header.Get("Content-Encoding") != "" {
 				return nil
 			}
 
