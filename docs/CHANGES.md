@@ -1,3 +1,32 @@
+# GoProx v2.1 变更日志（2026-08-11）
+
+## 架构调整：配置集中到程序目录
+
+- 所有配置移入**程序所在目录的 `config/`**（`state.yaml`、`daemon.pid`、`goprox.log`、`users/<用户名>.yaml`），不再依赖用户 home 目录；整个目录可整体拷贝迁移
+- 配置目录权限收紧为 0700，用户配置 0600（不再需要 0666 共享写）
+- **重要**：`os.Executable` 会解析符号链接，请拷贝二进制而非 `ln -s` 链接
+
+## CLI 命令调整
+
+- 新增 `goprox user <name>`（建号）、`goprox del <name>`（删号）
+- `goprox passwd <name>`：由「改自己」改为「管理员重置指定用户密码」
+- `goprox serve`：前台启动；`-d/--config-dir` 可覆盖默认配置目录
+
+## 功能性修复
+
+- `goprox start` 后台启动修复（此前稳定失败：父进程写入子进程 PID 导致子进程自我误判）
+- bare 路径（如 `/jupyter`）不再被 route cookie 截胡，登录后直接访问会正确重定向到 `/proxy/<用户>/<服务>/`
+- 中文/非 ASCII 服务名不再冲突（自动生成唯一 ID 与 path：`service`、`service-2`）
+- API 缺省 `websocket` 字段时默认开启；端口（1–65535）与 path 唯一性校验
+- `goprox passwd` 增加二次确认，拒绝空密码
+- 登录后可返回原目标服务（`/login?next=/proxy/...`，防开放重定向）
+- registry 扫描失败保留旧快照；日志恢复时间戳、不再每 10 秒刷屏
+- 优雅停机（`Shutdown` + 超时）；共享 HTTP transport；大 HTML 响应跳过注入
+
+---
+
+# GoProx v2.0 变更日志（2026-07-16）
+
 # GoProx v2.0 变更日志
 
 发布日期：2026-07-16
