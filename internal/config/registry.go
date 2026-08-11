@@ -1,70 +1,74 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-// UserRegistry scans and caches user configs from home directories.
+// UserRegistry scans and caches user configs from the config directory.
 type UserRegistry struct {
-	state     *StateConfig
+	configDir string
 	users     map[string]*UserRecord
 	mu        sync.RWMutex
 	lastScan  time.Time
 	scanEvery time.Duration
 }
 
-// NewUserRegistry creates a new registry.
-func NewUserRegistry(state *StateConfig) *UserRegistry {
+// NewUserRegistry creates a new registry scanning configDir/users/*.yaml.
+func NewUserRegistry(configDir string) *UserRegistry {
 	return &UserRegistry{
-		state:     state,
+		configDir: configDir,
 		users:     make(map[string]*UserRecord),
 		scanEvery: 10 * time.Second,
 	}
 }
 
-// Reload scans home directories for user configs.
+// Reload scans the config/users directory for user configs.
+// The registry map is only swapped in after a fully successful scan, so a
+// transient read error keeps the previous snapshot instead of dropping all users.
 func (r *UserRegistry) Reload() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.users = make(map[string]*UserRecord)
-
-	homeRoot := r.state.Users.HomePrefix
-	entries, err := os.ReadDir(homeRoot)
+	usersDir := UsersDir(r.configDir)
+	entries, err := os.ReadDir(usersDir)
 	if err != nil {
+		log.Printf("[goprox] scan %s: %v", usersDir, err)
 		return
 	}
 
+	newUsers := make(map[string]*UserRecord, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() {
 			continue
 		}
-		username := entry.Name()
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		username := strings.TrimSuffix(name, ".yaml")
 		if !IsValidUsername(username) {
 			continue
 		}
 
-		configPath := GetUserConfigPath(username, homeRoot)
-		if _, err := os.Stat(configPath); err != nil {
-			continue
-		}
-
+		configPath := UserConfigPath(r.configDir, username)
 		cfg, err := LoadUserConfig(configPath)
 		if err != nil {
+			log.Printf("[goprox] skip user %s: %v", username, err)
 			continue
 		}
 
-		r.users[username] = &UserRecord{
+		newUsers[username] = &UserRecord{
 			Username:   username,
 			ConfigPath: configPath,
 			Config:     *cfg,
 		}
 	}
 
+	r.mu.Lock()
+	r.users = newUsers
 	r.lastScan = time.Now()
+	r.mu.Unlock()
 }
 
 // EnsureFresh reloads if enough time has passed.
@@ -97,7 +101,7 @@ func (r *UserRegistry) loadUser(username string) *UserRecord {
 		return nil
 	}
 
-	configPath := GetUserConfigPath(username, r.state.Users.HomePrefix)
+	configPath := UserConfigPath(r.configDir, username)
 	if _, err := os.Stat(configPath); err != nil {
 		return nil
 	}
@@ -139,7 +143,7 @@ func (r *UserRegistry) GetUserConfigForLogin(username string) *UserConfig {
 		return nil
 	}
 
-	configPath := GetUserConfigPath(username, r.state.Users.HomePrefix)
+	configPath := UserConfigPath(r.configDir, username)
 	if _, err := os.Stat(configPath); err != nil {
 		return nil
 	}

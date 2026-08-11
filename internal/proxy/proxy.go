@@ -120,6 +120,12 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				return nil
 			}
 
+			// Skip injection for very large HTML responses to avoid buffering the
+			// entire body in memory (first-byte latency, SSE-like streaming).
+			if resp.ContentLength > 8<<20 {
+				return nil
+			}
+
 			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {

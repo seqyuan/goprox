@@ -79,6 +79,7 @@
     <p class="subtitle">多服务认证反向代理入口</p>
     %s
     <form method="POST" action="/login">
+      <input type="hidden" name="next" value="%s">
       <label for="username">用户名</label>
       <input type="text" id="username" name="username" required autofocus autocomplete="username">
       <label for="password">密码</label>

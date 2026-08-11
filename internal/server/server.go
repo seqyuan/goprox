@@ -27,11 +27,13 @@ type Server struct {
 	sessionSecret string
 	loginLimiter  *rate.Limiter
 	apiHandler    *api.Handler
+	transport     *http.Transport
 }
 
-// New creates a new Server from state config.
-func New(state *config.StateConfig) *Server {
-	registry := config.NewUserRegistry(state)
+// New creates a new Server from state config. configDir is where the shared
+// user configs live (configDir/users/*.yaml).
+func New(state *config.StateConfig, configDir string) *Server {
+	registry := config.NewUserRegistry(configDir)
 	registry.Reload()
 
 	return &Server{
@@ -40,6 +42,15 @@ func New(state *config.StateConfig) *Server {
 		sessionSecret: state.Auth.SessionSecret,
 		loginLimiter:  rate.NewLimiter(10, 15*time.Minute),
 		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret),
+		// A shared transport lets connection pools be reused across requests
+		// instead of creating a fresh one per proxy request.
+		transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+		},
 	}
 }
 
@@ -120,7 +131,7 @@ func (s *Server) Handler() http.Handler {
 		if s.handleRefererProxy(w, r) {
 			return
 		}
-		http.Redirect(w, r, "/", http.StatusFound)
+		s.handleLoginPage(w, r)
 	})
 
 	// Proxy routes
@@ -131,17 +142,19 @@ func (s *Server) Handler() http.Handler {
 	// Root route (dashboard/login page)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
-			if s.handleRouteCookieProxy(w, r) {
-				return
-			}
-			if s.handleRefererProxy(w, r) {
-				return
-			}
+			// Bare service paths (e.g. /jupyter) must be redirected to the proxied
+			// URL before route-cookie forwarding can hijack them and 404.
 			session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
 			if session.Valid && session.UserID != "" && r.Method == "GET" {
 				if s.redirectBareService(w, r, session.UserID) {
 					return
 				}
+			}
+			if s.handleRouteCookieProxy(w, r) {
+				return
+			}
+			if s.handleRefererProxy(w, r) {
+				return
 			}
 			sendHTML(w, 404, web.NotFoundPage())
 			return
@@ -290,8 +303,22 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		sendHTML(w, 200, web.DashboardPage(session.UserID, services, writable))
 	} else {
-		sendHTML(w, 200, web.LoginPage(""))
+		sendHTML(w, 200, web.LoginPage("", ""))
 	}
+}
+
+func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	next := r.URL.Query().Get("next")
+	if !validLoginNext(next) {
+		next = ""
+	}
+	sendHTML(w, 200, web.LoginPage("", next))
+}
+
+// validLoginNext restricts post-login redirects to in-site proxy URLs,
+// preventing open-redirect abuse.
+func validLoginNext(next string) bool {
+	return strings.HasPrefix(next, "/proxy/") && !strings.HasPrefix(next, "//")
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -299,21 +326,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rateKey := ip
 
 	if s.loginLimiter.IsBlocked(rateKey) {
-		sendHTML(w, 429, web.LoginPage("登录尝试过多，请 15 分钟后再试"))
+		sendHTML(w, 429, web.LoginPage("登录尝试过多，请 15 分钟后再试", ""))
 		return
 	}
 
 	if err := r.ParseForm(); err != nil {
-		sendHTML(w, 500, web.LoginPage("登录请求处理失败"))
+		sendHTML(w, 500, web.LoginPage("登录请求处理失败", ""))
 		return
 	}
 
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	next := r.FormValue("next")
+	if !validLoginNext(next) {
+		next = ""
+	}
 
 	if !config.IsValidUsername(username) || password == "" {
 		s.loginLimiter.RecordFailure(rateKey)
-		sendHTML(w, 401, web.LoginPage(loginErrorMsg))
+		sendHTML(w, 401, web.LoginPage(loginErrorMsg, next))
 		return
 	}
 
@@ -323,18 +354,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		secure := auth.IsSecureRequest(r)
 		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, username, secure)
 		w.Header().Set("Set-Cookie", cookie)
-		http.Redirect(w, r, "/", http.StatusFound)
+		if next == "" {
+			next = "/"
+		}
+		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
 
 	s.loginLimiter.RecordFailure(rateKey)
-	sendHTML(w, 401, web.LoginPage(loginErrorMsg))
+	sendHTML(w, 401, web.LoginPage(loginErrorMsg, next))
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
 	if !session.Valid || session.UserID == "" {
-		http.Redirect(w, r, "/", http.StatusFound)
+		// Send the unauthenticated user to the login page and remember where
+		// they were headed so they land back on their service after login.
+		next := r.URL.RequestURI()
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}
 
@@ -399,11 +436,7 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
 	rp := proxy.NewReverseProxy(svc, fc)
-	rp.Transport = &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-	}
+	rp.Transport = s.transport
 	// Add error handler for better debugging
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("[goprox] proxy error: service=%s, path=%s, error=%v", svc.ID, r.URL.Path, err)
@@ -537,8 +570,13 @@ func (s *Server) ScanLoop(interval time.Duration, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C:
+			before := len(s.registry.ListUsers())
 			s.registry.Reload()
-			log.Printf("[goprox] scanned %d user(s)", len(s.registry.ListUsers()))
+			after := len(s.registry.ListUsers())
+			// Only log when the registry actually changed to avoid log spam.
+			if after != before {
+				log.Printf("[goprox] user registry changed: %d -> %d user(s)", before, after)
+			}
 		case <-stop:
 			return
 		}

@@ -9,67 +9,48 @@ import (
 )
 
 const (
-	DefaultHost         = "0.0.0.0"
-	DefaultPort         = 1908
-	DefaultSessionTTL   = 86400
-	DefaultHomePrefix   = "/home"
-	DefaultHomePrefixMac = "/Users"
-	UserConfigDir       = ".config/goprox"
-	UserConfigFile      = "config.yaml"
-	StateDir            = "goprox"
-	StateFile           = "state.yaml"
-	PidFile             = "daemon.pid"
-	LogFile             = "goprox.log"
+	DefaultHost       = "0.0.0.0"
+	DefaultPort       = 1908
+	DefaultSessionTTL = 86400
+	StateFile         = "state.yaml"
+	PidFile           = "daemon.pid"
+	LogFile           = "goprox.log"
+	UsersDirName      = "users"
 )
 
 var usernameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$`)
 
-func HomePrefix() string {
-	if _, err := os.Stat("/Users"); err == nil {
-		return DefaultHomePrefixMac
+// DefaultConfigDir returns <program directory>/config. The config folder sits
+// next to the binary so the whole directory can be copied around as a unit.
+// Note: os.Executable resolves symlinks on Linux, so "copy, don't symlink".
+func DefaultConfigDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		// Fall back to the working directory when the executable path is unknown.
+		wd, _ := os.Getwd()
+		return filepath.Join(wd, "config")
 	}
-	return DefaultHomePrefix
+	return filepath.Join(filepath.Dir(exe), "config")
 }
 
-func DefaultStatePath() string {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(base, StateDir, StateFile)
+func StatePath(configDir string) string {
+	return filepath.Join(configDir, StateFile)
 }
 
-func DefaultUserConfigPath(username ...string) string {
-	home, _ := os.UserHomeDir()
-	if len(username) > 0 && username[0] != "" {
-		if u, err := getUserHome(username[0], HomePrefix()); err == nil {
-			home = u
-		}
-	}
-	return filepath.Join(home, UserConfigDir, UserConfigFile)
+func PidPath(configDir string) string {
+	return filepath.Join(configDir, PidFile)
 }
 
-func GetUserConfigPath(username, homePrefix string) string {
-	home, _ := getUserHome(username, homePrefix)
-	return filepath.Join(home, UserConfigDir, UserConfigFile)
+func LogPath(configDir string) string {
+	return filepath.Join(configDir, LogFile)
 }
 
-func GetPidPath(statePath string) string {
-	return filepath.Join(filepath.Dir(statePath), PidFile)
+func UsersDir(configDir string) string {
+	return filepath.Join(configDir, UsersDirName)
 }
 
-func GetLogPath(statePath string) string {
-	return filepath.Join(filepath.Dir(statePath), LogFile)
-}
-
-func getUserHome(username string, homePrefix string) (string, error) {
-	currentUser := os.Getenv("USER")
-	if username == currentUser {
-		return os.UserHomeDir()
-	}
-	// Use the provided home prefix for other users
-	return filepath.Join(homePrefix, username), nil
+func UserConfigPath(configDir, username string) string {
+	return filepath.Join(UsersDir(configDir), username+".yaml")
 }
 
 func IsValidUsername(name string) bool {

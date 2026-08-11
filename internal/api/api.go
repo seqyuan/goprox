@@ -111,38 +111,36 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		return
 	}
 
+	// WebSocket defaults to true unless explicitly disabled.
+	ws := true
+	if body.WebSocket != nil {
+		ws = *body.WebSocket
+	}
+
 	svc := config.ServiceConfig{
 		ID:          config.SlugifyName(body.Name),
 		Name:        body.Name,
 		Description: body.Description,
 		Host:        body.Host,
 		Port:        body.Port,
-		Path:        config.ServicePathFromName(body.Name),
 		BackendPath: body.BackendPath,
-		WebSocket:   body.WebSocket,
+		WebSocket:   ws,
 		Category:    body.Category,
 	}
 	if body.Path != "" {
 		svc.Path = config.NormalizePath(body.Path)
 	}
+	// An empty Path means config.AddService auto-generates a unique one from
+	// the (also unique-ified) ID.
 
-	if err := config.AddService(configPath, svc); err != nil {
+	added, err := config.AddService(configPath, svc)
+	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
 
 	h.Registry.Reload()
-	user := h.Registry.GetUser(username)
-	var created *config.ServiceConfig
-	if user != nil {
-		for _, s := range user.Config.Services {
-			if s.ID == svc.ID {
-				created = &s
-				break
-			}
-		}
-	}
-	writeJSON(w, 201, map[string]interface{}{"service": created})
+	writeJSON(w, 201, map[string]interface{}{"service": added})
 }
 
 func (h *Handler) handleUpdateLayout(w http.ResponseWriter, r *http.Request, username string) {
@@ -261,7 +259,7 @@ type addServiceBody struct {
 	Port        int    `json:"port"`
 	Path        string `json:"path,omitempty"`
 	BackendPath string `json:"backend_path,omitempty"`
-	WebSocket   bool   `json:"websocket"`
+	WebSocket   *bool  `json:"websocket,omitempty"`
 	Category    string `json:"category,omitempty"`
 }
 

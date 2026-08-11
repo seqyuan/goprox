@@ -13,7 +13,6 @@ import (
 type StateConfig struct {
 	Server ServerState `yaml:"server"`
 	Auth   AuthState   `yaml:"auth"`
-	Users  UsersState  `yaml:"users"`
 }
 
 type ServerState struct {
@@ -26,10 +25,6 @@ type AuthState struct {
 	SessionTTL    int    `yaml:"session_ttl"`
 }
 
-type UsersState struct {
-	HomePrefix string `yaml:"home_prefix"`
-}
-
 func defaultState() StateConfig {
 	return StateConfig{
 		Server: ServerState{
@@ -40,9 +35,6 @@ func defaultState() StateConfig {
 			SessionSecret: "",
 			SessionTTL:    DefaultSessionTTL,
 		},
-		Users: UsersState{
-			HomePrefix: HomePrefix(),
-		},
 	}
 }
 
@@ -52,7 +44,7 @@ func EnsureState(path string) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
@@ -85,9 +77,6 @@ func LoadState(path string) (*StateConfig, error) {
 	if s.Auth.SessionTTL == 0 {
 		s.Auth.SessionTTL = DefaultSessionTTL
 	}
-	if s.Users.HomePrefix == "" {
-		s.Users.HomePrefix = HomePrefix()
-	}
 
 	// Generate session secret if empty
 	if s.Auth.SessionSecret == "" {
@@ -106,9 +95,6 @@ func LoadState(path string) (*StateConfig, error) {
 		raw["auth"] = map[string]interface{}{
 			"session_secret": s.Auth.SessionSecret,
 			"session_ttl":    s.Auth.SessionTTL,
-		}
-		raw["users"] = map[string]interface{}{
-			"home_prefix": s.Users.HomePrefix,
 		}
 		out, _ := yaml.Marshal(raw)
 		os.WriteFile(path, out, 0644)
@@ -146,7 +132,7 @@ func PersistServerConfig(path, host string, port int) error {
 
 func writeStateFile(path string, v interface{}) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(v)

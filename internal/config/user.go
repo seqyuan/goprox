@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,7 +19,7 @@ type ServiceConfig struct {
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	Host        string `yaml:"host" json:"host"`
 	Port        int    `yaml:"port" json:"port"`
-	Path        string `yaml:"path" json:"path"`                               // Frontend path (e.g., /jupyter)
+	Path        string `yaml:"path" json:"path"`                                     // Frontend path (e.g., /jupyter)
 	BackendPath string `yaml:"backend_path,omitempty" json:"backend_path,omitempty"` // Backend path prefix (e.g., /app/index.html)
 	WebSocket   bool   `yaml:"websocket" json:"websocket"`
 	Category    string `yaml:"category,omitempty" json:"category,omitempty"`
@@ -49,23 +48,16 @@ func HashPassword(password string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// IsWritable checks if the config file is writable by the current process.
-// For shared gateway: group/others write bits. For self gateway: owner write bit.
+// IsWritable checks if the config file can actually be written by this process.
+// A permission-bit check is not enough: owner-write bits would report true even
+// when the process is not the file owner. Probe with a write-open instead.
 func IsWritable(path string) bool {
-	info, err := os.Stat(path)
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		return false
 	}
-	mode := info.Mode().Perm()
-	if mode&0222 != 0 {
-		return true // group or others can write
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		if stat.Uid == uint32(os.Getuid()) && mode&0200 != 0 {
-			return true // process is owner and owner can write
-		}
-	}
-	return false
+	f.Close()
+	return true
 }
 
 // NormalizePath ensures a path starts with / and has no trailing /.
@@ -92,7 +84,7 @@ func EnsureUserConfig(path string) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
@@ -108,13 +100,13 @@ func EnsureUserConfig(path string) error {
 		return err
 	}
 
-	// Create with 0666 for shared gateway access
-	if err := os.WriteFile(path, data, 0666); err != nil {
+	// Create with 0600: the config dir is owned by the gateway operator.
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return err
 	}
-	os.Chmod(path, 0666)
+	os.Chmod(path, 0600)
 	fmt.Printf("[goprox] created user config: %s\n", path)
-	fmt.Printf("[goprox] run \"goprox passwd\" to set your login password\n")
+	fmt.Printf("[goprox] run \"goprox passwd %s\" to set the login password\n", strings.TrimSuffix(filepath.Base(path), ".yaml"))
 	return nil
 }
 
@@ -171,18 +163,18 @@ func loadRawConfig(path string) (map[string]interface{}, error) {
 // saveRawConfig writes raw YAML to a file.
 func saveRawConfig(path string, raw map[string]interface{}) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(raw)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0666); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return err
 	}
-	// Ensure 0666 regardless of umask
-	os.Chmod(path, 0666)
+	// Ensure 0600 regardless of umask
+	os.Chmod(path, 0600)
 	return nil
 }
 
@@ -212,19 +204,14 @@ func withConfigLock(path string, fn func() error) error {
 	return fn()
 }
 
-// AddService adds a new service to a user config.
-func AddService(configPath string, svc ServiceConfig) error {
-	return withConfigLock(configPath, func() error {
+// AddService adds a new service to a user config and returns the service as
+// persisted (with a guaranteed-unique ID and path).
+func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
+	var added ServiceConfig
+	err := withConfigLock(configPath, func() error {
 		cfg, err := LoadUserConfig(configPath)
 		if err != nil {
 			return err
-		}
-
-		// Check duplicate
-		for _, s := range cfg.Services {
-			if s.ID == svc.ID {
-				return fmt.Errorf("service already exists: %s", svc.ID)
-			}
 		}
 
 		if svc.Host == "" {
@@ -233,8 +220,31 @@ func AddService(configPath string, svc ServiceConfig) error {
 		if err := AssertAllowedHost(svc.Host); err != nil {
 			return err
 		}
-		svc.Path = normalizePath(svc.Path)
-		svc.WebSocket = svc.WebSocket != false // default true
+		if svc.Port < 1 || svc.Port > 65535 {
+			return fmt.Errorf("port must be between 1 and 65535, got %d", svc.Port)
+		}
+
+		// Guarantee a unique ID. Non-ASCII names all slugify to the same base
+		// (e.g. "service"), so append a numeric suffix when needed.
+		baseID := strings.TrimSpace(svc.ID)
+		if baseID == "" {
+			baseID = "service"
+		}
+		svc.ID = baseID
+		for n := 2; serviceWithID(cfg.Services, svc.ID); n++ {
+			svc.ID = fmt.Sprintf("%s-%d", baseID, n)
+		}
+
+		// Auto-generate a default path from the unique ID; a custom path must
+		// not collide with an existing one.
+		if svc.Path == "" {
+			svc.Path = normalizePath("/" + svc.ID)
+		} else {
+			svc.Path = normalizePath(svc.Path)
+			if serviceWithPath(cfg.Services, svc.Path) {
+				return fmt.Errorf("service path %s already in use", svc.Path)
+			}
+		}
 
 		// Find next order
 		maxOrder := -1
@@ -248,10 +258,32 @@ func AddService(configPath string, svc ServiceConfig) error {
 		cfg.Services = append(cfg.Services, svc)
 
 		raw, _ := loadRawConfig(configPath)
-		services := serializeServices(cfg.Services)
-		raw["services"] = services
-		return saveRawConfig(configPath, raw)
+		raw["services"] = serializeServices(cfg.Services)
+		if err := saveRawConfig(configPath, raw); err != nil {
+			return err
+		}
+		added = svc
+		return nil
 	})
+	return added, err
+}
+
+func serviceWithID(services []ServiceConfig, id string) bool {
+	for _, s := range services {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceWithPath(services []ServiceConfig, path string) bool {
+	for _, s := range services {
+		if s.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoveService removes a service from a user config.
@@ -318,11 +350,20 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 					}
 					cfg.Services[i].Host = *update.Host
 				}
-				if update.Port != nil && *update.Port > 0 {
+				if update.Port != nil {
+					if *update.Port < 1 || *update.Port > 65535 {
+						return fmt.Errorf("port must be between 1 and 65535, got %d", *update.Port)
+					}
 					cfg.Services[i].Port = *update.Port
 				}
 				if update.Path != nil && *update.Path != "" {
-					cfg.Services[i].Path = NormalizePath(*update.Path)
+					newPath := NormalizePath(*update.Path)
+					for j, other := range cfg.Services {
+						if j != i && other.Path == newPath {
+							return fmt.Errorf("service path %s already in use", newPath)
+						}
+					}
+					cfg.Services[i].Path = newPath
 				}
 				if update.BackendPath != nil {
 					cfg.Services[i].BackendPath = *update.BackendPath

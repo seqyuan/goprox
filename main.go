@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,24 +23,29 @@ import (
 const usage = `GoProx - Multi-service authenticated reverse proxy hub
 
 Usage:
-  goprox [options]              Start the gateway server
+  goprox serve [options]        Start the gateway server (foreground)
   goprox start [options]        Start in background
   goprox stop [options]         Stop the running gateway
   goprox status [options]       Show gateway status
-  goprox passwd [options]       Set login password
+  goprox user <name>            Create a user account (prompts for password)
+  goprox passwd <name>          Reset a user's password
+  goprox del <name>             Delete a user account
 
 Options:
-  -s, --state <path>     State file path (default: ~/.local/state/goprox/state.yaml)
-  -c, --config <path>    User config path (default: ~/.config/goprox/config.yaml)
-  --host <host>          Listen address (default: 0.0.0.0)
-  --port <port>          Gateway listen port (default: 1908)
-  -h, --help             Show this help
+  -d, --config-dir <dir>  Config directory (default: <program dir>/config)
+  --host <host>           Listen address (default: 0.0.0.0)
+  --port <port>           Gateway listen port (default: 1908)
+  -h, --help              Show this help
+
+All config (state, pid, log, users/) lives in the config directory next to
+the binary, so the whole directory is portable. Copy the binary to a writable
+directory - do NOT use a symlink (symlinks are resolved to the real path).
 
 Manage services via the web dashboard at http://host:port/
 `
 
 func main() {
-	log.SetFlags(0)
+	log.SetFlags(log.LstdFlags)
 	log.SetPrefix("[goprox] ")
 
 	args := os.Args[1:]
@@ -60,8 +65,30 @@ func main() {
 		args = args[1:]
 	}
 
+	// user/passwd/del take a positional username.
+	var username string
+	switch cmd {
+	case "user", "passwd", "del":
+		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+			fmt.Fprintf(os.Stderr, "error: %s requires a username\n", cmd)
+			fmt.Print(usage)
+			os.Exit(1)
+		}
+		username = args[0]
+		args = args[1:]
+		if !config.IsValidUsername(username) {
+			fmt.Fprintf(os.Stderr, "error: invalid username %q\n", username)
+			os.Exit(1)
+		}
+	}
+
 	// Parse options
-	opts := parseOptions(args)
+	opts, err := parseOptions(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Print(usage)
+		os.Exit(1)
+	}
 
 	switch cmd {
 	case "serve", "start":
@@ -74,8 +101,12 @@ func main() {
 		runStop(opts)
 	case "status":
 		runStatus(opts)
+	case "user":
+		runUserAdd(opts, username)
 	case "passwd":
-		runPasswd(opts)
+		runUserPasswd(opts, username)
+	case "del":
+		runUserDel(opts, username)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		fmt.Print(usage)
@@ -84,46 +115,54 @@ func main() {
 }
 
 type options struct {
-	statePath  string
-	configPath string
-	host       string
-	port       int
+	configDir string
+	host      string
+	port      int
 }
 
-func parseOptions(args []string) options {
+func parseOptions(args []string) (options, error) {
 	opts := options{
-		statePath: config.DefaultStatePath(),
+		configDir: config.DefaultConfigDir(),
 	}
 
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		// next returns the following argument as the option value.
+		next := func() (string, bool) {
+			if i+1 < len(args) {
+				i++
+				return args[i], true
+			}
+			return "", false
+		}
 		switch a {
-		case "-s", "--state":
-			if i+1 < len(args) {
-				opts.statePath = args[i+1]
-				i++
+		case "-d", "--config-dir":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
 			}
-		case "-c", "--config":
-			if i+1 < len(args) {
-				opts.configPath = args[i+1]
-				i++
-			}
+			opts.configDir = v
 		case "--host":
-			if i+1 < len(args) {
-				opts.host = args[i+1]
-				i++
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
 			}
+			opts.host = v
 		case "--port":
-			if i+1 < len(args) {
-				opts.port, _ = strconv.Atoi(args[i+1])
-				i++
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
 			}
+			p, err := strconv.Atoi(v)
+			if err != nil || p < 1 || p > 65535 {
+				return opts, fmt.Errorf("invalid port %q (must be 1-65535)", v)
+			}
+			opts.port = p
+		default:
+			return opts, fmt.Errorf("unknown option: %s", a)
 		}
 	}
 
-	if opts.configPath == "" {
-		opts.configPath = config.DefaultUserConfigPath()
-	}
 	if opts.host == "" {
 		opts.host = config.DefaultHost
 	}
@@ -131,19 +170,81 @@ func parseOptions(args []string) options {
 		opts.port = config.DefaultPort
 	}
 
-	return opts
+	return opts, nil
+}
+
+// ---- user management (admin CLI) ----
+
+func runUserAdd(opts options, username string) {
+	configPath := config.UserConfigPath(opts.configDir, username)
+	if _, err := os.Stat(configPath); err == nil {
+		log.Fatalf("user %s already exists (%s)", username, configPath)
+	}
+
+	if err := config.EnsureUserConfig(configPath); err != nil {
+		log.Fatalf("create config: %v", err)
+	}
+
+	password, err := promptNewPassword()
+	if err != nil {
+		// Clean up the empty config on failure.
+		os.Remove(configPath)
+		log.Fatalf("%v", err)
+	}
+	if err := config.UpdatePasswordHash(configPath, auth.HashPassword(password)); err != nil {
+		log.Fatalf("update password: %v", err)
+	}
+	fmt.Printf("[goprox] user %s created (%s)\n", username, configPath)
+}
+
+func runUserPasswd(opts options, username string) {
+	configPath := config.UserConfigPath(opts.configDir, username)
+	if _, err := os.Stat(configPath); err != nil {
+		log.Fatalf("user %s does not exist (%s)", username, configPath)
+	}
+
+	password, err := promptNewPassword()
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if err := config.UpdatePasswordHash(configPath, auth.HashPassword(password)); err != nil {
+		log.Fatalf("update password: %v", err)
+	}
+	fmt.Printf("[goprox] password updated for %s\n", username)
+}
+
+func runUserDel(opts options, username string) {
+	configPath := config.UserConfigPath(opts.configDir, username)
+	if _, err := os.Stat(configPath); err != nil {
+		log.Fatalf("user %s does not exist (%s)", username, configPath)
+	}
+	if err := os.Remove(configPath); err != nil {
+		log.Fatalf("remove config: %v", err)
+	}
+	fmt.Printf("[goprox] user %s deleted\n", username)
 }
 
 // ---- server ----
 
 func runServer(opts options) {
-	statePath := opts.statePath
+	configDir := opts.configDir
+
+	// Ensure the config dir exists and is writable before doing anything else.
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Fatalf("create config dir %s: %v", configDir, err)
+	}
+	if err := checkWritableDir(configDir); err != nil {
+		log.Fatalf("config dir %s is not writable: %v\nhint: copy the goprox binary to a writable directory (do NOT use a symlink)", configDir, err)
+	}
+
+	statePath := config.StatePath(configDir)
 
 	// Persist server config
 	config.PersistServerConfig(statePath, opts.host, opts.port)
 
 	// Check if already running
-	if pid, err := readPidFile(config.GetPidPath(statePath)); err == nil && pid > 0 {
+	pidPath := config.PidPath(configDir)
+	if pid, err := readPidFile(pidPath); err == nil && pid > 0 {
 		if processRunning(pid) {
 			log.Fatalf("goprox is already running (pid %d); stop it first: goprox stop", pid)
 		}
@@ -162,15 +263,22 @@ func runServer(opts options) {
 		state.Server.Port = opts.port
 	}
 
-	srv := server.New(state)
+	srv := server.New(state, configDir)
 
 	httpServer := &http.Server{
 		Addr:    net.JoinHostPort(state.Server.Host, strconv.Itoa(state.Server.Port)),
 		Handler: srv.Handler(),
 	}
 
-	// Write PID file
-	pidPath := config.GetPidPath(statePath)
+	// Bind the listener before writing the pidfile so that a failed bind
+	// (e.g. port already in use) aborts here instead of leaving a stale pidfile.
+	listener, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		log.Fatalf("listen on %s: %v", httpServer.Addr, err)
+	}
+
+	// Write PID file only after the listener is up (the `start` command waits
+	// for this file to consider the daemon ready).
 	writePidFile(pidPath, os.Getpid())
 	defer os.Remove(pidPath)
 
@@ -186,15 +294,20 @@ func runServer(opts options) {
 		log.Printf("received %s, shutting down", sig)
 		close(stopScan)
 		os.Remove(pidPath)
-		httpServer.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown: %v; forcing close", err)
+			httpServer.Close()
+		}
 	}()
 
 	log.Printf("listening on http://%s:%d", state.Server.Host, state.Server.Port)
-	log.Printf("state: %s", statePath)
-	log.Printf("scanning %s/*/.config/goprox/config.yaml", state.Users.HomePrefix)
+	log.Printf("config: %s", configDir)
+	log.Printf("users: %s", config.UsersDir(configDir))
 	log.Printf("%d user(s) loaded", srv.UserCount())
 
-	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
+	if err := httpServer.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
 }
@@ -202,7 +315,6 @@ func runServer(opts options) {
 // ---- daemonize ----
 
 func daemonize(opts options) {
-	// Fork and run in background
 	// Get the executable path
 	exe, err := os.Executable()
 	if err != nil {
@@ -211,8 +323,8 @@ func daemonize(opts options) {
 
 	// Build args for the child process (serve mode)
 	childArgs := []string{exe, "serve"}
-	if opts.statePath != config.DefaultStatePath() {
-		childArgs = append(childArgs, "-s", opts.statePath)
+	if opts.configDir != config.DefaultConfigDir() {
+		childArgs = append(childArgs, "--config-dir", opts.configDir)
 	}
 	if opts.host != config.DefaultHost {
 		childArgs = append(childArgs, "--host", opts.host)
@@ -222,11 +334,19 @@ func daemonize(opts options) {
 	}
 
 	// Open log file
-	logPath := config.GetLogPath(opts.statePath)
-	os.MkdirAll(filepath.Dir(logPath), 0755)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	logPath := config.LogPath(opts.configDir)
+	os.MkdirAll(filepath.Dir(logPath), 0700)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Fatalf("open log file: %v", err)
+	}
+
+	pidPath := config.PidPath(opts.configDir)
+	// Refuse to start while another instance is running.
+	if pid, err := readPidFile(pidPath); err == nil && pid > 0 {
+		if processRunning(pid) {
+			log.Fatalf("goprox is already running (pid %d); stop it first: goprox stop", pid)
+		}
 	}
 
 	// Start child process
@@ -243,25 +363,42 @@ func daemonize(opts options) {
 	}
 	logFile.Close()
 
-	// Write PID file
-	pidPath := config.GetPidPath(opts.statePath)
-	writePidFile(pidPath, process.Pid)
+	// Wait for the child to become ready (it writes its own pidfile once the
+	// listener is up) or to exit with an error. The parent must NOT write the
+	// pidfile: the child owns it, otherwise it sees itself as "already running".
+	done := make(chan error, 1)
+	go func() { _, werr := process.Wait(); done <- werr }()
 
-	displayHost := opts.host
-	if displayHost == "0.0.0.0" || displayHost == "::" {
-		displayHost = getLocalIP()
+	deadline := time.After(10 * time.Second)
+	for {
+		if pid, err := readPidFile(pidPath); err == nil && pid == process.Pid && processRunning(pid) {
+			process.Release()
+			displayHost := opts.host
+			if displayHost == "0.0.0.0" || displayHost == "::" {
+				displayHost = getLocalIP()
+			}
+			log.Printf("started (pid %d)", process.Pid)
+			log.Printf("listening on http://%s:%d", displayHost, opts.port)
+			log.Printf("log: %s", logPath)
+			return
+		}
+		select {
+		case werr := <-done:
+			log.Printf("goprox failed to start: %v (see %s)", werr, logPath)
+			os.Remove(pidPath)
+			return
+		case <-deadline:
+			log.Printf("timed out waiting for goprox to start (see %s)", logPath)
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	log.Printf("started (pid %d)", process.Pid)
-	log.Printf("listening on http://%s:%d", displayHost, opts.port)
-	log.Printf("log: %s", logPath)
-
-	process.Release()
 }
 
 // ---- stop ----
 
 func runStop(opts options) {
-	pidPath := config.GetPidPath(opts.statePath)
+	pidPath := config.PidPath(opts.configDir)
 	pid, err := readPidFile(pidPath)
 	if err != nil || pid <= 0 {
 		log.Println("not running")
@@ -300,7 +437,7 @@ func runStop(opts options) {
 // ---- status ----
 
 func runStatus(opts options) {
-	pidPath := config.GetPidPath(opts.statePath)
+	pidPath := config.PidPath(opts.configDir)
 	pid, err := readPidFile(pidPath)
 
 	if err != nil || pid <= 0 || !processRunning(pid) {
@@ -309,11 +446,11 @@ func runStatus(opts options) {
 		fmt.Printf("[goprox] running (pid %d)\n", pid)
 	}
 
-	logPath := config.GetLogPath(opts.statePath)
+	logPath := config.LogPath(opts.configDir)
 	fmt.Printf("[goprox] log: %s\n", logPath)
 
 	if pid > 0 && processRunning(pid) {
-		state, err := config.LoadState(opts.statePath)
+		state, err := config.LoadState(config.StatePath(opts.configDir))
 		if err == nil {
 			displayHost := state.Server.Host
 			if displayHost == "0.0.0.0" || displayHost == "::" {
@@ -324,35 +461,32 @@ func runStatus(opts options) {
 	}
 }
 
-// ---- passwd ----
+// ---- helpers ----
 
-func runPasswd(opts options) {
-	configPath := opts.configPath
+// passwordReader is shared across readPassword calls: a fresh bufio.Reader per
+// call would eagerly buffer all of stdin on the first read, starving the second
+// (confirmation) prompt when input comes from a pipe.
+var passwordReader = bufio.NewReader(os.Stdin)
 
-	if err := config.EnsureUserConfig(configPath); err != nil {
-		log.Fatalf("create config: %v", err)
-	}
-
+func promptNewPassword() (string, error) {
 	fmt.Print("Enter password: ")
 	password, err := readPassword()
 	if err != nil {
-		log.Fatalf("read password: %v", err)
+		return "", err
 	}
-
-	hash := auth.HashPassword(password)
-	if err := config.UpdatePasswordHash(configPath, hash); err != nil {
-		log.Fatalf("update password: %v", err)
+	fmt.Print("Confirm password: ")
+	confirm, err := readPassword()
+	if err != nil {
+		return "", err
 	}
-
-	// Check if running under shared gateway and fix permissions
-	fixSharedPermissions(configPath)
-
-	fmt.Printf("[goprox] password updated in %s\n", configPath)
+	if password == "" {
+		return "", fmt.Errorf("password cannot be empty")
+	}
+	if password != confirm {
+		return "", fmt.Errorf("passwords do not match")
+	}
+	return password, nil
 }
-
-// ---- add ----
-
-// ---- helpers ----
 
 func readPassword() (string, error) {
 	// Disable echo
@@ -361,13 +495,13 @@ func readPassword() (string, error) {
 		defer restore(0, termios)
 	}
 
-	reader := bufio.NewReader(os.Stdin)
-	password, err := reader.ReadString('\n')
+	password, err := passwordReader.ReadString('\n')
 	if err != nil {
 		return "", err
 	}
 	fmt.Println() // newline after password input
-	return strings.TrimSpace(password), nil
+	// Strip the line ending only, preserving any intentional whitespace.
+	return strings.TrimSuffix(strings.TrimSuffix(password, "\n"), "\r"), nil
 }
 
 func processRunning(pid int) bool {
@@ -388,8 +522,18 @@ func readPidFile(path string) (int, error) {
 }
 
 func writePidFile(path string, pid int) error {
-	os.MkdirAll(filepath.Dir(path), 0755)
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0644)
+	os.MkdirAll(filepath.Dir(path), 0700)
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0600)
+}
+
+func checkWritableDir(dir string) error {
+	f, err := os.CreateTemp(dir, ".goprox-write-test-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
 }
 
 func getLocalIP() string {
@@ -404,164 +548,3 @@ func getLocalIP() string {
 	}
 	return "127.0.0.1"
 }
-
-func fixSharedPermissions(configPath string) {
-	statePath := config.DefaultStatePath()
-	pidPath := config.GetPidPath(statePath)
-
-	currentUser, err := user.Current()
-	if err != nil || currentUser == nil {
-		return
-	}
-
-	// Check if running under shared gateway (daemon operator != current user)
-	isShared := false
-
-	// Method 1: check running daemon process owner
-	pid, _ := readPidFile(pidPath)
-	if pid > 0 && processRunning(pid) {
-		procOwner := getProcessOwner(pid)
-		if procOwner != "" && procOwner != currentUser.Username {
-			isShared = true
-		}
-	}
-
-	// Method 2: check state file owner (daemon not running)
-	if !isShared {
-		if info, err := os.Stat(statePath); err == nil {
-			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-				stateOwner := fmt.Sprintf("%d", stat.Uid)
-				if stateOwner != currentUser.Uid {
-					isShared = true
-				}
-			}
-		}
-	}
-
-	if !isShared {
-		fmt.Println("[goprox] gateway operator is current user; home/config permissions unchanged")
-		return
-	}
-
-	// Resolve real paths (防符号链接绕过)
-	configReal, err := filepath.EvalSymlinks(configPath)
-	if err != nil {
-		// Config file might not exist yet; use resolved path
-		configReal = configPath
-		if p, err := filepath.Abs(configPath); err == nil {
-			configReal = p
-		}
-	}
-
-	homeReal, err := filepath.EvalSymlinks(currentUser.HomeDir)
-	if err != nil {
-		fmt.Println("[goprox] cannot resolve home directory; skipping permissions")
-		return
-	}
-
-	// 如果 config 不在当前用户的 home 内，跳过权限修复
-	if !isUnderDir(configReal, homeReal) {
-		fmt.Printf("[goprox] config is outside home (%s); shared-gateway permissions not modified\n", configReal)
-		return
-	}
-
-	// Build target list: home → .config → goprox → config.yaml
-	seen := make(map[string]bool)
-	var targets []struct {
-		path     string
-		wantMode os.FileMode
-	}
-
-	addTarget := func(p string, mode os.FileMode) {
-		if seen[p] {
-			return
-		}
-		seen[p] = true
-		targets = append(targets, struct {
-			path     string
-			wantMode os.FileMode
-		}{p, mode})
-	}
-
-	addTarget(homeReal, 0711)
-
-	configDir := filepath.Dir(configReal)          // ~/.config/goprox
-	dotConfig := filepath.Dir(configDir)           // ~/.config
-
-	// 只修复确实在 home 下的目录
-	if isUnderDir(dotConfig, homeReal) && dotConfig != homeReal {
-		if info, err := os.Stat(dotConfig); err == nil && info.IsDir() {
-			addTarget(dotConfig, 0711)
-		}
-	}
-	if isUnderDir(configDir, homeReal) && configDir != homeReal {
-		if info, err := os.Stat(configDir); err == nil && info.IsDir() {
-			addTarget(configDir, 0711)
-		}
-	}
-
-	addTarget(configReal, 0666)
-
-	changed := false
-	var permLines []string
-	for _, t := range targets {
-		info, err := os.Stat(t.path)
-		if err != nil {
-			continue
-		}
-		currentMode := info.Mode().Perm()
-		needFix := false
-		if info.IsDir() {
-			// others 没有 --x 权限 → 需要修复
-			needFix = currentMode&0001 != 0001
-		} else {
-			needFix = currentMode != 0666
-		}
-		if needFix {
-			os.Chmod(t.path, t.wantMode)
-			permLines = append(permLines, fmt.Sprintf("  %s -> %04o", t.path, t.wantMode))
-			changed = true
-		}
-	}
-
-	if changed {
-		fmt.Println("[goprox] updated shared-gateway permissions:")
-		for _, line := range permLines {
-			fmt.Println(line)
-		}
-	} else {
-		fmt.Println("[goprox] home/config permissions already sufficient for shared gateway")
-	}
-}
-
-// isUnderDir checks if child path is under (or equal to) parent.
-func isUnderDir(child, parent string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel == "." || !strings.HasPrefix(rel, "..")
-}
-
-func getProcessOwner(pid int) string {
-	// Read /proc/<pid>/status to find Uid
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "Uid:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				uid := fields[1]
-				if u, err := user.LookupId(uid); err == nil {
-					return u.Username
-				}
-				return uid
-			}
-		}
-	}
-	return ""
-}
-
-

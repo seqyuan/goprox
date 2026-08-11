@@ -68,12 +68,12 @@ func esc(s string) string {
 	return html.EscapeString(s)
 }
 
-func LoginPage(errorMsg string) string {
+func LoginPage(errorMsg, next string) string {
 	errBlock := ""
 	if errorMsg != "" {
 		errBlock = fmt.Sprintf(`<p class="error">%s</p>`, esc(errorMsg))
 	}
-	body := fmt.Sprintf(loginTpl, errBlock)
+	body := fmt.Sprintf(loginTpl, errBlock, esc(next))
 	return PageShell("登录", body)
 }
 
