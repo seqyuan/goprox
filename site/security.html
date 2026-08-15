@@ -16,6 +16,7 @@
     <a href="dsh-demo.html">dsh 示例</a>
     <a href="backend-path.html">BackendPath</a>
     <a href="security.html" class="active">安全</a>
+    <a href="tunnel.html">隧道对接</a>
     <a href="changelog.html">更新日志</a>
   </nav>
   <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
@@ -60,9 +61,12 @@
 
   <div class="card">
     <h2>公网部署：反向代理终结 TLS</h2>
-    <p>GoProx 本身只监听 HTTP，暴露到公网前<strong>必须在前面放一个反向代理做 TLS 终结</strong>，
-      否则密码（以及动态码）会明文传输。推荐 <strong>Caddy</strong>（两行配置、Let's Encrypt 证书自动申请与续期），
-      或用 nginx。</p>
+    <p>把 GoProx 暴露到公网前，必须有 HTTPS：要么用 v0.4.0 的<strong>原生 TLS</strong>
+      （<code>--tls-cert/--tls-key</code>，或 <code>--tls-selfsigned</code> 自签），
+      要么在网关前放一个反向代理终结 TLS（本节）。需要先给 GoProx 提供 TLS 时用原生 TLS；
+      已有 Caddy/nginx 时用本节的反代方案。Cloudflare 隧道（cloudflared）对接见
+      <a href="tunnel.html">隧道对接</a>。
+      无论哪种方式，公网上的密码（以及动态码）都必须走 TLS 加密传输。</p>
     <h3>1. 让 GoProx 只监听本机回环</h3>
     <pre>./goprox serve --host 127.0.0.1 --port 1908 \
   --trusted-proxy 127.0.0.1/32</pre>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudflare 隧道对接 — GoProx</title>
+  <meta name="description" content="cloudflared 隧道把公网域名转发到本机 GoProx(HTTPS)的完整对接指南:自签证书校验失败的原因、Origin CA 的 hostname 坑、本地 CA 正解与验证">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html">安装</a>
+    <a href="services.html">服务与示例</a>
+    <a href="dsh-demo.html">dsh 示例</a>
+    <a href="backend-path.html">BackendPath</a>
+    <a href="security.html">安全</a>
+    <a href="tunnel.html" class="active">隧道对接</a>
+    <a href="changelog.html">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">Cloudflare 隧道（cloudflared）对接</h1>
+  <p class="page-sub">把公网域名通过 Cloudflare 隧道转发到本机 GoProx 的完整指南。
+    核心结论：GoProx 的 HTTPS（原生 TLS）与 cloudflared 的严格证书校验如何配合，以及常见的两个坑。</p>
+
+  <div class="card">
+    <h2>场景与架构</h2>
+    <pre>公网用户
+   ↓ https://yuan.example.com（Cloudflare 边缘，正规 TLS，自动证书）
+   ↓ Cloudflare 隧道（cloudflared，QUIC 回连）
+   ↓ 本机回环 https://localhost:7658   ← 这一步要过 cloudflared 的证书校验
+GoProx（原生 TLS）</pre>
+    <p>cloudflared 的 ingress 规则（云端配置或本地 <code>config.yml</code>）：</p>
+    <pre>- hostname: yuan.example.com
+  service: https://localhost:7658
+  originRequest: {}</pre>
+    <p>其他端口「照抄就能通」是因为那些是 <strong>HTTP 服务</strong>（<code>service: http://localhost:xxxx</code>），
+      不涉及 TLS 校验；GoProx 一旦开 HTTPS，就必须处理证书验证这一环。</p>
+  </div>
+
+  <div class="card">
+    <h2>坑 1：自签证书必然被拒</h2>
+    <p>cloudflared 连接 origin 时<strong>默认严格校验 TLS 证书</strong>（系统信任库 + hostname 匹配）。
+      <code>goprox serve --tls-selfsigned</code> 生成的自签证书没有可信根，握手直接失败：</p>
+    <pre>ERR Unable to reach the origin service: tls: failed to verify certificate:
+    x509: certificate signed by unknown authority</pre>
+    <p>症状就是：隧道域名打不开，<code>journalctl -u cloudflared</code> 里刷上面这条错误。
+      这不是延时生效的问题，是证书信任问题。</p>
+    <div class="warn"><strong>先试的「快速开关」noTLSVerify 在面板 UI 里通常找不到</strong>——
+      它是 YAML 级配置（<code>ingress 规则里加 noTLSVerify: true</code>），
+      Cloudflare Zero Trust 面板的 Public Hostname 表单没有这个选项。</div>
+  </div>
+
+  <div class="card">
+    <h2>坑 2：Origin CA 方案的 hostname 不匹配</h2>
+    <p>「去 Cloudflare 签一张 Origin CA 证书」听起来正规，但有一个隐藏的硬伤：
+      cloudflared 连接 <code>https://localhost:7658</code> 时，会用 URL 的主机名
+      <strong><code>localhost</code></strong> 去验证证书 SAN，而 Origin CA 面板只能签<strong>公网域名</strong>
+      （UI 拒绝单标签主机名）。两者必然不匹配：</p>
+    <pre>SSL: no alternative certificate subject name matches target hostname 'localhost'</pre>
+    <p>绕开它需要在面板里额外配置 <code>originServerName: &lt;域名&gt;</code>（同样是不容易找到的高级选项）。
+      结论：Origin CA 只适合「cloudflared 直连域名 origin」的场景，不适合「直连 localhost」。</p>
+  </div>
+
+  <div class="card">
+    <h2>正解：本地 CA + localhost SAN + 系统信任库</h2>
+    <p>自己建一个本地 CA，签发一张 SAN 覆盖 <code>localhost</code>（以及局域网 IP、主机名）的服务器证书，
+      把 CA 装进本机系统信任库。cloudflared 用系统库验证 → 信任 ✓，SAN 含 localhost → hostname 匹配 ✓，
+      <strong>面板零改动</strong>。附带的好处：局域网内直接访问 <code>https://192.168.0.106:7658</code>
+      的浏览器（读系统信任库）也不再有警告。</p>
+    <h3>① 生成本地 CA 与服务器证书</h3>
+    <pre>mkdir -p /opt/goprox/config/tls/ca && cd /opt/goprox/config/tls/ca
+
+# 本地 CA（20 年）
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+  -keyout ca.key -out ca.pem -days 7300 -nodes -subj "/CN=goprox-local-ca/O=goprox"
+chmod 600 ca.key
+
+# 服务器证书（SAN 必须含 localhost；局域网 IP/主机名按需补充）
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+  -keyout server.key -out server.csr -nodes -subj "/CN=localhost/O=goprox"
+cat > san.cnf &lt;&lt; 'EOF'
+subjectAltName=DNS:localhost,DNS:node01,IP:127.0.0.1,IP:0:0:0:0:0:0:0:1,IP:192.168.0.106
+EOF
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out server.pem -days 3650 -extfile san.cnf
+chmod 600 server.key
+
+# 自检：证书链合法 + SAN 齐全
+openssl verify -CAfile ca.pem server.pem</pre>
+
+    <h3>② 安装 CA 到系统信任库（cloudflared 用系统库）</h3>
+    <pre>sudo cp /opt/goprox/config/tls/ca/ca.pem /usr/local/share/ca-certificates/goprox-local-ca.crt
+sudo update-ca-certificates   # 输出应包含 Adding debian:goprox-local-ca.pem ... done</pre>
+
+    <h3>③ 让 GoProx 使用新证书</h3>
+    <pre># 方式一：启动参数
+./goprox serve --port 7658 --tls-cert /opt/goprox/config/tls/ca/server.pem \
+  --tls-key /opt/goprox/config/tls/ca/server.key
+
+# 方式二：写入 state.yaml 后直接 ./goprox serve（TLS 配置会持久化）
+#   server:
+#     tls_cert: /opt/goprox/config/tls/ca/server.pem
+#     tls_key:  /opt/goprox/config/tls/ca/server.key</pre>
+
+    <h3>④ 重启 cloudflared（关键一步，容易漏）</h3>
+    <div class="warn"><strong>cloudflared 是 Go 写的，系统根证书池在进程启动时加载并缓存。</strong>
+      它可能已经连续运行数周——即使 CA 已装进系统库，它仍用缓存里的旧根池校验，继续报
+      <code>certificate signed by unknown authority</code>。<strong>必须重启 cloudflared</strong>：</div>
+    <pre>sudo systemctl restart cloudflared</pre>
+
+    <h3>⑤ 验证</h3>
+    <pre># 本机严格验证（模拟 cloudflared 的校验方式，读系统信任库）
+curl -s -o /dev/null -w "%{http_code}\n" https://localhost:7658/    # 200
+curl -s -o /dev/null -w "%{http_code}\n" https://yuan.example.com/  # 200，走完整公网链路
+# 观察日志里不再出现证书错误
+journalctl -u cloudflared --no-pager | grep -i "unknown authority" | tail   # 空</pre>
+  </div>
+
+  <div class="card">
+    <h2>其他设备信任本机 CA（可选）</h2>
+    <p>局域网其他设备直接访问 <code>https://192.168.0.106:7658</code> 时仍会提示不受信任
+      （CA 只装在这台服务器上）。让它们免警告，把 <code>ca.pem</code> 拷过去导入系统/浏览器信任库：
+      Linux <code>cp ca.pem /usr/local/share/ca-certificates/ &amp;&amp; sudo update-ca-certificates</code>；
+      Windows 双击导入「受信任的根证书颁发机构」；macOS 钥匙串访问导入并设为始终信任。
+      不导入也能用，只是每次访问要点一次「继续」。</p>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>

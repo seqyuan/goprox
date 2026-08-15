@@ -72,6 +72,12 @@ cd /opt/goprox
 暴露到公网前，请先在网关前放一个反向代理终结 TLS（Caddy / nginx），
 并让 GoProx 只监听回环 + 设置 `--trusted-proxy`。详见 **[docs/reverse-proxy-tls.md](docs/reverse-proxy-tls.md)**。
 
+如果走 **Cloudflare 隧道（cloudflared）** 把公网域名转发到本机 HTTPS 端口，
+注意 cloudflared 会严格校验 origin 证书（自签证书会被拒、Origin CA 存在
+hostname 不匹配问题）——正解是本地 CA + `localhost` SAN + 系统信任库 +
+重启 cloudflared（Go 进程缓存根证书池），完整步骤见
+**[Cloudflare 隧道对接](https://seqyuan.github.io/goprox/tunnel.html)**。
+
 ## 原生 TLS（局域网 HTTPS）
 
 局域网部署不想在网关前再挂一层反代？GoProx 可以直接终结 TLS：
