@@ -38,6 +38,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
+	// CSRF guard: state-changing requests from browsers must carry an Origin
+	// matching the gateway's own host. Browsers always send Origin on
+	// POST/PUT/DELETE, so cross-site (and cross-host) pages are rejected.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && !auth.SameOriginRequest(r) {
+		writeJSON(w, 403, map[string]string{"error": "cross-origin request rejected"})
+		return true
+	}
+
 	username := h.requireSession(w, r)
 	if username == "" {
 		return true
@@ -101,6 +109,18 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		return
 	}
 
+	// Reject empty names and oversized fields so a stray request cannot
+	// create a nonsense "service" card or bloat the dashboard page.
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeJSON(w, 400, map[string]string{"error": "name is required"})
+		return
+	}
+	if len(name) > 200 || len(body.Description) > 500 || len(body.Category) > 100 {
+		writeJSON(w, 400, map[string]string{"error": "field too long (name ≤ 200, description ≤ 500, category ≤ 100 chars)"})
+		return
+	}
+
 	configPath, err := h.getConfigPath(username)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": err.Error()})
@@ -118,8 +138,8 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 	}
 
 	svc := config.ServiceConfig{
-		ID:          config.SlugifyName(body.Name),
-		Name:        body.Name,
+		ID:          config.SlugifyName(name),
+		Name:        name,
 		Description: body.Description,
 		Host:        body.Host,
 		Port:        body.Port,
@@ -208,6 +228,19 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 	if err := parseBody(r, &body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
+	}
+
+	// A provided name must be non-empty and bounded (mirrors handleAddService).
+	if body.Name != nil {
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
+			writeJSON(w, 400, map[string]string{"error": "name cannot be empty"})
+			return
+		}
+		if len(name) > 200 || (body.Description != nil && len(*body.Description) > 500) || (body.Category != nil && len(*body.Category) > 100) {
+			writeJSON(w, 400, map[string]string{"error": "field too long (name ≤ 200, description ≤ 500, category ≤ 100 chars)"})
+			return
+		}
 	}
 
 	configPath, err := h.getConfigPath(username)

@@ -2,9 +2,11 @@ package web
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/seqyuan/goprox/internal/config"
 )
@@ -79,8 +81,11 @@ func LoginPage(errorMsg, next string) string {
 
 func DashboardPage(username string, services []config.ServiceConfig, writable bool) string {
 	grouped := config.GroupServicesByCategory(services)
-	bootJSON := fmt.Sprintf(`{"username":"%s","services":%s,"writable":%t}`,
-		esc(username), servicesToJSON(services), writable)
+	bootJSON := marshalScriptJSON(dashboardBoot{
+		Username: username,
+		Services: services,
+		Writable: writable,
+	})
 
 	categoriesHTML := renderCategories(grouped, username, writable)
 	if categoriesHTML == "" {
@@ -115,26 +120,30 @@ func FaviconSVG() string {
 	return faviconSVG
 }
 
-func servicesToJSON(services []config.ServiceConfig) string {
-	if len(services) == 0 {
-		return "[]"
+// dashboardBoot is the JSON object embedded as window.__GOPROX_BOOT__.
+type dashboardBoot struct {
+	Username string                 `json:"username"`
+	Services []config.ServiceConfig `json:"services"`
+	Writable bool                   `json:"writable"`
+}
+
+// marshalScriptJSON serializes v as JSON that is safe to inline inside a
+// <script> element. json.Marshal escapes quotes/backslashes/control chars
+// correctly, and the extra escaping of "<", ">", "&" and U+2028/U+2029
+// prevents untrusted strings (service names, descriptions, categories) from
+// closing the script tag or breaking older JS parsers.
+func marshalScriptJSON(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
 	}
-	parts := make([]string, 0, len(services))
-	for _, s := range services {
-		desc := "null"
-		if s.Description != "" {
-			desc = fmt.Sprintf("%q", s.Description)
-		}
-		cat := "null"
-		if s.Category != "" {
-			cat = fmt.Sprintf("%q", s.Category)
-		}
-		parts = append(parts, fmt.Sprintf(
-			`{"id":%q,"name":%q,"description":%s,"host":%q,"port":%d,"path":%q,"websocket":%t,"category":%s,"order":%d}`,
-			s.ID, s.Name, desc, s.Host, s.Port, s.Path, s.WebSocket, cat, s.Order,
-		))
-	}
-	return "[" + strings.Join(parts, ",") + "]"
+	s := string(b)
+	s = strings.ReplaceAll(s, "<", `\u003c`)
+	s = strings.ReplaceAll(s, ">", `\u003e`)
+	s = strings.ReplaceAll(s, "&", `\u0026`)
+	s = strings.ReplaceAll(s, "\u2028", `\u2028`)
+	s = strings.ReplaceAll(s, "\u2029", `\u2029`)
+	return s
 }
 
 func renderCategories(groups []config.GroupedServices, username string, writable bool) string {
@@ -179,14 +188,19 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
 	}
 
 	firstChar := "?"
-	if len(s.Name) > 0 {
-		firstChar = strings.ToUpper(s.Name[:1])
+	// Decode the first rune, not the first byte: slicing s.Name[:1] on a
+	// multi-byte name (Chinese, emoji) would yield invalid UTF-8.
+	if r, size := utf8.DecodeRuneInString(s.Name); size > 0 && r != utf8.RuneError {
+		firstChar = strings.ToUpper(string(r))
 	}
+
+	faviconHTML := renderFavicon(username, s.Path, firstChar)
+
 	return fmt.Sprintf(`
   <div class="service-card" data-id="%s" data-category="%s">
     %s
     <a class="card-link" href="%s" target="_blank" rel="noopener noreferrer">
-      <div class="card-icon"><img src="/proxy/%s%s/favicon.ico" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" alt=""><span class="card-letter" data-letter="%s">%s</span></div>
+      <div class="card-icon">%s</div>
       <div class="card-body">
         <h2>%s</h2>
         %s
@@ -201,13 +215,35 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
 		esc(ternary(s.Category != "", s.Category, "未分类")),
 		toolbar,
 		esc(proxyURL),
-		esc(username), esc(s.Path),
-		esc(firstChar), firstChar,
+		faviconHTML,
 		esc(s.Name),
 		desc,
 		esc(s.Host), s.Port,
 		wsBadge,
 	)
+}
+
+// faviconOnError advances through the candidate favicon URLs (data-favs,
+// space-separated) until one loads; when exhausted it hides the <img> and
+// reveals the first-letter block (its next sibling).
+const faviconOnError = "var e=this,l=e.getAttribute('data-favs').split(' '),i=+(e.getAttribute('data-fav-idx')||0)+1;if(i<l.length){e.setAttribute('data-fav-idx',i);e.src=l[i];}else{e.style.display='none';e.nextElementSibling.style.display='flex';}"
+
+// renderFavicon builds the card icon: it tries the most common favicon
+// locations in turn (favicon.ico, favicon.svg, favicon.png, and the
+// -32x32/-16x16 PNG variants used by static-site generators) before falling
+// back to the colored first-letter block. This covers modern apps that serve
+// /favicon.svg or sized PNGs instead of the legacy .ico.
+func renderFavicon(username, servicePath, firstChar string) string {
+	base := fmt.Sprintf("/proxy/%s%s", username, servicePath)
+	favs := []string{
+		base + "/favicon.ico",
+		base + "/favicon.svg",
+		base + "/favicon.png",
+		base + "/favicon-32x32.png",
+		base + "/favicon-16x16.png",
+	}
+	return fmt.Sprintf(`<img src="%s" data-favs="%s" data-fav-idx="0" onerror="%s" alt=""><span class="card-letter" data-letter="%s">%s</span>`,
+		esc(favs[0]), esc(strings.Join(favs, " ")), faviconOnError, esc(firstChar), firstChar)
 }
 
 func ternary(cond bool, a, b string) string {

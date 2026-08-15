@@ -56,6 +56,8 @@
     bindInteractions();
   }
 
+  var FAVICON_ONERR = "var e=this,l=e.getAttribute('data-favs').split(' '),i=+(e.getAttribute('data-fav-idx')||0)+1;if(i<l.length){e.setAttribute('data-fav-idx',i);e.src=l[i];}else{e.style.display='none';e.nextElementSibling.style.display='flex';}";
+
   function renderCard(s) {
     var proxyUrl = "/proxy/" + encodeURIComponent(boot.username) + s.path + "/";
     var desc = s.description ? '<p class="card-desc">' + esc(s.description) + '</p>' : '';
@@ -63,12 +65,15 @@
     var toolbar = state.writable
       ? '<div class="card-toolbar"><span class="drag-handle" draggable="true" data-drag-handle="1" title="拖动排序">⋮⋮</span><div class="card-actions"><button type="button" class="card-edit" data-edit-id="' + esc(s.id) + '" title="编辑">✎</button><button type="button" class="card-delete" data-delete-id="' + esc(s.id) + '" title="删除">×</button></div></div>'
       : '';
-    var thumbSrc = '/proxy/' + encodeURIComponent(boot.username) + s.path + '/favicon.ico';
-    var fl = (s.name || '?').charAt(0).toUpperCase();
+    var thumbBase = '/proxy/' + encodeURIComponent(boot.username) + s.path;
+    var thumbFavs = [thumbBase + '/favicon.ico', thumbBase + '/favicon.svg', thumbBase + '/favicon.png', thumbBase + '/favicon-32x32.png', thumbBase + '/favicon-16x16.png'];
+    var cp = (s.name || '?').codePointAt(0);
+    var fl = cp ? String.fromCodePoint(cp).toUpperCase() : '?';
+    var favIcon = '<img src="' + esc(thumbFavs[0]) + '" data-favs="' + esc(thumbFavs.join(' ')) + '" data-fav-idx="0" onerror="' + FAVICON_ONERR + '" alt=""><span class="card-letter" data-letter="' + esc(fl) + '">' + esc(fl) + '</span>';
     return '<div class="service-card" data-id="' + esc(s.id) + '" data-category="' + esc(s.category || "未分类") + '">' +
       toolbar +
       '<a class="card-link" href="' + esc(proxyUrl) + '" target="_blank" rel="noopener noreferrer">' +
-      '<div class="card-icon"><img src="' + thumbSrc + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'" alt=""><span class="card-letter" data-letter="' + esc(fl) + '">' + esc(fl) + '</span></div>' +
+      '<div class="card-icon">' + favIcon + '</div>' +
       '<div class="card-body"><h2>' + esc(s.name) + '</h2>' +
       desc + '<div class="card-meta"><span class="endpoint">' + esc(s.host) + ':' + s.port + '</span>' + ws + '</div></div></a></div>';
   }

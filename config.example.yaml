@@ -1,5 +1,15 @@
+# GoProx 用户配置示例（仅供参考，结构参考）
+#
+# 实际运行时配置由程序自动生成在 <程序目录>/config/ 下，无需手动创建本文件：
+#   - 用户配置：<程序目录>/config/users/<用户名>.yaml（goprox user <name> 创建）
+#   - 网关状态：<程序目录>/config/state.yaml（首次 serve 自动生成）
+#
+# 下面展示单个用户配置文件支持的全部字段。
+
 auth:
-  password_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+  # bcrypt 哈希（goprox user / goprox passwd 生成，形如 $2a$10$...）。
+  # 旧版 64 位 hex SHA-256 哈希仍可登录（自动兼容）。
+  password_hash: "$2a$10$YVpm1R6puQFltjmrKziLsujVtAJDJIynTC54yESGslrkmyP5ORBTO"
 
 services:
   - id: jupyter
@@ -7,7 +17,8 @@ services:
     description: "交互式笔记本"
     host: "127.0.0.1"
     port: 8888
-    path: "/jupyter"
-    websocket: true
+    path: "/jupyter"                # 前端访问路径（只允许 A-Z a-z 0-9 . _ ~ - 与 /）
+    websocket: true                 # 是否允许 WebSocket 升级
     category: "开发工具"
     order: 0
+    # backend_path: "/app/index.html"  # 可选：后端实际监听路径（含扩展名时子资源解析到其目录）

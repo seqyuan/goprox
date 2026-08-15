@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -100,6 +102,36 @@ func NormalizePath(p string) string {
 	return p
 }
 
+// pathSegmentRe matches a single safe URL path segment. Service paths become
+// part of proxy URLs, injected <base href> tags, and route-cookie values, so
+// anything outside this set (quotes, <>, ;, spaces, ?#) would corrupt pages,
+// cookies, or routing.
+var pathSegmentRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+
+// ValidatePath checks a normalized path for characters safe to use in URLs,
+// <base href> injection, and cookie values. Empty string is valid (means
+// "auto-generate"). "/" is valid (root). Returns an error otherwise.
+func ValidatePath(p string) error {
+	if p == "" || p == "/" {
+		return nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("path must start with /")
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" {
+			return fmt.Errorf("path cannot contain empty segments (double slash)")
+		}
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("path cannot contain %q segments", seg)
+		}
+		if !pathSegmentRe.MatchString(seg) {
+			return fmt.Errorf("path segment %q contains invalid characters (allowed: A-Z a-z 0-9 . _ ~ -)", seg)
+		}
+	}
+	return nil
+}
+
 func normalizePath(p string) string {
 	return NormalizePath(p)
 }
@@ -133,9 +165,13 @@ func EnsureUserConfig(path string) error {
 	}
 	os.Chmod(path, 0600)
 	fmt.Printf("[goprox] created user config: %s\n", path)
-	fmt.Printf("[goprox] run \"goprox passwd %s\" to set the login password\n", strings.TrimSuffix(filepath.Base(path), ".yaml"))
 	return nil
 }
+
+// warnedInvalidPath remembers (configPath, serviceID) pairs whose service was
+// skipped for an invalid path, so registry scans (every 10s) don't log the
+// same warning repeatedly. The entries are tiny and rare.
+var warnedInvalidPath sync.Map
 
 // LoadUserConfig loads a user config from a path.
 func LoadUserConfig(path string) (*UserConfig, error) {
@@ -163,12 +199,24 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		cfg.Services = []ServiceConfig{}
 	}
 
-	// Normalize service paths
-	for i := range cfg.Services {
+	// Normalize service paths. Services with characters that would break
+	// proxied pages (<base> injection), route cookies, or routing are skipped
+	// and reported once so the operator can fix the config.
+	for i := 0; i < len(cfg.Services); {
 		cfg.Services[i].Path = normalizePath(cfg.Services[i].Path)
+		if err := ValidatePath(cfg.Services[i].Path); err != nil {
+			key := path + "\x00" + cfg.Services[i].ID
+			if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+				log.Printf("[goprox] skip service %q of %s: invalid path %q: %v",
+					cfg.Services[i].ID, path, cfg.Services[i].Path, err)
+			}
+			cfg.Services = append(cfg.Services[:i], cfg.Services[i+1:]...)
+			continue
+		}
 		if cfg.Services[i].Host == "" {
 			cfg.Services[i].Host = "127.0.0.1"
 		}
+		i++
 	}
 
 	return &cfg, nil
@@ -265,12 +313,16 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 			svc.ID = fmt.Sprintf("%s-%d", baseID, n)
 		}
 
-		// Auto-generate a default path from the unique ID; a custom path must
-		// not collide with an existing one.
+		// Auto-generate a default path from the unique ID (slugified, always
+		// safe); a custom path must be valid and not collide with an existing
+		// one.
 		if svc.Path == "" {
 			svc.Path = normalizePath("/" + svc.ID)
 		} else {
 			svc.Path = normalizePath(svc.Path)
+			if err := ValidatePath(svc.Path); err != nil {
+				return fmt.Errorf("invalid service path: %w", err)
+			}
 			if serviceWithPath(cfg.Services, svc.Path) {
 				return fmt.Errorf("service path %s already in use", svc.Path)
 			}
@@ -388,6 +440,9 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 				}
 				if update.Path != nil && *update.Path != "" {
 					newPath := NormalizePath(*update.Path)
+					if err := ValidatePath(newPath); err != nil {
+						return fmt.Errorf("invalid service path: %w", err)
+					}
 					for j, other := range cfg.Services {
 						if j != i && other.Path == newPath {
 							return fmt.Errorf("service path %s already in use", newPath)

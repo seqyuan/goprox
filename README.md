@@ -71,6 +71,8 @@ Options:
 ```
 
 `user` / `passwd` / `del` 需要与网关相同的目录写权限（root 启动的网关，管理命令也用 root 执行）。
+> 这三个命令的用户名需写在选项**之前**：`goprox user alice -d /opt/goprox/config`，
+> 不能写成 `goprox user -d ... alice`。
 
 ## 目录结构
 
@@ -78,7 +80,7 @@ Options:
 /opt/goprox/
 ├── goprox                  # 二进制
 └── config/                 # 0700，网关属主
-    ├── state.yaml          # 网关状态（端口、session_secret）
+    ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、session_secret）
     ├── daemon.pid          # 后台运行时存在
     ├── goprox.log          # 后台运行日志（goprox start 时）
     └── users/              # 每个用户一个独立配置文件
@@ -94,7 +96,7 @@ Options:
 
 ```yaml
 auth:
-  password_hash: "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
+  password_hash: "$2a$10$YVpm1R6puQFltjmrKziLsujVtAJDJIynTC54yESGslrkmyP5ORBTO"  # bcrypt（goprox user/passwd 生成）
 services:
   - id: jupyter
     name: "Jupyter Lab"
@@ -105,7 +107,11 @@ services:
     websocket: true
     category: "开发工具"
     order: 0
+    # backend_path: "/app/index.html"  # 可选：后端实际监听路径（见下方 BackendPath 说明）
 ```
+
+> `password_hash` 为新版 `goprox user` / `goprox passwd` 生成的 **bcrypt** 哈希（`$2a$10$...`，示例值是口令 `change-me`）。
+> 旧版遗留的 SHA-256 哈希兼容细节见下方「密码存储」。
 
 ### 网关状态 (`config/state.yaml`)
 
@@ -133,15 +139,69 @@ auth:
 密码使用 **bcrypt** 哈希（`goprox user` / `goprox passwd` 生成）。旧版本遗留的
 SHA-256 哈希仍可正常登录（自动兼容），建议在方便时用 `goprox passwd` 重置一遍。
 
+### 管理 API 的 CSRF 防护
+
+管理 API（增删改服务、调整布局）和登录接口会对浏览器请求校验 `Origin` 头：
+跨站页面（钓鱼网站、恶意网页）发起的请求会被拒绝（403）。非浏览器客户端
+（curl、脚本）不带 `Origin`，不受影响。
+
+> **残余风险说明**：通过网关代理的后端服务与网关**同源**（同一主机/端口），
+> 因此任何被代理页面中的脚本都可以像用户本人一样调用管理 API（浏览器自动携带
+> 会话 cookie，且 Origin 天然同源）。请勿在网关后面代理不可信、可执行任意脚本的
+> 应用；如需严格隔离，请把管理界面部署在独立的主机/端口（独立 origin）。
+> 同理，登录成功后请勿在不可信服务页面中保持登录状态。
+
+### 保留路径（命名空间冲突）
+
+网关自身占用以下固定路径，**不会**转发给任何后端服务：
+
+| 路径 | 用途 |
+|---|---|
+| `/login` | 网关登录页 / 登录提交 |
+| `/logout` | 退出登录 |
+| `/favicon.ico` | 网关自身图标 |
+| `/api/services`、`/api/services/*` | 卡片增删改、布局调整的 REST API |
+| `/proxy/*` | 服务代理前缀 |
+
+如果某个后端应用也使用这些**绝对路径**（例如后端自己也有 `/login` 页面、或 `/api/services` 接口），浏览器会命中网关而非后端。此时应让后端改用不冲突的路径，或为其配置 base_url/basePath 使链接落在 `/proxy/<用户>/<服务路径>/` 之下。
+
 ## WebSocket 代理
 
-Jupyter、RStudio 等需要 WebSocket 的服务，添加时必须**勾选 WebSocket**，或设置 `websocket: true`（网页添加时默认开启；API 未提供该字段时也默认开启）。
+Jupyter、RStudio 等需要 WebSocket 的服务，请保持卡片的 **WebSocket 开关开启**（网页添加时默认勾选；API 未提供该字段时也默认开启），或设置 `websocket: true`。
 
-关闭此选项后，WebSocket 升级请求会被拒绝（返回 403）。
+关闭此选项后，WebSocket 升级请求会被拒绝（返回 403），普通 HTTP 不受影响。
 
 ## 后端服务配置指南
 
-代理能正确转发 HTTP 请求，但后端服务生成的页面链接默认是绝对路径（如 `/lab`），需要配置服务的 `base_url` 使其与代理前缀一致。
+GoProx 会自动向后端返回的 HTML 页面注入 `<base href="/proxy/<用户>/<服务路径>/">` 标签，
+因此**未配置 base_url 的应用通常也能正常加载相对路径资源**（图片、JS、CSS）。
+但如果后端生成的是**绝对路径**链接（如 `/lab`、`/api/...`），仍需配置服务的 base_url
+使其与代理前缀一致，否则这类链接会落到网关根路径上。
+
+> **绝对路径的兜底转发**：后端页面里的绝对路径（如 `/_next/static/...`、`/favicon.svg`、
+> `/api/...`）会被浏览器解析到网关根路径；GoProx 会用「最近访问的服务」cookie 把这些
+> 请求转发回对应后端，因此**初次加载和直接访问资源通常可用**。但该机制依赖会话与
+> cookie，且在多服务切换、无 `Referer` 的请求等场景下只能按「最近访问的服务」猜测。
+> 对于重度依赖绝对路径的单页应用，推荐配置 basePath/base_url 与代理前缀一致以获得
+> 稳定行为。
+
+### 单页应用（SPA / Next.js）
+
+Next.js 等 SPA 会生成大量绝对路径（`/_next/static/...`、`/favicon.svg`、`/api/...`、
+`/workspace` 等），未配置 `basePath` 时：
+
+- 服务端重定向（`Location`）会被 GoProx 自动改写回代理前缀内，登录/跳转流程可用；
+- 静态资源与 API 请求靠「最近访问的服务」cookie 兜底转发，首次访问与直链可用；
+- 客户端路由（`<Link>` / `router.push`）基于浏览器当前路径，可能不受 `<base>` 影响，
+  建议为后端配置与代理前缀一致的 `basePath`（Next.js）或 base_url（其他框架）。
+
+```js
+// next.config.js —— 仅当该后端固定由同一用户、同一 path 代理时可这样配置
+module.exports = { basePath: '/proxy/<用户>/<服务路径>' };
+```
+
+> 多用户网关下每个用户的代理前缀不同，无法写死一个 `basePath`；此时优先依赖 GoProx
+> 的兜底转发，并避免多个服务同时使用裸绝对路径资源的重负载页面。
 
 ### Jupyter Lab
 
@@ -191,7 +251,25 @@ code-server \
   --base-path '/proxy/<用户>/code/'
 ```
 
+> `--auth none` 表示不再单独认证，访问安全完全依赖 GoProx 网关层登录，请确保网关只监听可信网络。
+
 > **注意**：将 `<用户>` 替换为 Linux 用户名，`<服务路径>` 替换为卡片中设置的 path 值。
+
+### BackendPath（后端实际路径）
+
+如果后端服务本身监听在某个子路径（如静态站点根目录是 `/public/index.html`），
+在卡片/API 中设置 `backend_path`，GoProx 会把代理前缀后的剩余路径映射到该后端路径上：
+
+```yaml
+services:
+  - name: "静态站点"
+    port: 8080
+    path: "/docs"
+    backend_path: "/public/index.html"  # 可选；留空则直接转发到根路径
+```
+
+- `backend_path` 指向**文件**（含扩展名）时，子资源会解析到该文件所在目录；
+- 后端重定向到该路径时，GoProx 会先剥离 `backend_path` 再拼接代理前缀。
 
 ## License
 

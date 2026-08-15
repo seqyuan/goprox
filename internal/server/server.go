@@ -128,6 +128,13 @@ func (s *Server) Handler() http.Handler {
 	// Login
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
+			// Login CSRF guard: a cross-site page must not be able to log the
+			// victim's browser into the gateway (login CSRF). Browsers send
+			// Origin on POST; non-browser clients without Origin pass.
+			if !auth.SameOriginRequest(r) {
+				sendHTML(w, 403, web.LoginPage("登录请求被拒绝", ""))
+				return
+			}
 			if s.handleBackendLogin(w, r) {
 				return
 			}
@@ -337,20 +344,26 @@ func validLoginNext(next string) bool {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Parse the form before rate limiting: the limit key combines the client
+	// IP with the submitted username so a shared-NAT office/lab does not lock
+	// out everyone on one user's typos, and an attacker cannot freeze a whole
+	// subnet by flooding failures.
+	if err := r.ParseForm(); err != nil {
+		sendHTML(w, 500, web.LoginPage("登录请求处理失败", ""))
+		return
+	}
+
 	ip := auth.ClientIP(r)
-	rateKey := ip
+	username := strings.TrimSpace(r.FormValue("username"))
+	// Username matching is case-sensitive, but rate limiting deliberately is
+	// not, so "Alice" and "alice" share a failure budget.
+	rateKey := ip + "|" + strings.ToLower(username)
 
 	if s.loginLimiter.IsBlocked(rateKey) {
 		sendHTML(w, 429, web.LoginPage("登录尝试过多，请 15 分钟后再试", ""))
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
-		sendHTML(w, 500, web.LoginPage("登录请求处理失败", ""))
-		return
-	}
-
-	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	next := r.FormValue("next")
 	if !validLoginNext(next) {
@@ -430,7 +443,9 @@ func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *con
 	}
 
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
-	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
+	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
+		w.Header().Add("Set-Cookie", c)
+	}
 	r.URL.Path = match.RemainingPath
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
 }
@@ -445,7 +460,9 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 	}
 
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
-	w.Header().Add("Set-Cookie", auth.SetRouteCookie(forwardCtx.Prefix))
+	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
+		w.Header().Add("Set-Cookie", c)
+	}
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
 }
 

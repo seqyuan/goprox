@@ -3,7 +3,9 @@ package proxy
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -65,6 +67,13 @@ func proto(r *http.Request) string {
 	return "http"
 }
 
+// maxInjectHTML caps how much of an HTML body we buffer for <base>
+// injection. Known-length responses larger than this are passed through
+// untouched; unknown-length (chunked) responses are read up to this cap
+// and the remainder streamed, so memory stays bounded either way.
+// (Package-level var so tests can shrink it to exercise the cap.)
+var maxInjectHTML int64 = 8 << 20
+
 // NewReverseProxy creates a configured reverse proxy for a service.
 func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputil.ReverseProxy {
 	target := &url.URL{
@@ -79,16 +88,20 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
 
-			// Let the Transport negotiate compression itself: it requests gzip
-			// only when no Accept-Encoding is set, and transparently decompresses
-			// what it requested. Passing the browser's Accept-Encoding through
-			// would leave HTML bodies gzip-compressed, and <base> injection in
-			// ModifyResponse would corrupt the compressed stream.
-			pr.Out.Header.Del("Accept-Encoding")
-
 			// Map frontend remaining path onto an optional backend base path.
 			if backendPath != "" {
 				pr.Out.URL.Path = joinBackendPath(backendPath, pr.Out.URL.Path)
+			}
+
+			// HTML bodies must reach ModifyResponse uncompressed so <base>
+			// injection does not corrupt a gzip stream. For likely-static
+			// assets (JS/CSS/images/fonts/…), which never need injection, we
+			// keep the browser's Accept-Encoding so end-to-end compression is
+			// preserved. Everything else (HTML pages, extension-less APIs)
+			// strips it; the Transport then requests gzip itself and
+			// transparently decompresses before injection.
+			if !isStaticAssetPath(pr.Out.URL.Path) {
+				pr.Out.Header.Del("Accept-Encoding")
 			}
 
 			// Strip gateway cookies
@@ -113,17 +126,16 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				return nil
 			}
 
-			// Rewrite redirect locations
-			loc := resp.Header.Get("Location")
-			if loc != "" && strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !strings.HasPrefix(loc, "/proxy/") {
-				// If backend path is set, strip it from redirects before adding prefix
-				if backendPath != "" && strings.HasPrefix(loc, backendPath) {
-					loc = strings.TrimPrefix(loc, backendPath)
-					if loc == "" {
-						loc = "/"
-					}
+			// Rewrite backend redirects into gateway-relative URLs so the
+			// browser stays inside the proxy prefix: leading-slash absolute
+			// paths get the prefix prepended, and absolute URLs pointing back
+			// at the backend itself are converted to paths first (otherwise
+			// the user would be kicked out of the gateway to an unreachable
+			// backend address).
+			if loc := resp.Header.Get("Location"); loc != "" {
+				if rewritten, ok := rewriteLocation(loc, backendPath, fc, target.Host); ok {
+					resp.Header.Set("Location", rewritten)
 				}
-				resp.Header.Set("Location", fc.Prefix+loc)
 			}
 
 			// Inject <base> tag for HTML responses so that relative/absolute paths
@@ -139,17 +151,29 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				return nil
 			}
 
-			// Skip injection for very large HTML responses to avoid buffering the
-			// entire body in memory (first-byte latency, SSE-like streaming).
-			if resp.ContentLength > 8<<20 {
+			// Skip injection for known very large HTML responses to avoid
+			// buffering the entire body in memory (first-byte latency).
+			if resp.ContentLength > maxInjectHTML {
 				return nil
 			}
 
-			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			// Read with a hard cap. Chunked/unknown-length responses have
+			// ContentLength == -1; without the cap an endless or slow stream
+			// would be buffered without bound. If the body exceeds the cap,
+			// forward the remainder untouched (no injection) instead of
+			// truncating it.
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxInjectHTML+1))
 			if err != nil {
+				resp.Body.Close()
 				return err
 			}
+			if int64(len(body)) > maxInjectHTML {
+				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+				resp.ContentLength = -1
+				resp.Header.Del("Content-Length")
+				return nil
+			}
+			resp.Body.Close()
 
 			// Skip if the backend already supplies its own <base> tag.
 			if bytes.Contains(bytes.ToLower(body), []byte("<base")) {
@@ -157,7 +181,7 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				return nil
 			}
 
-			baseTag := fmt.Sprintf("<base href=\"%s/\">", fc.Prefix)
+			baseTag := fmt.Sprintf("<base href=\"%s/\">", html.EscapeString(fc.Prefix))
 			modified := injectBaseTag(body, []byte(baseTag))
 
 			resp.Body = io.NopCloser(bytes.NewReader(modified))
@@ -166,6 +190,68 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			return nil
 		},
 	}
+}
+
+// rewriteLocation converts a backend-generated redirect into a
+// gateway-relative URL. Returns ok=false to leave the Location header as-is
+// (external redirects, protocol-relative URLs, already-prefixed paths).
+func rewriteLocation(loc, backendPath string, fc ProxyForwardContext, backendHost string) (string, bool) {
+	if loc == "" || strings.HasPrefix(loc, "/proxy/") {
+		return loc, false
+	}
+
+	// Absolute URL: only rewrite when it points back at the backend we
+	// proxied to; anything else (SSO, external links) must pass through.
+	if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
+		u, err := url.Parse(loc)
+		if err != nil {
+			return loc, false
+		}
+		if !sameBackendHost(u.Host, backendHost) {
+			return loc, false
+		}
+		loc = u.EscapedPath()
+		if u.RawQuery != "" {
+			loc += "?" + u.RawQuery
+		}
+	}
+
+	if !strings.HasPrefix(loc, "/") || strings.HasPrefix(loc, "//") {
+		return loc, false
+	}
+
+	// If backend path is set, strip it from redirects before adding prefix.
+	if backendPath != "" && strings.HasPrefix(loc, backendPath) {
+		loc = strings.TrimPrefix(loc, backendPath)
+		if loc == "" {
+			loc = "/"
+		}
+	}
+	return fc.Prefix + loc, true
+}
+
+// sameBackendHost reports whether a redirect target host refers to the same
+// backend endpoint as the proxied host, tolerating localhost/127.0.0.1/::1
+// spelling differences (backends often emit the loopback spelling they were
+// started with).
+func sameBackendHost(redirectHost, backendHost string) bool {
+	if strings.EqualFold(redirectHost, backendHost) {
+		return true
+	}
+	rh, rp := splitHostPort(redirectHost)
+	bh, bp := splitHostPort(backendHost)
+	if rp != bp {
+		return false
+	}
+	loopback := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+	return loopback[strings.ToLower(rh)] && loopback[strings.ToLower(bh)]
+}
+
+func splitHostPort(h string) (host, port string) {
+	if host, port, err := net.SplitHostPort(h); err == nil {
+		return host, port
+	}
+	return h, ""
 }
 
 // injectBaseTag inserts a <base> tag into an HTML body.
@@ -215,6 +301,39 @@ func injectBaseTag(body, baseTag []byte) []byte {
 
 	// 5. Prepend
 	return append(baseTag, body...)
+}
+
+// staticAssetExts are file extensions whose responses are never HTML, so they
+// need no <base> injection and can keep the browser's Accept-Encoding for
+// end-to-end compression. .html/.htm are deliberately absent (those ARE HTML).
+var staticAssetExts = map[string]bool{
+	".js": true, ".mjs": true, ".css": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".webp": true, ".avif": true, ".ico": true, ".bmp": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".map": true, ".wasm": true, ".json": true, ".webmanifest": true,
+	".mp4": true, ".webm": true, ".mp3": true, ".m4a": true, ".wav": true, ".ogg": true,
+	".pdf": true, ".zip": true,
+}
+
+// isStaticAssetPath reports whether a proxied path points at a static asset
+// rather than an HTML document. Used to decide whether the browser's
+// Accept-Encoding can be passed through (compression) or must be stripped
+// (<base> injection needs a decompressed HTML body).
+func isStaticAssetPath(p string) bool {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	if staticAssetExts[strings.ToLower(pathpkg.Ext(p))] {
+		return true
+	}
+	lower := strings.ToLower(p)
+	for _, root := range []string{"/_next/", "/static/", "/assets/", "/favicon."} {
+		if strings.Contains(lower, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func joinBackendPath(backendPath, remainingPath string) string {

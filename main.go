@@ -257,9 +257,6 @@ func runServer(opts options) {
 
 	statePath := config.StatePath(configDir)
 
-	// Persist server config
-	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy)
-
 	// Check if already running
 	pidPath := config.PidPath(configDir)
 	if pid, err := readPidFile(pidPath); err == nil && pid > 0 {
@@ -301,6 +298,12 @@ func runServer(opts options) {
 	if err != nil {
 		log.Fatalf("listen on %s: %v", httpServer.Addr, err)
 	}
+
+	// Persist server config only after the listener is up. Persisting before
+	// the already-running check / bind would let a failed start overwrite
+	// state.yaml with a port we never bound, corrupting the running gateway's
+	// recorded port for `status` and future default starts.
+	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy)
 
 	// Write PID file only after the listener is up (the `start` command waits
 	// for this file to consider the daemon ready).

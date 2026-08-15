@@ -186,3 +186,72 @@ func TestReloadKeepsSnapshotOnScanError(t *testing.T) {
 		t.Fatal("registry dropped users after a transient scan error")
 	}
 }
+
+// ValidatePath must reject characters that would corrupt proxy URLs, injected
+// <base href> tags, or route-cookie values, and accept safe paths.
+func TestValidatePath(t *testing.T) {
+	valid := []string{
+		"", "/", "/jupyter", "/my-app", "/sc_analysis/run-2", "/a.b_c~d",
+	}
+	for _, p := range valid {
+		if err := ValidatePath(p); err != nil {
+			t.Errorf("ValidatePath(%q) unexpected error: %v", p, err)
+		}
+	}
+
+	invalid := []string{
+		`/x"><script>alert(1)</script>`, // HTML/attribute injection
+		"/foo bar",                      // spaces break cookie values and URLs
+		`/foo"bar`,                      // quote breaks Set-Cookie and <base href>
+		"/foo;bar",                      // semicolon breaks Set-Cookie
+		"/foo?bar",                      // query markers corrupt routing
+		"/foo#bar",
+		"/foo/../bar", // traversal segments
+		"/foo//bar",   // empty segment
+		"/x\\y",
+		"/x\x01y", // control char
+	}
+	for _, p := range invalid {
+		if err := ValidatePath(p); err == nil {
+			t.Errorf("ValidatePath(%q) expected error, got nil", p)
+		}
+	}
+}
+
+// LoadUserConfig must drop services with invalid paths instead of letting
+// them break <base> injection / cookies for the whole user.
+func TestLoadUserConfigSkipsInvalidPathService(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "user.yaml")
+	yaml := "auth:\n  password_hash: \"" + strings.Repeat("2", 64) + "\"\n" +
+		"services:\n" +
+		"  - id: ok\n    name: ok\n    host: 127.0.0.1\n    port: 1\n    path: /fine\n" +
+		"  - id: bad\n    name: bad\n    host: 127.0.0.1\n    port: 2\n    path: '/x\"><script>'\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadUserConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 1 || cfg.Services[0].ID != "ok" {
+		t.Fatalf("expected only the valid service to survive, got %+v", cfg.Services)
+	}
+}
+
+// AddService must reject invalid custom paths instead of persisting them.
+func TestAddServiceRejectsInvalidPath(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "user.yaml")
+	if err := os.WriteFile(cfgPath, []byte("auth:\n  password_hash: \""+strings.Repeat("3", 64)+"\"\nservices: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc := ServiceConfig{Name: "x", Host: "127.0.0.1", Port: 8080, Path: `/bad"><base`}
+	if _, err := AddService(cfgPath, svc); err == nil {
+		t.Fatal("AddService accepted an invalid path")
+	}
+	svc.Path = "/good"
+	if _, err := AddService(cfgPath, svc); err != nil {
+		t.Fatalf("AddService rejected a valid path: %v", err)
+	}
+}

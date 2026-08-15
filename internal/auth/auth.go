@@ -277,6 +277,18 @@ func SetRouteCookie(prefix string) string {
 		cookieName, prefix)
 }
 
+// SetRouteCookies returns the Set-Cookie headers written when a service is
+// visited: a service-specific cookie (so multiple services coexist without
+// clobbering each other) plus the global route cookie, which records the most
+// recently visited service and serves as the fallback when the specific
+// cookies cannot disambiguate a bare request.
+func SetRouteCookies(prefix string) []string {
+	return []string{
+		SetRouteCookie(prefix),
+		fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax", RouteCookieName, prefix),
+	}
+}
+
 // RouteCookieNameForPrefix generates a cookie name for a specific service prefix.
 func RouteCookieNameForPrefix(prefix string) string {
 	if prefix == "" {
@@ -316,6 +328,15 @@ func GetRouteCookieForRequest(cookieHeader, requestPath, referer string) string 
 
 	if len(routes) == 1 {
 		return routes[0]
+	}
+
+	// Multiple services are in play and neither the request path nor the
+	// Referer disambiguates them (e.g. an absolute-path asset like /_next/…
+	// or /api/… fetched without a Referer). Fall back to the most recently
+	// visited service (the global route cookie) instead of returning "" and
+	// 404ing the page.
+	if recent := ParseCookies(cookieHeader)[RouteCookieName]; recent != "" {
+		return recent
 	}
 	return ""
 }
@@ -394,4 +415,28 @@ func ClientIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	return host
+}
+
+// SameOriginRequest reports whether the request's Origin header (when
+// present) matches the origin the browser is talking to. Browsers always
+// send Origin on POST/PUT/DELETE, so cross-site requests (the CSRF vector)
+// are rejected while same-origin and non-browser (no Origin) requests pass.
+// Any http(s) scheme is accepted: behind a TLS-terminating reverse proxy the
+// browser's scheme (https) legitimately differs from the gateway's (http).
+func SameOriginRequest(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// Non-browser clients (curl, scripts) send no Origin; without a
+		// browser context there is no CSRF risk, and they still need the
+		// session cookie to be authorized.
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }

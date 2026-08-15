@@ -160,3 +160,79 @@ func TestLogoutClearsRouteCookies(t *testing.T) {
 		t.Fatalf("expected session + 2 route cookies cleared, got %d: %v", cleared, rr.Result().Header.Values("Set-Cookie"))
 	}
 }
+
+// absoluteRedirectBackendSrv serves HTML plus a redirect to its own absolute
+// URL (as backends do when they derive links from the Host header).
+func absoluteRedirectBackendSrv(t *testing.T) *httptest.Server {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "http://"+r.Host+"/lab", http.StatusFound)
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html><head></head><body>ok</body></html>")
+		}
+	}))
+	t.Cleanup(backend.Close)
+	return backend
+}
+
+// An absolute redirect pointing back at the backend's own host must be
+// rewritten to a gateway-relative URL so the browser stays inside the proxy.
+func TestAbsoluteRedirectRewrittenToGatewayPath(t *testing.T) {
+	backend := absoluteRedirectBackendSrv(t)
+	host, port := backendAddr(t, backend)
+	srv := srvForBackend(t, host, port)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/", nil)
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/proxy/alice/jupyter/") {
+		t.Fatalf("redirect escaped the proxy prefix: %q", loc)
+	}
+	if strings.Contains(loc, backend.Listener.Addr().String()) {
+		t.Fatalf("redirect leaked the backend address: %q", loc)
+	}
+}
+
+// A chunked (unknown Content-Length) HTML response must be forwarded
+// completely (no truncation, no hang) with the <base> tag still injected.
+func TestChunkedHTMLForwardedWithBaseInjection(t *testing.T) {
+	chunk := strings.Repeat("<p>padding</p>", 10000)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(200)
+		// No Content-Length => chunked. Write in pieces to simulate streaming.
+		for i := 0; i < 5; i++ {
+			io.WriteString(w, chunk)
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendAddr(t, backend)
+	srv := srvForBackend(t, host, port)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/", nil)
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	srv.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	wantLen := len(chunk)*5 + len(`<base href="/proxy/alice/jupyter/">`)
+	if len(body) != wantLen {
+		t.Fatalf("chunked body wrong size: got %d bytes, want %d", len(body), wantLen)
+	}
+	if !strings.HasPrefix(body, `<base href="/proxy/alice/jupyter/">`) {
+		t.Fatalf("base tag not injected at start of chunked body")
+	}
+	if !strings.HasSuffix(body, "</p>") {
+		t.Fatalf("chunked body truncated at the end")
+	}
+}

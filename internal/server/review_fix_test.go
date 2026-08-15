@@ -151,3 +151,31 @@ func TestAPIStillForwardsViaRouteCookie(t *testing.T) {
 		t.Fatalf("expected /api/contents forwarded to backend, got status=%d backendPath=%q", rr.Code, gotPath)
 	}
 }
+
+// Cross-site login POSTs must be rejected (login CSRF), while same-origin
+// login still works.
+func TestLoginRejectsCrossOrigin(t *testing.T) {
+	srv, _ := newTestServer(t)
+	form := url.Values{"username": {"alice"}, "password": {"pw"}}
+
+	// Cross-site page attempting login CSRF.
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.example")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for cross-origin login, got %d", rr.Code)
+	}
+
+	// Same-origin browser login must still succeed.
+	req2 := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req2.Header.Set("Origin", "http://gw:1908")
+	req2.Host = "gw:1908"
+	rr2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusFound {
+		t.Fatalf("expected 302 for same-origin login, got %d", rr2.Code)
+	}
+}
