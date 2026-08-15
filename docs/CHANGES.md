@@ -1,3 +1,13 @@
+# GoProx v0.3.1 变更日志（2026-08-15）
+
+## 文档
+
+- **新增 GitHub Pages 文档站点**：`https://seqyuan.github.io/goprox/`，手写静态页（Apple 液态玻璃风格），含首页、安装与启动、服务与示例、BackendPath 详解、安全（认证/TOTP/公网 TLS）、更新日志 6 个页面
+- **自动部署**：`.github/workflows/docs.yml` 在 `site/` 变更时自动构建并发布到 GitHub Pages（官方 deploy-pages，无第三方依赖）
+- README 顶部增加文档站点链接
+
+---
+
 # GoProx v0.3.0 变更日志（2026-08-15）
 
 ## 安全
