@@ -1,5 +1,7 @@
 # GoProx
 
+> 📖 完整文档站点：[https://seqyuan.github.io/goprox/](https://seqyuan.github.io/goprox/)
+
 **一台服务器，一个 Web 入口，每人管理自己的 Jupyter / RStudio / 内网服务。**
 
 GoProx 是面向实验室、登录节点的**多用户认证反向代理**网关，用 Go 语言编写。运维启动一个共享网关并创建用户账号，每个用户登录网页管理自己的转发（添加卡片、拖动排序），无需每人记不同端口。

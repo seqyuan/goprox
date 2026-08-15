@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>安装与启动 — GoProx</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html" class="active">安装</a>
+    <a href="services.html">服务与示例</a>
+    <a href="backend-path.html">BackendPath</a>
+    <a href="security.html">安全</a>
+    <a href="changelog.html">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">安装与启动</h1>
+  <p class="page-sub">拷贝、建号、启动 —— 三条命令上线。</p>
+
+  <div class="card">
+    <h2>安装</h2>
+    <pre>go install github.com/seqyuan/goprox@latest</pre>
+    <p>安装后 <code>goprox</code> 位于 <code>$GOPATH/bin</code>（通常是 <code>~/go/bin</code>）。</p>
+    <div class="warn"><strong>请把二进制拷贝（不是链接）到独立目录再运行。</strong>
+      所有配置都存放在<strong>二进制旁边的 <code>config/</code> 目录</strong>，整个目录可以整体拷贝、备份、迁移。
+      <code>os.Executable</code> 会解析符号链接，所以<strong>不要用 <code>ln -s</code> 链接</strong>，
+      否则配置会落在链接目标的真实路径下。</div>
+    <pre>mkdir -p /opt/goprox
+cp ~/go/bin/goprox /opt/goprox/</pre>
+  </div>
+
+  <div class="card">
+    <h2>启动</h2>
+    <p>GoProx 只有<strong>前台运行</strong>这一种模式，<code>Ctrl+C</code> 优雅停机：</p>
+    <pre>./goprox serve --port 1908</pre>
+    <p>需要常驻后台时：</p>
+    <pre># tmux / screen 会话
+tmux new -s goprox -d './goprox serve --port 1908'
+
+# 或 nohup
+nohup ./goprox serve --port 1908 > goprox.log 2>&1 &</pre>
+  </div>
+
+  <div class="card">
+    <h2>命令参考</h2>
+    <pre>./goprox serve [options]    启动网关（前台运行，Ctrl+C 停止）
+
+# 用户管理（管理员）
+./goprox user &lt;name&gt;        创建用户账号（交互设置密码）
+./goprox passwd &lt;name&gt;      重置用户密码
+./goprox del &lt;name&gt;         删除用户账号
+./goprox 2fa-reset &lt;name&gt;   关闭指定用户的两步验证</pre>
+    <h3>Options</h3>
+    <table>
+      <tr><th>选项</th><th>说明</th></tr>
+      <tr><td><code>-d, --config-dir &lt;dir&gt;</code></td><td>配置目录（默认 <code>&lt;程序目录&gt;/config</code>）</td></tr>
+      <tr><td><code>--host &lt;host&gt;</code></td><td>监听地址（默认 <code>0.0.0.0</code>）</td></tr>
+      <tr><td><code>--port &lt;port&gt;</code></td><td>监听端口（默认 1908）</td></tr>
+      <tr><td><code>--trusted-proxy &lt;cidr&gt;</code></td><td>可信反向代理网段（如 <code>127.0.0.1/32</code>），启用后信任其 X-Forwarded-For/Proto 头（默认不信任）</td></tr>
+      <tr><td><code>--title &lt;text&gt;</code></td><td>页面左上角站点标题（默认 GoProx），支持中文/emoji</td></tr>
+      <tr><td><code>-h, --help</code></td><td>显示帮助</td></tr>
+    </table>
+    <p><code>user</code> / <code>passwd</code> / <code>del</code> / <code>2fa-reset</code>
+      需要与网关相同的目录写权限（root 启动的网关，管理命令也用 root 执行）。
+      用户名需写在选项<strong>之前</strong>：<code>goprox user alice -d /opt/goprox/config</code>。</p>
+  </div>
+
+  <div class="card">
+    <h2>目录结构</h2>
+    <pre>/opt/goprox/
+├── goprox                  # 二进制
+└── config/                 # 0700，网关属主
+    ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、title、session_secret）
+    └── users/              # 每个用户一个独立配置文件
+        ├── alice.yaml
+        └── bob.yaml</pre>
+    <p>多用户共享同一端口：登录后每个用户只能看到和管理自己的服务，访问路径为
+      <code>/proxy/&lt;用户名&gt;/&lt;服务&gt;/</code>。</p>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>

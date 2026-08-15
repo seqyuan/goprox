@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>认证与两步验证 — GoProx</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html">安装</a>
+    <a href="services.html">服务与示例</a>
+    <a href="backend-path.html">BackendPath</a>
+    <a href="security.html" class="active">安全</a>
+    <a href="changelog.html">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">认证与公网部署</h1>
+  <p class="page-sub">密码存储、会话机制、可选的 TOTP 两步验证，以及暴露到公网前必须做的 TLS。</p>
+
+  <div class="card">
+    <h2>密码存储</h2>
+    <p>密码使用 <strong>bcrypt</strong> 哈希（<code>goprox user</code> / <code>goprox passwd</code> 生成）。
+      旧版本遗留的 SHA-256 哈希仍可正常登录（自动兼容），建议在方便时用 <code>goprox passwd</code> 重置一遍。</p>
+    <p>配套防护：</p>
+    <ul>
+      <li><strong>登录限速</strong>：按「客户端 IP + 用户名」限速（10 次失败/15 分钟），共享 NAT 下互不影响；</li>
+      <li><strong>时序防枚举</strong>：未知用户名也执行等价的 bcrypt 比对，登录耗时无法暴露账号是否存在；</li>
+      <li><strong>改密即吊销</strong>：会话绑定密码哈希版本，改密码后所有已签发会话立即失效；</li>
+      <li><strong>CSRF 防护</strong>：管理 API 与登录接口校验 <code>Origin</code> 头，跨站请求被拒绝。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>两步验证（TOTP，可选）</h2>
+    <p>暴露到公网时，强烈建议为账号开启<strong>基于时间的一次性密码（TOTP）</strong>二次验证。
+      按用户可选，开启后登录需要密码 + 认证器 App 显示的 6 位动态码。</p>
+    <h3>开启 / 更换（用户自助，登录后操作）</h3>
+    <ol>
+      <li>登录仪表盘，点顶部提示中的「两步验证未开启 · 开启」链接；</li>
+      <li>用手机认证器 App（Google Authenticator / Authy / 1Password）扫描二维码，或手动输入密钥；</li>
+      <li>输入 App 当前显示的 6 位动态码，确认后即生效。</li>
+    </ol>
+    <h3>登录流程（开启后）</h3>
+    <p>密码正确 → 输入 6 位动态码 → 进入仪表盘。</p>
+    <h3>手机丢失 / 忘记</h3>
+    <p>管理员在服务器上执行（无需登录）：</p>
+    <pre>goprox 2fa-reset &lt;用户名&gt;</pre>
+    <div class="note">密钥以 base32 形式存在 <code>config/users/&lt;用户名&gt;.yaml</code> 的
+      <code>auth.totp_secret</code> 字段（权限 0600，与 <code>session_secret</code> 同级保护）。
+      动态码校验带有 ±1 个 30 秒窗口的时钟容错，且同样受登录限速保护。</div>
+  </div>
+
+  <div class="card">
+    <h2>公网部署：反向代理终结 TLS</h2>
+    <p>GoProx 本身只监听 HTTP，暴露到公网前<strong>必须在前面放一个反向代理做 TLS 终结</strong>，
+      否则密码（以及动态码）会明文传输。推荐 <strong>Caddy</strong>（两行配置、Let's Encrypt 证书自动申请与续期），
+      或用 nginx。</p>
+    <h3>1. 让 GoProx 只监听本机回环</h3>
+    <pre>./goprox serve --host 127.0.0.1 --port 1908 \
+  --trusted-proxy 127.0.0.1/32</pre>
+    <ul>
+      <li><code>--host 127.0.0.1</code>：只监听回环，只有本机的反代能连到它；</li>
+      <li><code>--trusted-proxy 127.0.0.1/32</code>：信任来自回环的 X-Forwarded-For/Proto 头，
+        让网关正确识别「真实客户端 IP」（登录限速用）和「请求是 HTTPS」（Secure Cookie 用）。</li>
+    </ul>
+    <div class="warn"><strong>trusted-proxy 必须填反代所在地址</strong>，不能填 <code>0.0.0.0/0</code>
+      （那样任何直连客户端都能伪造 X-Forwarded-* 头，绕过限速、伪造 Secure Cookie）。</div>
+    <h3>2. Caddy（推荐）</h3>
+    <pre># /etc/caddy/Caddyfile
+lab.example.com {
+    reverse_proxy 127.0.0.1:1908
+}</pre>
+    <p>Caddy 会自动转发 <code>X-Forwarded-For</code> / <code>X-Forwarded-Proto</code>，并自动申请、续期 HTTPS 证书。</p>
+    <h3>3. nginx</h3>
+    <pre>server {
+    listen 443 ssl;
+    server_name lab.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/lab.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/lab.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:1908;
+
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # WebSocket（Jupyter / RStudio 必需）
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+}</pre>
+    <p>证书可用 certbot 申请：<code>sudo certbot --nginx -d lab.example.com</code>。</p>
+    <h3>4. 验证</h3>
+    <pre>curl -I https://lab.example.com/login     # 应返回 200，且证书有效</pre>
+    <p>登录页在浏览器里应有正常的小锁图标（HTTPS），且登录后的 Cookie 带有 <code>Secure</code> 标记。
+      完整的配置文件示例见仓库 <code>docs/reverse-proxy-tls.md</code>。</p>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>

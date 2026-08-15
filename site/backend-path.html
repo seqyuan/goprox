@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BackendPath 详解 — GoProx</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html">安装</a>
+    <a href="services.html">服务与示例</a>
+    <a href="backend-path.html" class="active">BackendPath</a>
+    <a href="security.html">安全</a>
+    <a href="changelog.html">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">BackendPath 详解</h1>
+  <p class="page-sub">「前端路径 <code>path</code>」和「后端路径 <code>backend_path</code>」是两个不同概念。</p>
+
+  <div class="card">
+    <h2>概念</h2>
+    <table>
+      <tr><th></th><th>前端路径 <code>path</code></th><th>后端路径 <code>backend_path</code></th></tr>
+      <tr><td>是谁的路径</td><td>网关对外暴露的访问路径</td><td>后端服务自身实际监听的路径</td></tr>
+      <tr><td>用户是否可见</td><td>可见（浏览器地址栏）</td><td>不可见（转发时拼接）</td></tr>
+    </table>
+    <p>转发规则：</p>
+    <pre>前端:  /proxy/&lt;用户&gt;/&lt;path&gt;/&lt;剩余路径&gt;
+              ↓ 网关转发
+后端:  &lt;backend_path 或 根&gt;/&lt;剩余路径&gt;</pre>
+  </div>
+
+  <div class="card">
+    <h2>① 后端挂在根目录（最常见，backend_path 留空）</h2>
+    <pre>services:
+  - name: "Jupyter Lab"
+    port: 8888
+    path: "/jupyter"   # 前端路径
+    # backend_path 留空</pre>
+    <ul>
+      <li>访问 <code>/proxy/alice/jupyter/</code> → 后端收到 <code>/</code></li>
+      <li>Jupyter / RStudio 等基本都是这种情况，留空即可。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>② 后端跑在某个子路径下</h2>
+    <p>后端 API 的所有路由都在 <code>/api/v1/...</code> 下：</p>
+    <pre>services:
+  - name: "我的 API"
+    port: 8000
+    path: "/myapi"            # 前端路径
+    backend_path: "/api/v1"   # 后端路径（目录前缀）</pre>
+    <ul>
+      <li>访问 <code>/proxy/alice/myapi/users</code> → 后端收到 <code>/api/v1/users</code></li>
+      <li>访问 <code>/proxy/alice/myapi/</code> → 后端收到 <code>/api/v1</code></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>③ 单 HTML 网页（后端入口是一个文件）</h2>
+    <p>后端不是把页面挂在根路径，而是只提供一个 HTML 入口文件（常见于报告 / 展示页，
+      用 <code>python3 -m http.server</code> 或 nginx 托管）。例如入口文件是 <code>/report.html</code>：</p>
+    <pre>services:
+  - name: "分析报告"
+    host: "127.0.0.1"        # 网页在其他机器上时，填那台机器的局域网 IP，如 192.168.0.109
+    port: 8080
+    path: "/report"                   # 前端路径
+    backend_path: "/report.html"      # 后端路径（入口文件）</pre>
+    <ul>
+      <li>访问 <code>/proxy/alice/report/</code> → 后端收到 <code>/report.html</code></li>
+      <li>访问 <code>/proxy/alice/report/assets/app.js</code> → 后端收到 <code>/assets/app.js</code>（子资源相对入口文件所在目录）</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>④ 后端静态站入口在子目录文件</h2>
+    <pre>services:
+  - name: "静态站点"
+    host: "127.0.0.1"
+    port: 8080
+    path: "/docs"                       # 前端路径
+    backend_path: "/public/index.html"  # 后端路径（文件）</pre>
+    <ul>
+      <li>访问 <code>/proxy/alice/docs/</code> → 后端收到 <code>/public/index.html</code></li>
+      <li>访问 <code>/proxy/alice/docs/assets/app.js</code> → 后端收到 <code>/public/assets/app.js</code></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>补充规则</h2>
+    <ul>
+      <li><code>backend_path</code> 指向<strong>文件</strong>（含扩展名）时，子资源会解析到该文件所在目录；</li>
+      <li>后端重定向到该路径时，GoProx 会先剥离 <code>backend_path</code> 再拼接代理前缀。</li>
+    </ul>
+    <div class="note"><strong>怎么判断要不要填 backend_path</strong>：先留空，直接访问看能否打开；
+      若 404 或资源路径不对，说明后端不是挂在根路径，再把它的实际前缀/入口文件填进 <code>backend_path</code>。</div>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>

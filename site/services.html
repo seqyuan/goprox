@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>服务卡片与示例 — GoProx</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html">安装</a>
+    <a href="services.html" class="active">服务与示例</a>
+    <a href="backend-path.html">BackendPath</a>
+    <a href="security.html">安全</a>
+    <a href="changelog.html">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">服务卡片与示例</h1>
+  <p class="page-sub">用户登录后在仪表盘管理自己的服务卡片：<strong>+</strong> 添加、<strong>✎</strong> 编辑、
+    <strong>×</strong> 删除、<strong>⋮⋮</strong> 拖动排序。</p>
+
+  <div class="card">
+    <h2>用户配置示例</h2>
+    <p><code>config/users/&lt;用户名&gt;.yaml</code>：</p>
+    <pre>auth:
+  password_hash: "$2a$10$YVpm1R6puQFltjmrKziLsujVtAJDJIynTC54yESGslrkmyP5ORBTO"  # bcrypt（goprox user/passwd 生成）
+  # totp_secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"   # 可选：TOTP 两步验证密钥，缺省/删除 = 关闭
+
+services:
+  # ① 本机服务：后端与网关同一台机器，host 用 127.0.0.1
+  - id: jupyter
+    name: "Jupyter Lab"
+    description: "交互式笔记本"
+    host: "127.0.0.1"
+    port: 8888
+    path: "/jupyter"
+    websocket: true
+    category: "开发工具"
+    order: 0
+    # bwlimit: 10485760              # 可选：带宽上限（字节/秒，0/缺省 = 不限速）
+
+  # ② 局域网其他机器：host 填对方机器的局域网 IP（如 192.168.0.109）
+  - id: rstudio
+    name: "RStudio（服务器）"
+    description: "运行在 192.168.0.109 的 RStudio Server"
+    host: "192.168.0.109"
+    port: 8787
+    path: "/rstudio"
+    websocket: true
+    category: "开发工具"
+    order: 1
+
+  # ③ 单 HTML 网页：后端只提供一个入口文件（如数据分析报告）
+  - id: report
+    name: "分析报告"
+    description: "单 HTML 网页报告"
+    host: "127.0.0.1"
+    port: 8080
+    path: "/report"
+    websocket: false
+    category: "未分类"
+    order: 2
+    backend_path: "/report.html"    # 后端入口文件（见 BackendPath 详解）</pre>
+    <div class="note"><strong>host</strong> 可以是回环地址（<code>127.0.0.1</code>）或局域网私网 IP
+      （<code>192.168.x.x</code>、<code>10.x.x.x</code>、<code>172.16-31.x.x</code>），也支持能解析到私网的主机名；
+      公网地址与链路本地/云元数据地址会被拒绝。</div>
+  </div>
+
+  <div class="card">
+    <h2>参数一览</h2>
+    <table>
+      <tr><th>参数</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr>
+      <tr><td><code>name</code></td><td>string</td><td>✅</td><td>—</td><td>卡片显示名称（≤200 字符）</td></tr>
+      <tr><td><code>host</code></td><td>string</td><td>—</td><td><code>127.0.0.1</code></td><td>后端地址，仅允许回环/私网 IP 或主机名</td></tr>
+      <tr><td><code>port</code></td><td>int</td><td>✅</td><td>—</td><td>后端端口（1–65535）</td></tr>
+      <tr><td><code>path</code></td><td>string</td><td>—</td><td>按 <code>id</code> 自动生成</td><td>前端访问路径，如 <code>/jupyter</code>；仅允许 <code>A-Za-z0-9._~-</code> 与 <code>/</code>，同用户内唯一</td></tr>
+      <tr><td><code>backend_path</code></td><td>string</td><td>—</td><td>空</td><td>后端实际监听子路径/文件（见 BackendPath 详解）</td></tr>
+      <tr><td><code>websocket</code></td><td>bool</td><td>—</td><td><code>true</code></td><td>是否允许 WebSocket 升级（Jupyter/RStudio 需开启）</td></tr>
+      <tr><td><code>bwlimit</code></td><td>int</td><td>—</td><td><code>0</code></td><td>该服务带宽上限（字节/秒），上行/下行各限；<code>0</code>/缺省 = 不限速</td></tr>
+      <tr><td><code>description</code></td><td>string</td><td>—</td><td>空</td><td>说明文字（≤500 字符）</td></tr>
+      <tr><td><code>category</code></td><td>string</td><td>—</td><td>未分类</td><td>分类/分组名（≤100 字符）</td></tr>
+      <tr><td><code>id</code></td><td>string</td><td>—</td><td>🔒 系统自动</td><td>服务唯一 ID，由名称自动生成，重名自动加 <code>-2</code>、<code>-3</code>…</td></tr>
+      <tr><td><code>order</code></td><td>int</td><td>—</td><td>🔒 系统自动</td><td>排序号（新增 = 最大 order+1，拖拽排序时更新）</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>局域网内的服务</h2>
+    <p>后端跑在实验室的另一台机器上，<code>host</code> 填那台机器的局域网 IP：</p>
+    <pre>services:
+  - name: "RStudio（服务器）"
+    host: "192.168.0.109"   # 对方机器的局域网 IP
+    port: 8787
+    path: "/rstudio"
+    websocket: true</pre>
+    <p>访问 <code>http://网关:1908/proxy/alice/rstudio/</code> 即可，无需记住对方的 IP 和端口。</p>
+  </div>
+
+  <div class="card">
+    <h2>单 HTML 网页</h2>
+    <p>想通过网关共享一个 HTML 报告（入口文件不在根路径时）：</p>
+    <pre>services:
+  - name: "分析报告"
+    host: "127.0.0.1"
+    port: 8080
+    path: "/report"
+    backend_path: "/report.html"   # 后端入口文件</pre>
+    <p>访问 <code>/proxy/alice/report/</code> → 后端收到 <code>/report.html</code>；
+      页面里的子资源（JS/CSS/图片）会相对入口文件所在目录解析。</p>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>

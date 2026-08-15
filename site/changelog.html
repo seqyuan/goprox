@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>更新日志 — GoProx</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html">安装</a>
+    <a href="services.html">服务与示例</a>
+    <a href="backend-path.html">BackendPath</a>
+    <a href="security.html">安全</a>
+    <a href="changelog.html" class="active">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">更新日志</h1>
+  <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
+
+  <div class="card">
+    <h2>v0.3.0 — 2026-08-15</h2>
+    <ul>
+      <li><strong>两步验证（TOTP）可选二次验证</strong>：按用户开启（默认关闭），扫码绑定自助完成，动态码校验 ±1 个 30s 窗口容错并独立限速；<code>goprox 2fa-reset</code> 供管理员重置。</li>
+      <li><strong>公网部署 TLS 文档</strong>：Caddy / nginx 反代终结 TLS 完整示例，<code>--host 127.0.0.1</code> + <code>--trusted-proxy</code> 配套做法。</li>
+      <li><strong>自定义站点标题</strong>：<code>--title "🧬 生信分析平台"</code> 替换登录页/仪表盘/404 标题，写入 <code>state.yaml</code> 持久化。</li>
+      <li><strong>Apple Liquid Glass 视觉重设计</strong>：冷灰底色 + 系统字体、毛玻璃导航、白色卡片双层阴影、单渐变 monogram、pill 化控件、玻璃弹窗与弹簧动效。</li>
+      <li>示例补充：局域网 IP（<code>192.168.0.109</code>）与单 HTML 网页（<code>backend_path</code> 指向入口文件）。</li>
+      <li>新增依赖 <code>github.com/skip2/go-qrcode</code>（TOTP 二维码生成）。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.2.6 — 2026-08-15</h2>
+    <ul>
+      <li><strong>CLI 精简</strong>：删除 <code>start</code> / <code>stop</code> / <code>status</code> 与整个守护化机制（pidfile、Setsid、就绪轮询），<code>goprox serve</code>（或裸 <code>goprox</code>）成为唯一启动命令，前台运行、Ctrl+C 停止。</li>
+      <li>后台运行改为 tmux/screen 或 nohup；执行旧命令会打印「已移除」提示与替代方式。</li>
+      <li>配置目录不再生成 <code>daemon.pid</code> / <code>goprox.log</code>。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.2.5 — 2026-08-15</h2>
+    <ul>
+      <li><strong>自引用检测（防死循环）</strong>：后端指向网关自身时（host 解析到本机接口 IP 且端口等于网关监听端口），写入配置与拨号建连两处都会拒绝。</li>
+      <li><strong>按服务带宽限速</strong>：服务新增 <code>bwlimit</code> 字段（字节/秒），上行/下行分别限速；仪表盘新增「带宽上限」输入框与卡片限速徽章。</li>
+      <li>新增 <code>golang.org/x/time</code> 依赖（限速令牌桶）。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.2.3 — 2026-08-15</h2>
+    <ul>
+      <li>拒绝链路本地 / 云元数据地址（防 IMDS 凭据窃取）；修复 DNS rebinding 绕过（<code>SafeDialContext</code> 拨号时重校验）。</li>
+      <li>不再透传客户端伪造的 X-Forwarded-For；会话绑定密码哈希版本（改密即吊销）；登录时序防用户枚举。</li>
+      <li>网关页面防点击劫持 / MIME 嗅探；请求体超限返回 413；慢速请求体防护（<code>ReadTimeout</code>）。</li>
+      <li>&lt;base&gt; 改为目录级注入；清理代理重写后的 <code>RawPath</code>。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.2.2 — 2026-08-15</h2>
+    <ul>
+      <li>卡片 favicon 支持现代图标（.ico/.svg/.png 候选链）；多服务下绝对路径资源 404 修复（route cookie 回退）。</li>
+      <li>静态资源保留压缩（端到端 gzip），HTML 仍由 Transport 解压以正确注入 &lt;base&gt;。</li>
+      <li>管理 API 与登录 CSRF 防护；服务 path 安全校验；重定向改写重构；服务名校验。</li>
+      <li>大 HTML/分块响应内存保护；模板安全加固（防 &lt;/script&gt; 注入）。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.2.1 — 2026-08-11</h2>
+    <ul>
+      <li>修复 gzip 压缩的 HTML 被 &lt;base&gt; 注入破坏；修复 route cookie 认证绕过；修复登出后 /login 被劫持。</li>
+      <li>登录限流加固（<code>--trusted-proxy</code>、全局清扫 + 10k 硬上限）；密码哈希升级为 bcrypt（兼容旧哈希）。</li>
+      <li>HTTP Server 增加 <code>ReadHeaderTimeout</code>/<code>IdleTimeout</code>；HEAD 请求不再做 HTML 注入。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.2.0 — 2026-08-11</h2>
+    <ul>
+      <li>配置集中到程序目录 <code>config/</code>（state.yaml、users/），整个目录可整体拷贝迁移。</li>
+      <li>新增 <code>goprox user</code> / <code>goprox del</code>；<code>passwd</code> 改为管理员重置；<code>start</code> 后台启动修复。</li>
+      <li>bare 路径正确重定向到 <code>/proxy/&lt;用户&gt;/&lt;服务&gt;/</code>；中文服务名唯一化；优雅停机 + 共享 HTTP transport。</li>
+    </ul>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>
