@@ -34,32 +34,68 @@ make build        # 等价于 go build -ldflags "-X main.version=$(git describe 
 
 ## 快速开始
 
-```bash
-# ① 把 goprox 拷贝到独立目录（见上）
+三步即可上线：
 
-# ② 管理员创建用户账号（交互设置密码）
+```bash
+# ① 把 goprox 拷贝到独立目录（见「安装」）
 cd /opt/goprox
+
+# ② 管理员创建用户账号（交互式设置密码，一条命令一个用户）
 ./goprox user alice
 ./goprox user bob
 
-# ③ 启动网关
-./goprox serve --port 1908        # 前台
-./goprox start --port 1908        # 后台（日志写入 config/goprox.log）
-
-# ④ 用户登录管理
-http://lab.example.com:1908/  →  alice 登录  →  点 + 添加、拖动排序、点击卡片访问
+# ③ 启动网关 —— 日常只需记住这一条命令
+./goprox start --port 1908
 ```
+
+- 浏览器访问 `http://lab.example.com:1908/`，用刚创建的账号登录；
+- 登录后点 **+** 添加自己的服务卡片，拖动排序，点击卡片访问。
+
+> **`--port` 只在第一次启动时需要指定**，之后端口会记录在 `config/state.yaml`，直接 `./goprox start` 即可。
+
+## 日常管理（只需 4 条命令）
+
+| 想做什么 | 命令 |
+|---|---|
+| 启动网关 | `./goprox start` |
+| 查看运行状态 | `./goprox status` |
+| 停止网关 | `./goprox stop` |
+| 查看运行日志 | `tail -f config/goprox.log` |
+
+> 日志目录即程序旁边的 `config/`（可用 `-d <dir>` 指定，见下方 Options）。
+
+## serve 和 start 用哪个？
+
+**二选一，日常用 `start`，`serve` 可以完全不用管。**
+
+两者启动的是**同一个网关**，只是运行方式不同：
+
+| | `start`（日常用） | `serve`（调试用） |
+|---|---|---|
+| 运行方式 | 后台运行，关闭终端也不影响 | 前台运行，占用当前终端 |
+| 日志 | 写入 `config/goprox.log` | 直接打印到终端 |
+| 停止方式 | `./goprox stop` | Ctrl+C |
+
+- 想长期运行 → 用 `start`，然后该干嘛干嘛；
+- 想在终端里实时看日志、排查问题 → 先 `./goprox stop` 停掉，再 `./goprox serve`。
+
+> ⚠️ 两者共用同一端口，**不能同时运行**；重复启动会提示 `already running`，先 `stop` 再启动即可。
 
 ## 命令参考
 
 ```bash
-goprox serve [options]        启动网关（前台）
-goprox start [options]        后台启动
-goprox stop [options]         停止网关
-goprox status [options]       查看状态
-goprox user <name>            创建用户账号（交互设密码）
-goprox passwd <name>          重置用户密码（管理员）
-goprox del <name>             删除用户账号
+# 日常使用
+./goprox start [options]    启动网关（后台运行，日志写入 config/goprox.log）
+./goprox stop               停止网关
+./goprox status             查看运行状态
+
+# 用户管理（管理员）
+./goprox user <name>        创建用户账号（交互设置密码）
+./goprox passwd <name>      重置用户密码
+./goprox del <name>         删除用户账号
+
+# 调试（可选，日常无需使用）
+./goprox serve [options]    前台运行网关（日志打印到终端）
 
 Options:
   -d, --config-dir <dir>  配置目录（默认 <程序目录>/config）
@@ -160,7 +196,7 @@ auth:
 
 > **安全说明**：默认不信任 `X-Forwarded-For` / `X-Forwarded-Proto`（直连客户端可伪造，
 > 会导致登录限流失效与 Secure Cookie 异常）。只有在网关部署于可信反向代理之后时，
-> 才设置 `trusted_proxy`（或用 `goprox serve --trusted-proxy 127.0.0.1/32`）。
+> 才设置 `trusted_proxy`（或用 `goprox start --trusted-proxy 127.0.0.1/32`）。
 >
 > **清除方法**：`trusted_proxy` 一旦写入会一直生效（与 `host`/`port` 相同的语义，
 > 去掉启动参数不会清除它）。要关闭请编辑 `config/state.yaml`，删除 `trusted_proxy` 行
