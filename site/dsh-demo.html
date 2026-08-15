@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dsh 配置示例 — GoProx</title>
+  <meta name="description" content="用 GoProx 代理本地优先（只监听 127.0.0.1）的 DeepSeek Harness（dsh），局域网直接可用">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="index.html"><span class="mark">G</span>GoProx</a>
+  <nav class="links">
+    <a href="index.html">首页</a>
+    <a href="install.html">安装</a>
+    <a href="services.html">服务与示例</a>
+    <a href="dsh-demo.html" class="active">dsh 示例</a>
+    <a href="backend-path.html">BackendPath</a>
+    <a href="security.html">安全</a>
+    <a href="changelog.html">更新日志</a>
+  </nav>
+  <a class="gh" href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">GitHub ↗</a>
+</header>
+
+<main class="container">
+  <h1 class="page-title">dsh 配置示例</h1>
+  <p class="page-sub">DeepSeek Harness（dsh）是典型的<strong>本地优先应用</strong>：只监听回环地址、自带
+    Host/Origin 信任栅栏、前端还依赖只在安全上下文（HTTPS/localhost）可用的 Web API。
+    这类应用直接暴露给局域网往往跑不起来——但通过 GoProx 一行服务卡片即可兼容。</p>
+
+  <div class="card">
+    <h2>为什么 dsh「本地优先」却连不上局域网</h2>
+    <p>dsh 默认 <code>dsh web</code> 只监听 <code>127.0.0.1</code>，且出于安全做了三层限制：</p>
+    <ul>
+      <li><strong>只认回环地址</strong>——绑定的 <code>127.0.0.1:3080</code> 让局域网其他机器根本连不上；</li>
+      <li><strong>/api 信任栅栏</strong>——<code>isTrustedApiRequest</code> 要求请求的 Host 是回环或受信主机，
+        且浏览器附加的 Origin 必须与 Host 一致，否则返回 <code>403 forbidden</code>；</li>
+      <li><strong>安全上下文 Web API</strong>——客户端 JS 每个 RPC 都调用 <code>crypto.randomUUID()</code>，
+        该 API 在纯 HTTP（非安全上下文）下不存在，直接报 <code>crypto.randomUUID is not a function</code>。</li>
+    </ul>
+    <div class="note"><strong>GoProx 的价值</strong>：你不需要改 dsh 的源码、配置或启动方式。
+      网关把「浏览器 ⇄ 本地后端」之间的所有差异都消化掉，dsh 保持本地优先、零改动。</div>
+  </div>
+
+  <div class="card">
+    <h2>配置 demo</h2>
+    <h3>① dsh 照常本地启动（不变）</h3>
+    <pre># dsh 依然是本地服务，只监听回环
+cd /path/to/deepseek-harness
+nohup pnpm dsh web > /tmp/dsh-web.log 2>&1 &
+# dsh web: http://127.0.0.1:3080</pre>
+
+    <h3>② 在 goprox 里加一张服务卡片</h3>
+    <p><code>config/users/&lt;用户名&gt;.yaml</code>：</p>
+    <pre>auth:
+  password_hash: "$2a$10$YVpm1R6puQFltjmrKziLsujVtAJDJIynTC54yESGslrkmyP5ORBTO"  # bcrypt
+
+services:
+  # dsh：后端与网关同一台机器，host 用 127.0.0.1
+  - id: dsh
+    name: "dsh"
+    description: "DeepSeek Harness Web GUI"
+    host: "127.0.0.1"        # 本地优先应用，网关在本机转发
+    port: 3080
+    path: "/dsh"             # 前端访问路径
+    websocket: true          # 事件流走 WebSocket/SSE，必须开启
+    category: "AI"
+    order: 0
+    bwlimit: 10000000        # 可选：10 MB/s 带宽上限（上行/下行各限）</pre>
+
+    <h3>③ 访问</h3>
+    <p>浏览器打开 <code>http://网关:7658/proxy/&lt;用户名&gt;/dsh/</code>（示例：
+      <code>http://192.168.0.106:7658/proxy/ahworld/dsh/</code>），登录网关即可使用，
+      无需记住 dsh 的端口，也无需把 dsh 暴露到局域网。</p>
+  </div>
+
+  <div class="card">
+    <h2>GoProx 自动消化了哪些兼容问题</h2>
+    <table>
+      <tr><th>dsh 的限制</th><th>不经过网关时的现象</th><th>GoProx 的兼容机制</th></tr>
+      <tr>
+        <td>只监听 <code>127.0.0.1</code></td>
+        <td>局域网其他机器无法访问</td>
+        <td>网关在本机转发，浏览器只与网关通信</td>
+      </tr>
+      <tr>
+        <td>/api 信任栅栏（Host/Origin 必须一致）</td>
+        <td>RPC 全部 <code>403 forbidden</code>，页面空白</td>
+        <td><strong>同源 Origin 改写</strong>：浏览器 Origin 改写成后端 authority，栅栏通过</td>
+      </tr>
+      <tr>
+        <td><code>crypto.randomUUID</code> 仅安全上下文可用</td>
+        <td><code>crypto.randomUUID is not a function</code></td>
+        <td><strong>HTML 注入 polyfill</strong>：用 <code>getRandomValues</code> 重建，HTTPS 下自动失效</td>
+      </tr>
+      <tr>
+        <td>WebSocket / SSE 事件流</td>
+        <td><code>502</code>，101 升级失败</td>
+        <td>101 升级响应不做带宽限速包装，隧道直连</td>
+      </tr>
+      <tr>
+        <td>页面内绝对路径资源（<code>/assets</code>、<code>/api</code>、<code>/plugins</code>）</td>
+        <td>资源请求落到网关根路径 → 404</td>
+        <td>「最近访问的服务」cookie 兜底转发到对应后端</td>
+      </tr>
+    </table>
+    <div class="note">以上全部自动生效，无需在 dsh 侧做任何配置（如 <code>base_url</code>、
+      <code>--trusted-host</code> 等）。dsh 源码零改动。</div>
+  </div>
+
+  <div class="card">
+    <h2>常见问题排查</h2>
+    <table>
+      <tr><th>症状</th><th>原因</th><th>处理</th></tr>
+      <tr><td><code>crypto.randomUUID is not a function</code></td><td>纯 HTTP 非安全上下文缺少该 API</td><td>确认走的是 <code>/proxy/&lt;用户&gt;/dsh/</code> 代理路径（polyfill 只注入到代理的 HTML）</td></tr>
+      <tr><td><code>/api/*</code> 返回 <code>403 forbidden</code></td><td>dsh 信任栅栏判定 Origin/Host 不一致</td><td>升级到含 Origin 改写的 goprox 版本；确认不是直连后端</td></tr>
+      <tr><td>WebSocket 连接报 <code>502</code></td><td>带宽限速包装了 101 升级响应</td><td>升级到含 101 修复的 goprox 版本；<code>bwlimit</code> 可正常保留</td></tr>
+      <tr><td>页面能打开但工作区/会话是空的</td><td>RPC 请求被栅栏或 polyfill 缺失阻断</td><td>浏览器控制台无报错则正常；否则对照上两行</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>同类「本地优先」应用</h2>
+    <p>同样的配置思路适用于其他只认回环地址的内网应用：Jupyter（<code>--ip=127.0.0.1</code>）、
+      code-server（<code>--bind-addr 127.0.0.1</code>）、本地大模型 API 服务等。
+      只要后端跑在网关能访问的地址上，加一张服务卡片即可通过统一入口访问。</p>
+    <div class="note"><strong>进阶：根路径 SPA + HTTPS</strong>。若应用是 Nuxt/Next 这类客户端路由 SPA
+      （无法理解 <code>/proxy/</code> 前缀），在用户配置加 <code>default_service: &lt;服务ID&gt;</code> 即可在
+      网关根路径下零改动访问（如 <code>/dashboard</code>）。再配合 <code>goprox serve --tls-selfsigned</code>，
+      整个站点成为安全上下文，<code>crypto.randomUUID</code>、<code>crypto.subtle</code>、
+      <code>navigator.storage</code> 等安全上下文 API 全部原生可用，连 polyfill 都不需要。</div>
+  </div>
+</main>
+
+<footer class="footer">
+  GoProx · <a href="https://github.com/seqyuan/goprox" target="_blank" rel="noopener">github.com/seqyuan/goprox</a>
+</footer>
+<script src="assets/script.js"></script>
+</body>
+</html>

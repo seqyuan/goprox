@@ -20,6 +20,12 @@ type ServerState struct {
 	Port         int    `yaml:"port"`
 	TrustedProxy string `yaml:"trusted_proxy,omitempty"` // CIDR of a trusted reverse proxy; enables X-Forwarded-* header trust
 	Title        string `yaml:"title,omitempty"`         // site title shown in the top-left corner (default: GoProx)
+	// Native TLS termination. When both are set the gateway serves HTTPS,
+	// making the whole site a secure context (all Web Crypto / secure-context
+	// APIs become available to proxied apps). Paths are stored as given;
+	// --tls-selfsigned writes absolute paths into the config dir.
+	TLSCert string `yaml:"tls_cert,omitempty"`
+	TLSKey  string `yaml:"tls_key,omitempty"`
 }
 
 type AuthState struct {
@@ -95,6 +101,8 @@ func LoadState(path string) (*StateConfig, error) {
 			"port":          s.Server.Port,
 			"trusted_proxy": s.Server.TrustedProxy,
 			"title":         s.Server.Title,
+			"tls_cert":      s.Server.TLSCert,
+			"tls_key":       s.Server.TLSKey,
 		}
 		raw["auth"] = map[string]interface{}{
 			"session_secret": s.Auth.SessionSecret,
@@ -108,7 +116,7 @@ func LoadState(path string) (*StateConfig, error) {
 	return &s, nil
 }
 
-func PersistServerConfig(path, host string, port int, trustedProxy, title string) error {
+func PersistServerConfig(path, host string, port int, trustedProxy, title, tlsCert, tlsKey string) error {
 	// Load existing or create default
 	var raw map[string]interface{}
 	data, err := os.ReadFile(path)
@@ -134,6 +142,12 @@ func PersistServerConfig(path, host string, port int, trustedProxy, title string
 	}
 	if title != "" {
 		server["title"] = title
+	}
+	if tlsCert != "" {
+		server["tls_cert"] = tlsCert
+	}
+	if tlsKey != "" {
+		server["tls_key"] = tlsKey
 	}
 	raw["server"] = server
 

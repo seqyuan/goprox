@@ -13,6 +13,7 @@
     <a href="index.html">首页</a>
     <a href="install.html">安装</a>
     <a href="services.html" class="active">服务与示例</a>
+    <a href="dsh-demo.html">dsh 示例</a>
     <a href="backend-path.html">BackendPath</a>
     <a href="security.html">安全</a>
     <a href="changelog.html">更新日志</a>
@@ -88,6 +89,25 @@ services:
       <tr><td><code>id</code></td><td>string</td><td>—</td><td>🔒 系统自动</td><td>服务唯一 ID，由名称自动生成，重名自动加 <code>-2</code>、<code>-3</code>…</td></tr>
       <tr><td><code>order</code></td><td>int</td><td>—</td><td>🔒 系统自动</td><td>排序号（新增 = 最大 order+1，拖拽排序时更新）</td></tr>
     </table>
+  </div>
+
+  <div class="card">
+    <h2>根路由 SPA 零改动接入（default_service）</h2>
+    <p>Nuxt / Next.js / Vite 这类客户端路由应用按浏览器路径匹配根路径路由，
+      无法理解 <code>/proxy/&lt;用户&gt;/&lt;服务&gt;/</code> 前缀。在用户配置里声明一个默认服务，
+      网关根路径下未被认领的裸路径就会确定性地转发给它：</p>
+    <pre>auth:
+  password_hash: "$2a$10$..."
+default_service: xifeng        # 服务 ID（写在 services 之前）
+services:
+  - name: "xifeng"
+    host: "127.0.0.1"
+    port: 3301
+    path: "/xifeng"
+    websocket: true</pre>
+    <p>访问 <code>http://网关:1908/dashboard</code>、<code>/dashboard/api</code> 直接进入应用页面
+      （页面类路径确定性路由）；页面内的资源与 API 请求跟随页面 Referer 转发到同一服务。
+      未配置默认服务的用户行为不变。</p>
   </div>
 
   <div class="card">

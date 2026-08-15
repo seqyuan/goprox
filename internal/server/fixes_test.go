@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/proxy"
 )
 
 // gzipBackendSrv returns a backend that serves HTML gzipped when the client
@@ -271,14 +273,136 @@ func TestChunkedHTMLForwardedWithBaseInjection(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	wantLen := len(chunk)*5 + len(`<base href="/proxy/alice/jupyter/">`)
+	wantLen := len(chunk)*5 + len(`<base href="/proxy/alice/jupyter/">`) + len(proxy.WebCompatPolyfill)
 	if len(body) != wantLen {
 		t.Fatalf("chunked body wrong size: got %d bytes, want %d", len(body), wantLen)
 	}
 	if !strings.HasPrefix(body, `<base href="/proxy/alice/jupyter/">`) {
 		t.Fatalf("base tag not injected at start of chunked body")
 	}
+	if !strings.Contains(body, proxy.WebCompatPolyfill) {
+		t.Fatalf("webcompat polyfill missing from chunked body")
+	}
 	if !strings.HasSuffix(body, "</p>") {
 		t.Fatalf("chunked body truncated at the end")
+	}
+}
+
+// A bare gateway path that matches no service and no route cookie is forwarded
+// to the user's configured default service (DefaultService), letting root-based
+// SPAs serve at the gateway root without app-side basePath changes.
+func TestDefaultServiceForwardsBarePath(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<html><head></head><body>spa</body></html>"))
+	}))
+	defer backend.Close()
+	host, port := backendAddr(t, backend)
+
+	configDir := t.TempDir()
+	cfgPath := config.UserConfigPath(configDir, "alice")
+	os.MkdirAll(filepath.Dir(cfgPath), 0700)
+	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\ndefault_service: xifeng\nservices:\n  - id: xifeng\n    name: Xifeng\n    host: %s\n    port: %s\n    path: /xifeng\n    websocket: true\n", strings.Repeat("1", 64), host, port)
+	os.WriteFile(cfgPath, []byte(cfg), 0600)
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, configDir)
+
+	// A bare path /dashboard (not a service path) with a valid session and no
+	// route cookie must be forwarded to the default service as-is.
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if gotPath != "/dashboard" {
+		t.Fatalf("backend saw %q, want /dashboard", gotPath)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// The route cookies must be stamped so sub-resources stay on the service.
+	if !strings.Contains(rec.Header().Get("Set-Cookie"), "goprox_route") {
+		t.Fatalf("missing route cookie in response: %v", rec.Header().Get("Set-Cookie"))
+	}
+}
+
+// Without a valid session the default service must never be reached (route
+// cookies / default forwarding are not credentials).
+func TestDefaultServiceRequiresSession(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("backend must not be reached without a session")
+	}))
+	defer backend.Close()
+	host, port := backendAddr(t, backend)
+
+	configDir := t.TempDir()
+	cfgPath := config.UserConfigPath(configDir, "alice")
+	os.MkdirAll(filepath.Dir(cfgPath), 0700)
+	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\ndefault_service: xifeng\nservices:\n  - id: xifeng\n    name: Xifeng\n    host: %s\n    port: %s\n    path: /xifeng\n    websocket: true\n", strings.Repeat("1", 64), host, port)
+	os.WriteFile(cfgPath, []byte(cfg), 0600)
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, configDir)
+
+	req := httptest.NewRequest("GET", "/dashboard", nil) // no cookie
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no session must not reach backend)", rec.Code)
+	}
+}
+
+// A page-like bare path goes to the default service deterministically even
+// when a route cookie points at another service; a resource-like path
+// (/api/...) follows its Referer instead, so the SPA's API calls stick to the
+// page that issued them.
+func TestDefaultServicePageVsResourceRouting(t *testing.T) {
+	var gotPath, gotHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotHost = r.Host
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := backendAddr(t, backend)
+	backendHost := net.JoinHostPort(host, port)
+
+	configDir := t.TempDir()
+	cfgPath := config.UserConfigPath(configDir, "alice")
+	os.MkdirAll(filepath.Dir(cfgPath), 0700)
+	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\ndefault_service: xifeng\nservices:\n  - id: xifeng\n    name: Xifeng\n    host: %s\n    port: %s\n    path: /xifeng\n    websocket: true\n", strings.Repeat("1", 64), host, port)
+	os.WriteFile(cfgPath, []byte(cfg), 0600)
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, configDir)
+
+	sessionCookie := auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false)
+
+	// 1. Page-like /dashboard with a route cookie pointing at a DIFFERENT
+	// service prefix still goes to the default service.
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	req.Header.Set("Cookie", sessionCookie+"; goprox_route=/proxy/alice/other")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if gotPath != "/dashboard" {
+		t.Fatalf("page path routed to %q, want /dashboard (default service)", gotPath)
+	}
+
+	// 2. Resource-like /api/x with a Referer on the default service goes there.
+	req = httptest.NewRequest("GET", "/api/x", nil)
+	req.Header.Set("Cookie", sessionCookie)
+	req.Header.Set("Referer", "http://gateway/dashboard")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if gotPath != "/api/x" || gotHost != backendHost {
+		t.Fatalf("resource path routed to %q @ %q, want /api/x @ %s (via Referer)", gotPath, gotHost, backendHost)
 	}
 }

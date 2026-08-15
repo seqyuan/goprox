@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -39,9 +40,20 @@ Options:
   --port <port>           Gateway listen port (default: 1908)
   --trusted-proxy <cidr>  Trusted reverse-proxy CIDR (e.g. 127.0.0.1/32);
                           enables X-Forwarded-For/Proto trust (default: none)
+  --tls-cert <file>       TLS certificate (PEM); with --tls-key serves HTTPS
+  --tls-key <file>        TLS private key (PEM)
+  --tls-selfsigned        Generate a self-signed cert into the config dir and
+                          serve HTTPS (covers localhost + LAN IPs; browsers
+                          show a one-time warning you must accept)
   --title <text>          Site title shown in the top-left corner of the
                           dashboard and login page (default: GoProx)
+  -V, --version           Show version
   -h, --help              Show this help
+
+HTTPS turns the whole site into a secure context, which unlocks every
+secure-context Web API (crypto.randomUUID, crypto.subtle, navigator.storage,
+clipboard, ...) for proxied apps over plain LAN HTTP. TLS settings persist in
+state.yaml; to disable, delete the tls_cert/tls_key lines and restart.
 
 Run in the foreground (Ctrl+C to stop). For a persistent session, run it in
 tmux/screen or with nohup:
@@ -64,10 +76,14 @@ func main() {
 
 	args := os.Args[1:]
 
-	// Parse for help flag
+	// Parse for help / version flags
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
 			printUsage()
+			return
+		}
+		if a == "-V" || a == "--version" {
+			fmt.Printf("GoProx %s\n", version)
 			return
 		}
 	}
@@ -127,11 +143,14 @@ func main() {
 }
 
 type options struct {
-	configDir    string
-	host         string
-	port         int
-	trustedProxy string
-	title        string
+	configDir     string
+	host          string
+	port          int
+	trustedProxy  string
+	title         string
+	tlsCert       string
+	tlsKey        string
+	tlsSelfSigned bool
 }
 
 func parseOptions(args []string) (options, error) {
@@ -178,6 +197,20 @@ func parseOptions(args []string) (options, error) {
 				return opts, fmt.Errorf("option %s requires a value", a)
 			}
 			opts.trustedProxy = v
+		case "--tls-cert":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.tlsCert = v
+		case "--tls-key":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.tlsKey = v
+		case "--tls-selfsigned":
+			opts.tlsSelfSigned = true
 		case "--title":
 			v, ok := next()
 			if !ok {
@@ -194,6 +227,12 @@ func parseOptions(args []string) (options, error) {
 	}
 	if opts.port == 0 {
 		opts.port = config.DefaultPort
+	}
+
+	if opts.tlsCert != "" || opts.tlsKey != "" {
+		if opts.tlsCert == "" || opts.tlsKey == "" {
+			return opts, fmt.Errorf("tls requires both --tls-cert and --tls-key")
+		}
 	}
 
 	return opts, nil
@@ -294,6 +333,27 @@ func runServer(opts options) {
 	if opts.title != "" {
 		state.Server.Title = opts.title
 	}
+	if opts.tlsCert != "" || opts.tlsKey != "" {
+		state.Server.TLSCert = opts.tlsCert
+		state.Server.TLSKey = opts.tlsKey
+	}
+	if opts.tlsSelfSigned {
+		cert, key, err := generateSelfSignedCert(filepath.Join(configDir, "tls"))
+		if err != nil {
+			log.Fatalf("generate self-signed cert: %v", err)
+		}
+		state.Server.TLSCert = cert
+		state.Server.TLSKey = key
+	}
+	tlsEnabled := state.Server.TLSCert != "" && state.Server.TLSKey != ""
+	if tlsEnabled {
+		if _, err := os.Stat(state.Server.TLSCert); err != nil {
+			log.Fatalf("tls cert %s: %v", state.Server.TLSCert, err)
+		}
+		if _, err := os.Stat(state.Server.TLSKey); err != nil {
+			log.Fatalf("tls key %s: %v", state.Server.TLSKey, err)
+		}
+	}
 
 	srv := server.New(state, configDir)
 
@@ -320,7 +380,8 @@ func runServer(opts options) {
 	// the already-running check / bind would let a failed start overwrite
 	// state.yaml with a port we never bound, corrupting the running gateway's
 	// recorded port for `status` and future default starts.
-	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy, opts.title)
+	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy, opts.title,
+		state.Server.TLSCert, state.Server.TLSKey)
 
 	// Start config scanner
 	stopScan := make(chan struct{})
@@ -341,10 +402,17 @@ func runServer(opts options) {
 		}
 	}()
 
-	log.Printf("listening on http://%s:%d", state.Server.Host, state.Server.Port)
+	scheme := "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
+	log.Printf("listening on %s://%s:%d", scheme, state.Server.Host, state.Server.Port)
 	log.Printf("config: %s", configDir)
 	log.Printf("users: %s", config.UsersDir(configDir))
 	log.Printf("%d user(s) loaded", srv.UserCount())
+	if tlsEnabled {
+		log.Printf("tls: %s (cert), %s (key)", state.Server.TLSCert, state.Server.TLSKey)
+	}
 	if state.Server.TrustedProxy != "" {
 		if config.IsTrustedProxyTooBroad(state.Server.TrustedProxy) {
 			log.Printf("WARNING: trusted proxy %q covers the whole address space; any client can spoof X-Forwarded-* headers and defeat login rate limiting", state.Server.TrustedProxy)
@@ -354,7 +422,11 @@ func runServer(opts options) {
 		log.Printf("trusted proxy: none (X-Forwarded-* headers ignored)")
 	}
 
-	if err := httpServer.Serve(listener); err != http.ErrServerClosed {
+	if tlsEnabled {
+		if err := httpServer.ServeTLS(listener, state.Server.TLSCert, state.Server.TLSKey); err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	} else if err := httpServer.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
 }

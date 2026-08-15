@@ -138,11 +138,16 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 		}
-		// Not a goprox API: try forwarding to backend service
+		// Not a goprox API: try forwarding to backend service. Referer first:
+		// an SPA page's API calls carry the page that issued them, which is a
+		// more precise target than the route cookie (most recently visited).
+		if s.handleRefererProxy(w, r) {
+			return
+		}
 		if s.handleRouteCookieProxy(w, r) {
 			return
 		}
-		if s.handleRefererProxy(w, r) {
+		if s.handleDefaultServiceProxy(w, r) {
 			return
 		}
 		http.NotFound(w, r)
@@ -155,11 +160,15 @@ func (s *Server) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		// Try to forward to backend service
+		// Referer first (the issuing page is the precise target), then route
+		// cookie, then the user's default service as a last resort.
+		if s.handleRefererProxy(w, r) {
+			return
+		}
 		if s.handleRouteCookieProxy(w, r) {
 			return
 		}
-		if s.handleRefererProxy(w, r) {
+		if s.handleDefaultServiceProxy(w, r) {
 			return
 		}
 		http.NotFound(w, r)
@@ -245,10 +254,21 @@ func (s *Server) Handler() http.Handler {
 					return
 				}
 			}
-			if s.handleRouteCookieProxy(w, r) {
+			// Page-like bare paths go deterministically to the user's default
+			// service (root-routed SPAs that cannot understand a /proxy/ prefix);
+			// resource-like paths (assets, /api calls) follow the Referer of the
+			// page that issued them, then the route cookie, then the default
+			// service as a last resort.
+			if s.handleDefaultServicePage(w, r) {
 				return
 			}
 			if s.handleRefererProxy(w, r) {
+				return
+			}
+			if s.handleRouteCookieProxy(w, r) {
+				return
+			}
+			if s.handleDefaultServiceProxy(w, r) {
 				return
 			}
 			sendHTML(w, 404, web.NotFoundPage(s.siteTitle))
@@ -270,6 +290,14 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				// net/http aborts handlers with ErrAbortHandler when the client
+				// disconnects mid-response (httputil.ReverseProxy panics with it
+				// on a copy error while streaming, e.g. SSE). The connection is
+				// already dead: swallowing the panic is correct, and logging a
+				// stack trace or writing an error would only be noise.
+				if rec == http.ErrAbortHandler {
+					return
+				}
 				log.Printf("[goprox] panic: %v\n%s", rec, debug.Stack())
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
@@ -754,9 +782,21 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
 	rp := proxy.NewReverseProxy(svc, fc)
 	rp.Transport = s.transport
+	// Go's ReverseProxy logs body-copy errors ("unexpected EOF") through its
+	// internal logger whenever the client disconnects mid-stream (SSE tab
+	// close, navigation). Those are expected, not outages, and meaningful
+	// failures are already logged by ErrorHandler below, so silence the
+	// standard-library noise.
+	rp.ErrorLog = log.New(io.Discard, "", 0)
 	// Add error handler: log the full error server-side, reply generically so
 	// backend host/port details are not leaked to clients.
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		// The client went away (tab closed / navigation during a stream); the
+		// connection is dead, so there is nothing to write and the "context
+		// canceled" error is expected, not an outage.
+		if r.Context().Err() != nil {
+			return
+		}
 		log.Printf("[goprox] proxy error: service=%s, path=%s, error=%v", svc.ID, r.URL.Path, err)
 		switch {
 		case strings.Contains(err.Error(), "connection refused"):
@@ -849,6 +889,80 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.forwardAsIs(w, r, match)
+	return true
+}
+
+// handleDefaultServiceProxy forwards unclaimed bare gateway paths to the
+// user's configured default service (DefaultService), so root-routed SPAs
+// (Nuxt / Next / Vite client routers, which match window.location.pathname
+// against root routes and cannot understand a /proxy/<user>/ prefix) work at
+// the gateway root with zero app-side basePath/baseURL changes. It runs only
+// after route-cookie and Referer forwarding have failed; forwardAsIs stamps
+// the route cookies that keep subsequent sub-resource requests on the same
+// service. Without a valid session the request falls through to the 404.
+func (s *Server) handleDefaultServiceProxy(w http.ResponseWriter, r *http.Request) bool {
+	return s.forwardToDefaultService(w, r)
+}
+
+// handleDefaultServicePage deterministically routes page-like bare paths
+// (SPA views like /dashboard, not assets or API calls) to the user's default
+// service, before Referer / route-cookie forwarding. This makes root-based
+// SPA navigation stable regardless of which other services were visited most
+// recently; resource-like paths are left to the Referer/route-cookie chain so
+// they stick to the page that issued them.
+func (s *Server) handleDefaultServicePage(w http.ResponseWriter, r *http.Request) bool {
+	if !barePathIsPage(r.URL.Path) {
+		return false
+	}
+	return s.forwardToDefaultService(w, r)
+}
+
+func (s *Server) forwardToDefaultService(w http.ResponseWriter, r *http.Request) bool {
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
+	if !session.Valid || session.UserID == "" {
+		return false
+	}
+	user := s.registry.GetUser(session.UserID)
+	if user == nil || user.Config.DefaultService == "" {
+		return false
+	}
+	svc := config.ServiceByID(user.Config.Services, user.Config.DefaultService)
+	if svc == nil {
+		return false
+	}
+	match := &config.ServiceMatch{
+		Username:      session.UserID,
+		Service:       svc,
+		RemainingPath: r.URL.Path,
+	}
+	s.forwardAsIs(w, r, match)
+	return true
+}
+
+// barePathIsPage reports whether an unclaimed bare gateway path looks like a
+// page navigation (a client-routed SPA view) rather than a static asset or
+// API call. Page-like paths are routed to the user's default service
+// deterministically; resource-like paths (segments with file extensions, or
+// paths under known asset/API roots) fall back to Referer / route-cookie
+// forwarding so they follow the page that requested them.
+func barePathIsPage(p string) bool {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	lower := strings.ToLower(p)
+	for _, seg := range strings.Split(lower, "/") {
+		if i := strings.LastIndexByte(seg, '.'); i > 0 && i < len(seg)-1 {
+			return false
+		}
+	}
+	for _, root := range []string{
+		"/api/", "/plugins/", "/_nuxt/", "/_next/", "/assets/", "/static/",
+		"/vendors/", "/files/", "/favicon.", "/manifest.webmanifest",
+	} {
+		if strings.HasPrefix(lower, root) {
+			return false
+		}
+	}
 	return true
 }
 

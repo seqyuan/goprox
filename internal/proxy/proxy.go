@@ -84,6 +84,23 @@ func proto(r *http.Request) string {
 	return "http"
 }
 
+// originAuthorityMatches reports whether the Origin header's authority equals
+// the given gateway authority (hostname and port, WHATWG-normalized). Only
+// same-origin browser requests through the gateway are candidates for the
+// Origin rewrite; a third-party Origin (a CORS client on another site) must
+// pass through untouched.
+func originAuthorityMatches(origin, gatewayHost string) bool {
+	o, err := url.Parse(origin)
+	if err != nil || o.Host == "" {
+		return false
+	}
+	g, err := url.Parse("http://" + gatewayHost)
+	if err != nil || g.Host == "" {
+		return false
+	}
+	return o.Host == g.Host
+}
+
 // maxInjectHTML caps how much of an HTML body we buffer for <base>
 // injection. Known-length responses larger than this are passed through
 // untouched; unknown-length (chunked) responses are read up to this cap
@@ -140,6 +157,20 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.Out.Header.Set("X-Forwarded-Host", fc.Host)
 			pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
 
+			// The Host header was rewritten to the backend target above, so a
+			// browser-sent Origin (the gateway's authority) would mismatch and
+			// fail backends that enforce a same-origin Host/Origin check (e.g.
+			// dsh's /api trust fence, Jupyter CSRF). For same-origin browser
+			// requests — Origin host equals the gateway authority the browser
+			// addressed — rewrite Origin to the backend's own authority so the
+			// request looks same-origin to the backend, exactly as if the
+			// browser had talked to it directly. Third-party Origins (CORS
+			// clients calling the proxied API from another site) are left
+			// untouched so backend CORS semantics stay intact.
+			if origin := pr.In.Header.Get("Origin"); origin != "" && originAuthorityMatches(origin, fc.Host) {
+				pr.Out.Header.Set("Origin", fc.Proto+"://"+target.Host)
+			}
+
 			// Throttle the request body (upload) to the per-service cap. The
 			// transport reads pr.Out.Body, so wrapping it here limits the rate
 			// at which the client's upload reaches the backend.
@@ -148,6 +179,14 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			}
 		},
 		ModifyResponse: func(resp *http.Response) (retErr error) {
+			// 101 Switching Protocols hands the raw connection to the upgrade
+			// tunnel (WebSocket): ReverseProxy requires resp.Body to stay the
+			// io.ReadWriteCloser the transport produced. Wrapping it with a
+			// rate limiter would break the upgrade (and throttling a live
+			// tunnel is meaningless anyway), so pass it through untouched.
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				return nil
+			}
 			// Throttle the response body (download) to the per-service cap.
 			// The defer runs after every other body rewrite below, so whatever
 			// body this function ends with (streamed, buffered, injected) is
@@ -214,14 +253,15 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			}
 			resp.Body.Close()
 
-			// Skip if the backend already supplies its own <base> tag.
-			if bytes.Contains(bytes.ToLower(body), []byte("<base")) {
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-				return nil
+			// Skip the <base> tag only when the backend already supplies its own;
+			// the webcompat polyfill is injected regardless (the two are
+			// unrelated, and a page's own base tag does not imply it avoids
+			// secure-context-only APIs on plain HTTP).
+			snippet := WebCompatPolyfill
+			if !bytes.Contains(bytes.ToLower(body), []byte("<base")) {
+				snippet = fmt.Sprintf("<base href=\"%s\">", html.EscapeString(fc.Base)) + WebCompatPolyfill
 			}
-
-			baseTag := fmt.Sprintf("<base href=\"%s\">", html.EscapeString(fc.Base))
-			modified := injectBaseTag(body, []byte(baseTag))
+			modified := injectBaseTag(body, []byte(snippet))
 
 			resp.Body = io.NopCloser(bytes.NewReader(modified))
 			resp.ContentLength = int64(len(modified))
@@ -292,6 +332,16 @@ func splitHostPort(h string) (host, port string) {
 	}
 	return h, ""
 }
+
+// webCompatPolyfill is a small inline script injected into proxied HTML pages
+// served over plain HTTP (an insecure context). Browsers only expose
+// crypto.randomUUID in secure contexts (HTTPS/localhost), so apps that call it
+// — e.g. dsh's RPC layer mints a UUID per request — crash with
+// "crypto.randomUUID is not a function" when reached through an HTTP gateway.
+// getRandomValues is available on insecure origins, so the polyfill rebuilds
+// the missing method from it. It is a no-op on HTTPS (randomUUID already
+// defined) and for pages that never call it.
+const WebCompatPolyfill = `<script>(function(){var c=window.crypto;if(c&&typeof c.randomUUID!=="function"&&c.getRandomValues){try{Object.defineProperty(c,"randomUUID",{value:function(){var b=c.getRandomValues(new Uint8Array(16));b[6]=b[6]&15|64;b[8]=b[8]&63|128;var h="";for(var i=0;i<16;i++){h+=(b[i]<16?"0":"")+b[i].toString(16)}return h.slice(0,8)+"-"+h.slice(8,12)+"-"+h.slice(12,16)+"-"+h.slice(16,20)+"-"+h.slice(20)},writable:true,configurable:true})}catch(e){}}})();</script>`
 
 // injectBaseTag inserts a <base> tag into an HTML body.
 // Priority: right after <head> opening tag (to precede all <script>/<link>),

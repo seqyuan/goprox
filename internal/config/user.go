@@ -34,6 +34,11 @@ type ServiceConfig struct {
 type UserConfig struct {
 	Auth     UserAuthConfig  `yaml:"auth"`
 	Services []ServiceConfig `yaml:"services"`
+	// DefaultService names the service (by ID) that unclaimed bare gateway
+	// paths route to when no route cookie / Referer points anywhere. Root-based
+	// SPAs (Nuxt/Next client routers that cannot understand a /proxy/ prefix)
+	// then work at the gateway root with zero app changes.
+	DefaultService string `yaml:"default_service,omitempty"`
 }
 
 type UserAuthConfig struct {
@@ -221,6 +226,18 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		i++
 	}
 
+	// Validate the default-service reference: it must name an existing service
+	// ID. A stale reference is dropped (with a one-time warning) so the operator
+	// notices the typo without breaking the whole account.
+	if cfg.DefaultService != "" && !serviceWithID(cfg.Services, cfg.DefaultService) {
+		key := path + "\x00" + cfg.DefaultService
+		if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+			log.Printf("[goprox] default_service %q of %s does not match any service id; ignored",
+				cfg.DefaultService, path)
+		}
+		cfg.DefaultService = ""
+	}
+
 	return &cfg, nil
 }
 
@@ -385,6 +402,16 @@ func serviceWithID(services []ServiceConfig, id string) bool {
 		}
 	}
 	return false
+}
+
+// ServiceByID returns a pointer to the service with the given ID, or nil.
+func ServiceByID(services []ServiceConfig, id string) *ServiceConfig {
+	for i := range services {
+		if services[i].ID == id {
+			return &services[i]
+		}
+	}
+	return nil
 }
 
 func serviceWithPath(services []ServiceConfig, path string) bool {

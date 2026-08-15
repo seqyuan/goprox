@@ -14,6 +14,11 @@ auth:
   # 由网页「设置两步验证」自动生成，或管理员手动填写；删除本行即关闭。
   # totp_secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
+# 可选：默认服务（服务 ID）。未认领的裸路径（网关根路径下不属于任何服务、也不是
+# 网关自身的路径）会确定性地路由到该服务——适合根路由型 SPA（Nuxt/Next 客户端路由）
+# 在网关根路径下零改动运行。不配置则裸路径按 Referer → 最近访问路由 cookie 转发。
+# default_service: web
+
 services:
   # ① 本机服务：后端与网关在同一台机器，host 用 127.0.0.1
   - id: jupyter

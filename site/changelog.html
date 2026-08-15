@@ -13,6 +13,7 @@
     <a href="index.html">首页</a>
     <a href="install.html">安装</a>
     <a href="services.html">服务与示例</a>
+    <a href="dsh-demo.html">dsh 示例</a>
     <a href="backend-path.html">BackendPath</a>
     <a href="security.html">安全</a>
     <a href="changelog.html" class="active">更新日志</a>
@@ -23,6 +24,16 @@
 <main class="container">
   <h1 class="page-title">更新日志</h1>
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
+
+  <div class="card">
+    <h2>v0.4.0 — 2026-08-15</h2>
+    <ul>
+      <li><strong>原生 TLS 终结</strong>：<code>--tls-selfsigned</code> 自动生成覆盖 localhost + 局域网 IP 的自签证书并直接提供 HTTPS；整个站点成为安全上下文，代理应用的 <code>crypto.randomUUID</code> / <code>crypto.subtle</code> / <code>navigator.storage</code> 等安全上下文 API 全部原生可用。也可用 <code>--tls-cert/--tls-key</code> 指定自有证书。</li>
+      <li><strong>默认服务（default_service）</strong>：未被认领的裸路径确定性地路由到指定服务——根路由型 SPA（Nuxt/Next 客户端路由）在网关根路径零改动运行；资源类路径（静态文件、<code>/api/</code>、<code>/_nuxt/</code>）仍跟随页面 Referer。</li>
+      <li><strong>兼容性全面增强</strong>：同源 Origin 改写（通过后端 Host/Origin 栅栏）、WebSocket 101 与 <code>bwlimit</code> 兼容、安全上下文 API polyfill、裸路径 Referer 优先、日志静默、<code>-V/--version</code>。</li>
+      <li><strong>本地优先应用零改动接入</strong>：<a href="dsh-demo.html">「dsh 配置示例」页面</a>，演示 DeepSeek Harness 这类只监听回环、自带信任栅栏的应用如何直接通过网关使用。</li>
+    </ul>
+  </div>
 
   <div class="card">
     <h2>v0.3.0 — 2026-08-15</h2>

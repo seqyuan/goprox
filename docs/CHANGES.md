@@ -1,3 +1,26 @@
+# GoProx v0.4.0 变更日志（2026-08-15）
+
+## 新功能
+
+- **原生 TLS 终结**：`goprox serve --tls-cert/--tls-key/--tls-selfsigned` 直接提供 HTTPS。`--tls-selfsigned` 自动生成覆盖 localhost + 所有局域网 IP 的自签证书（存入 `config/tls/`，0600）。HTTPS 使整个站点成为安全上下文，代理应用的所有安全上下文 Web API（`crypto.randomUUID`、`crypto.subtle`、`navigator.storage`、剪贴板等）在纯 HTTP 局域网下一次性全部可用；TLS 配置持久化到 `state.yaml`（删除 `tls_cert`/`tls_key` 两行并重启即关闭）
+- **用户级默认服务（default_service）**：用户配置可指定默认服务 ID；未被认领的裸路径按「页面类 / 资源类」分流——页面类路径（SPA 视图，如 `/dashboard`）确定性地路由到默认服务，资源类路径（带扩展名的静态文件、`/api/`、`/plugins/`、`/_nuxt/` 等）跟随页面 Referer / 最近访问路由 cookie 转发。根路由型 SPA（Nuxt/Next/Vite 客户端路由）可在网关根路径零改动运行
+
+## 兼容性
+
+- **安全上下文 Web API polyfill**：向代理的 HTML 注入 `crypto.randomUUID` polyfill（`getRandomValues` 重建），纯 HTTP 局域网下应用不再报 `crypto.randomUUID is not a function`；HTTPS 下原生实现存在时自动为无操作
+- **同源 Origin 改写**：浏览器同源请求的 `Origin` 头改写成后端 authority，通过后端自身 Host/Origin 同源校验（dsh 的 `/api` 信任栅栏、Jupyter CSRF）；第三方 Origin（CORS 客户端）不改写
+- **WebSocket 101 与带宽限速兼容**：101 Switching Protocols 升级响应不再被 `bwlimit` 包装，限速服务的 WebSocket 隧道可正常建立（修复 `101 switching protocols response with non-writable body`）
+- **裸路径 Referer 优先**：`/api/*` 与根路径转发链改为 Referer → 路由 cookie → 默认服务，SPA 页面内的 API/资源请求更精确地跟随发起页面
+- **日志静默**：客户端断开流式连接时的 `ErrAbortHandler` panic 与标准库 `unexpected EOF` 不再刷日志/写死连接
+- **`-V` / `--version`**：显示版本号（`goprox --help` 第一行同源）
+
+## 文档
+
+- README 新增「原生 TLS（局域网 HTTPS）」「默认服务（default_service，根路径托管）」章节，命令参考补充 TLS 与版本选项；`config.example.yaml` 同步
+- 新增「dsh 配置示例」页面：`site/dsh-demo.html`（GitHub Pages 同步发布），演示 DeepSeek Harness 这类「本地优先/受限访问」应用如何零改动通过网关在局域网使用
+
+---
+
 # GoProx v0.3.1 变更日志（2026-08-15）
 
 ## 文档

@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"bufio"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -319,5 +322,254 @@ func TestBWLimitPreservesUpload(t *testing.T) {
 	rp.ServeHTTP(httptest.NewRecorder(), req)
 	if gotBody != "upload-me" {
 		t.Fatalf("bwlimit corrupted upload: %q", gotBody)
+	}
+}
+
+// A browser-sent Origin must be rewritten to the backend's own authority so
+// backends that enforce a Host/Origin same-origin check (e.g. dsh's /api
+// trust fence, Jupyter CSRF) accept requests proxied from another origin.
+func TestOriginRewrittenToBackendAuthority(t *testing.T) {
+	var gotOrigin, gotHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin = r.Header.Get("Origin")
+		gotHost = r.Host
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+
+	req := httptest.NewRequest("POST", "/api/x", nil)
+	req.Host = "192.168.0.106:7658"
+	req.Header.Set("Origin", "http://192.168.0.106:7658")
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	rp := NewReverseProxy(svc, fc)
+
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	wantOrigin := "http://" + gotHost
+	if gotOrigin != wantOrigin {
+		t.Fatalf("backend Origin = %q, want %q (matching rewritten Host)", gotOrigin, wantOrigin)
+	}
+}
+
+// A request without an Origin header must not gain one (curl/CLI clients).
+func TestNoOriginHeaderNotInvented(t *testing.T) {
+	var gotOrigin string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin = r.Header.Get("Origin")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Del("Origin")
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	rp := NewReverseProxy(svc, fc)
+
+	rp.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotOrigin != "" {
+		t.Fatalf("backend received an invented Origin %q", gotOrigin)
+	}
+}
+
+// A 101 Switching Protocols (WebSocket) upgrade must not have its body wrapped
+// by the bandwidth limiter: ReverseProxy needs the raw io.ReadWriteCloser to
+// hand the tunnel to the client. Regression for "101 switching protocols
+// response with non-writable body" under a per-service bwlimit.
+func TestWebSocketUpgradeWithBwlimit(t *testing.T) {
+	// Minimal raw upgrade backend: respond 101 and echo a byte.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		req := string(buf[:n])
+		if !strings.Contains(req, "Upgrade: websocket") {
+			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"))
+			return
+		}
+		conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"))
+		// echo one byte back through the tunnel
+		conn.Read(buf)
+		conn.Write([]byte("Z"))
+	}()
+
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest("GET", "http://127.0.0.1:"+portStr+"/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+
+	// A real client connection is required: the upgrade hijacks the socket.
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Server-side forwarding happens through the proxy on a real listener.
+	pln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pln.Close()
+	_, pportStr, _ := net.SplitHostPort(pln.Addr().String())
+	pport, _ := strconv.Atoi(pportStr)
+	psvc := &config.ServiceConfig{Host: "127.0.0.1", Port: pport, Path: "/app", BWLimit: 1024}
+	prp := NewReverseProxy(psvc, testFwdCtx())
+
+	// Serve the reverse proxy over a real listener so the hijack works.
+	httpSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prp.ServeHTTP(w, r)
+	})}
+	go httpSrv.Serve(pln)
+	defer httpSrv.Close()
+
+	req.URL = &url.URL{Scheme: "http", Host: pln.Addr().String(), Path: "/ws"}
+	if err := req.Write(client); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(client)
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+	// tunnel is now raw: client writes a byte, backend echoes "Z"
+	if _, err := client.Write([]byte("A")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 1)
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("tunnel read failed: %v", err)
+	}
+	if got[0] != 'Z' {
+		t.Fatalf("tunnel echo = %q, want Z", got)
+	}
+}
+
+// A third-party Origin (CORS client on another site) must pass through
+// untouched: only same-origin browser requests through the gateway get the
+// rewrite that keeps backend Host/Origin checks coherent.
+func TestThirdPartyOriginNotRewritten(t *testing.T) {
+	var gotOrigin string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin = r.Header.Get("Origin")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+
+	req := httptest.NewRequest("GET", "/api/x", nil)
+	req.Host = "192.168.0.106:7658"
+	req.Header.Set("Origin", "http://attacker.example")
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	rp := NewReverseProxy(svc, fc)
+
+	rp.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotOrigin != "http://attacker.example" {
+		t.Fatalf("third-party Origin was rewritten to %q", gotOrigin)
+	}
+}
+
+// Proxied HTML must receive the webcompat polyfill next to the injected base
+// tag, so apps relying on crypto.randomUUID keep working over plain HTTP.
+func TestHTMLGetsPolyfillWithBase(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<html><head><title>x</title></head><body>ok</body></html>"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	rp := NewReverseProxy(svc, testFwdCtx())
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `<base href="/proxy/alice/jupyter/">`) {
+		t.Fatalf("missing injected <base> in %q", body)
+	}
+	if !strings.Contains(body, "randomUUID") {
+		t.Fatalf("missing webcompat polyfill in %q", body)
+	}
+	// The polyfill must be injected into <head>, ahead of any scripts.
+	if !strings.Contains(body, "<head><title>x</title>") && !strings.Contains(body, "<head><base") {
+		t.Fatalf("polyfill/base not at head position: %q", body)
+	}
+}
+
+// A page that already ships its own <base> tag must not get a second one, but
+// still receives the polyfill (the two injections are independent).
+func TestHTMLWithOwnBaseStillGetsPolyfill(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<html><head><base href=\"/self/\"><title>x</title></head><body>ok</body></html>"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	rp := NewReverseProxy(svc, testFwdCtx())
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Count(body, "<base") != 1 {
+		t.Fatalf("expected exactly one <base> tag (the backend's own), got %q", body)
+	}
+	if !strings.Contains(body, "randomUUID") {
+		t.Fatalf("missing webcompat polyfill in %q", body)
+	}
+}
+
+// Non-HTML responses must not receive the polyfill.
+func TestNonHTMLNoPolyfill(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Write([]byte("crypto.randomUUID()"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	rp := NewReverseProxy(svc, testFwdCtx())
+
+	req := httptest.NewRequest("GET", "/x.js", nil)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	if rec.Body.String() != "crypto.randomUUID()" {
+		t.Fatalf("JS body was altered: %q", rec.Body.String())
 	}
 }

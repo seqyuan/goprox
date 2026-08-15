@@ -187,6 +187,7 @@
     inset: 0;
     background: rgba(0,0,0,0.35);
     display: flex;
+    overflow-y: auto; /* taller-than-viewport sheets stay reachable (top not clipped) */
     align-items: center;
     justify-content: center;
     z-index: 30;
@@ -200,6 +201,10 @@
   .modal {
     width: 100%%;
     max-width: 420px;
+    margin: auto; /* centers when it fits; keeps the top reachable when it overflows */
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto; /* long forms scroll inside the sheet instead of clipping */
     background: rgba(250,250,252,0.78);
     -webkit-backdrop-filter: saturate(180%%) blur(20px);
     backdrop-filter: saturate(180%%) blur(20px);

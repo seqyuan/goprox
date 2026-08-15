@@ -3,6 +3,8 @@ package config
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -163,5 +165,34 @@ func TestSafeDialContext(t *testing.T) {
 
 	if _, err := SafeDialContext(context.Background(), "tcp", ln.Addr().String()); err != nil {
 		t.Fatalf("expected local dial to succeed, got %v", err)
+	}
+}
+
+
+func TestLoadUserConfigDefaultServiceValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alice.yaml")
+	cfgText := "auth:\n  password_hash: \"1111111111111111111111111111111111111111111111111111111111111111\"\ndefault_service: web\nservices:\n  - id: web\n    name: Web\n    host: 127.0.0.1\n    port: 8080\n    path: /web\n"
+	os.WriteFile(path, []byte(cfgText), 0600)
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultService != "web" {
+		t.Fatalf("DefaultService = %q, want web", cfg.DefaultService)
+	}
+}
+
+func TestLoadUserConfigDefaultServiceInvalidDropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alice.yaml")
+	cfgText := "auth:\n  password_hash: \"1111111111111111111111111111111111111111111111111111111111111111\"\ndefault_service: nope\nservices:\n  - id: web\n    name: Web\n    host: 127.0.0.1\n    port: 8080\n    path: /web\n"
+	os.WriteFile(path, []byte(cfgText), 0600)
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultService != "" {
+		t.Fatalf("stale DefaultService should be dropped, got %q", cfg.DefaultService)
 	}
 }
