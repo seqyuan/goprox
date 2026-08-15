@@ -9,24 +9,31 @@
     padding: 2rem;
   }
   .nf-code {
-    font-size: 6rem;
+    font-size: clamp(64px, 12vw, 96px);
     font-weight: 700;
-    color: var(--accent);
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
     line-height: 1;
-    margin-bottom: 0.5rem;
+    margin-bottom: 12px;
   }
   .nf-msg {
     color: var(--text-muted);
-    margin-bottom: 2rem;
-    font-size: 1.1rem;
+    margin-bottom: 28px;
+    font-size: 15px;
   }
   .nf-link {
-    display: inline-block;
-    padding: 0.6rem 1.25rem;
+    display: inline-flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 22px;
     background: var(--accent);
     color: #fff;
-    border-radius: 8px;
+    border-radius: var(--r-pill);
+    font-size: 14px;
+    font-weight: 600;
     text-decoration: none;
+    transition: background 0.15s;
   }
   .nf-link:hover { background: var(--accent-hover); text-decoration: none; }
   .nf-theme { position: fixed; top: 1rem; right: 1rem; }

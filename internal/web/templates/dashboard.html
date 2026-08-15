@@ -1,221 +1,304 @@
 <style>
+  /* ── Sticky glass nav (blur only where it overlaps scrolling content) ── */
   .header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem 2rem;
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
+    padding: 0 var(--pad-x);
+    height: 54px;
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 50;
+    background: rgba(245,245,247,0.72);
+    -webkit-backdrop-filter: saturate(180%%) blur(20px);
+    backdrop-filter: saturate(180%%) blur(20px);
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.3s, box-shadow 0.3s;
   }
-  .header h1 { font-size: 1.35rem; }
-  .header-actions { display: flex; gap: 0.5rem; align-items: center; }
-  .logout-btn, .theme-btn, .add-btn {
-    padding: 0.45rem 1rem;
-    border-radius: 8px;
-    font-size: 0.875rem;
+  .dark .header { background: rgba(22,22,23,0.72); }
+  /* hairline appears only once content actually scrolls beneath (see script.js) */
+  .header.scrolled { border-bottom-color: var(--border); box-shadow: 0 1px 12px rgba(0,0,0,0.04); }
+  .header h1 {
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
   .logout-btn {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text);
     text-decoration: none;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: var(--r-pill);
+    font-size: 13px;
+    font-weight: 550;
+    display: inline-flex;
+    align-items: center;
+    transition: background 0.15s var(--ease-out-quart);
   }
-  .logout-btn:hover { background: var(--bg); text-decoration: none; }
+  .logout-btn:hover { background: var(--hover); text-decoration: none; }
   .add-btn {
     background: var(--accent);
     color: #fff;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r-pill);
+    font-size: 1.3rem;
     font-weight: 600;
-    font-size: 1.1rem;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--sh-card);
   }
   .add-btn:hover { background: var(--accent-hover); }
+  .theme-btn { width: 40px; height: 40px; }
+
+  /* ── Main grid (dense column) ── */
   .main {
-    max-width: 1100px;
+    max-width: var(--max-grid);
     margin: 0 auto;
-    padding: 2rem 1.5rem 4.5rem;
+    padding: clamp(24px, 4vw, 44px) var(--pad-x) 64px;
   }
-  .hint {
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    margin-bottom: 1.5rem;
-  }
-  .hint code {
-    font-family: ui-monospace, monospace;
-    font-size: 0.82rem;
-  }
-  .category-block { margin-bottom: 2rem; }
+  .hint { color: var(--text-muted); font-size: 13px; margin-bottom: 28px; }
+  .hint code { font-family: var(--mono); font-size: 12px; }
+
+  /* ── Category blocks ── */
+  .category-block { margin-bottom: clamp(28px, 4vw, 40px); }
   .category-title {
-    font-size: 1rem;
-    color: var(--text-muted);
-    margin-bottom: 0.75rem;
+    font-size: 12px;
     font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    padding-left: 4px;
   }
   .card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 1.25rem;
+    gap: 14px;
     min-height: 3rem;
   }
   .card-grid.drop-target { outline: 2px dashed var(--accent); outline-offset: 4px; }
+
+  /* ── Service cards (white surface, gentle hover lift) ── */
   .service-card {
     background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: var(--shadow);
-    transition: border-color 0.15s, opacity 0.15s;
+    border-radius: var(--r-card);
+    box-shadow: var(--sh-card);
+    transition: transform 0.2s var(--ease-out-quart), box-shadow 0.2s var(--ease-out-quart);
     position: relative;
   }
-  .service-card:hover { border-color: var(--accent); }
+  .service-card:hover { transform: translateY(-3px); box-shadow: var(--sh-lift); }
   .service-card.dragging { opacity: 0.45; }
   .card-toolbar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.45rem 0.65rem 0;
+    padding: 10px 12px 0;
   }
   .drag-handle {
     cursor: grab;
     color: var(--text-muted);
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     user-select: none;
-    padding: 0.2rem 0.35rem;
+    padding: 4px 6px;
+    border-radius: var(--r-pill);
   }
-  .card-actions { display: flex; gap: 0.15rem; }
+  .drag-handle:active { cursor: grabbing; }
+  .card-actions { display: flex; gap: 2px; }
   .card-edit, .card-delete {
     background: transparent;
     border: none;
-    font-size: 1.05rem;
+    font-size: 15px;
     line-height: 1;
-    padding: 0.2rem 0.45rem;
+    padding: 6px 8px;
+    border-radius: var(--r-pill);
     cursor: pointer;
+    color: var(--text-muted);
+    transition: background 0.15s, color 0.15s;
   }
-  .card-edit { color: var(--accent); }
-  .card-edit:hover { opacity: 0.8; }
-  .card-delete { color: var(--danger); }
-  .card-delete:hover { opacity: 0.8; }
+  .card-edit:hover { color: var(--text); background: var(--hover); }
+  .card-delete:hover { color: var(--danger); background: var(--danger-bg); }
   .card-link {
     display: flex;
-    gap: 1rem;
-    padding: 0.35rem 1.25rem 1.25rem;
+    gap: 14px;
+    padding: 8px 18px 18px;
     color: inherit;
     text-decoration: none;
   }
   .card-link:hover { text-decoration: none; }
-  .card-icon { width: 2.5rem; height: 2.5rem; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 6px; }
-  .card-icon img { width: 100%%; height: 100%%; object-fit: contain; }
-  .card-letter { display: none; width: 100%%; height: 100%%; align-items: center; justify-content: center; font-weight: 700; font-size: 1.3rem; color: #fff; border-radius: 6px; background: #95a5a6; }
-  .card-letter[data-letter="A"] { background: #e74c3c; } .card-letter[data-letter="B"] { background: #3498db; } .card-letter[data-letter="C"] { background: #2ecc71; }
-  .card-letter[data-letter="D"] { background: #9b59b6; } .card-letter[data-letter="E"] { background: #e67e22; } .card-letter[data-letter="F"] { background: #1abc9c; }
-  .card-letter[data-letter="G"] { background: #e74c3c; } .card-letter[data-letter="H"] { background: #3498db; } .card-letter[data-letter="I"] { background: #2ecc71; }
-  .card-letter[data-letter="J"] { background: #e67e22; } .card-letter[data-letter="K"] { background: #9b59b6; } .card-letter[data-letter="L"] { background: #1abc9c; }
-  .card-letter[data-letter="M"] { background: #e74c3c; } .card-letter[data-letter="N"] { background: #3498db; } .card-letter[data-letter="O"] { background: #2ecc71; }
-  .card-letter[data-letter="P"] { background: #9b59b6; } .card-letter[data-letter="Q"] { background: #e67e22; } .card-letter[data-letter="R"] { background: #1abc9c; }
-  .card-letter[data-letter="S"] { background: #e74c3c; } .card-letter[data-letter="T"] { background: #3498db; } .card-letter[data-letter="U"] { background: #2ecc71; }
-  .card-letter[data-letter="V"] { background: #9b59b6; } .card-letter[data-letter="W"] { background: #e67e22; } .card-letter[data-letter="X"] { background: #1abc9c; }
-  .card-letter[data-letter="Y"] { background: #e74c3c; } .card-letter[data-letter="Z"] { background: #3498db; }
-  .card-letter[data-letter="?"] { background: #95a5a6; }
-  .card-body { flex: 1; min-width: 0; }
-  .card-body h2 { font-size: 1.1rem; margin-bottom: 0.35rem; }
-  .card-desc { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.6rem; }
-  .card-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8rem; }
-  .endpoint { color: var(--text-muted); font-family: ui-monospace, monospace; }
-  .badge {
-    padding: 0.15rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
+  .card-icon {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: var(--r-thumb);
+    background: var(--hover);
   }
-  .badge.ws { background: rgba(59,110,245,0.15); color: var(--accent); }
-  .empty { text-align: center; color: var(--text-muted); padding: 3rem; }
+  .card-icon img { width: 100%%; height: 100%%; object-fit: contain; }
+  /* fallback monogram: one consistent accent gradient, not per-letter colors */
+  .card-letter {
+    display: none;
+    width: 100%%;
+    height: 100%%;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.25rem;
+    color: #fff;
+    border-radius: var(--r-thumb);
+    background: var(--grad-cta);
+  }
+  .card-body { flex: 1; min-width: 0; }
+  .card-body h2 { font-size: 16.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 4px; }
+  .card-desc { color: var(--text-muted); font-size: 13px; line-height: 1.5; margin-bottom: 10px; }
+  .card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
+  .endpoint {
+    color: var(--text-muted);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+  }
+  .badge {
+    padding: 2px 10px;
+    border-radius: var(--r-pill);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .badge.ws { color: var(--accent); background: var(--accent-bg); }
+  .badge.rate { color: var(--text-muted); background: rgba(0,0,0,0.05); }
+  .dark .badge.rate { background: rgba(255,255,255,0.1); }
+  .empty { text-align: center; color: var(--text-muted); padding: 3.5rem 1rem; }
+
+  /* ── Modal sheet (glass materializes over the dimmed page) ── */
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.45);
-    display: none;
+    background: rgba(0,0,0,0.35);
+    display: flex;
     align-items: center;
     justify-content: center;
     z-index: 30;
     padding: 1rem;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.25s var(--ease-out-quart), visibility 0.25s;
   }
-  .modal-backdrop.open { display: flex; }
+  .dark .modal-backdrop { background: rgba(0,0,0,0.55); }
+  .modal-backdrop.open { opacity: 1; visibility: visible; }
   .modal {
     width: 100%%;
     max-width: 420px;
-    background: var(--bg-panel);
+    background: rgba(250,250,252,0.78);
+    -webkit-backdrop-filter: saturate(180%%) blur(20px);
+    backdrop-filter: saturate(180%%) blur(20px);
     border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: var(--shadow);
-    padding: 1.5rem;
+    border-radius: var(--r-panel);
+    box-shadow: var(--sh-overlay);
+    padding: 24px;
+    transform: translateY(10px) scale(0.98);
+    opacity: 0;
+    transition: transform 0.32s var(--ease-spring), opacity 0.22s var(--ease-out-quart);
   }
-  .modal h2 { margin-bottom: 1rem; font-size: 1.15rem; }
+  .dark .modal { background: rgba(28,28,30,0.78); }
+  .modal-backdrop.open .modal { transform: none; opacity: 1; }
+  .modal h2 { margin-bottom: 18px; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
   .modal label {
     display: block;
-    margin: 0.75rem 0 0.35rem;
-    font-size: 0.85rem;
-    font-weight: 500;
+    margin: 14px 0 6px;
+    font-size: 13px;
+    font-weight: 550;
+    color: var(--text-muted);
   }
   .modal input[type="text"],
   .modal input[type="number"] {
     width: 100%%;
-    padding: 0.65rem 0.85rem;
+    padding: 10px 14px;
     border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
+    border-radius: var(--r-thumb);
+    background: var(--bg-panel);
     color: var(--text);
+    font-size: 15px;
+    font-family: var(--font);
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
+  .modal input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
+  }
+  .dark .modal input:focus { box-shadow: 0 0 0 3px rgba(41,151,255,0.25); }
   .modal .checkbox-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.85rem;
-    font-size: 0.9rem;
+    gap: 8px;
+    margin-top: 16px;
+    font-size: 14px;
+    color: var(--text);
   }
+  .modal .checkbox-row input { accent-color: var(--accent); width: 16px; height: 16px; }
   .modal-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
-    margin-top: 1.25rem;
+    gap: 8px;
+    margin-top: 22px;
   }
   .btn-secondary {
-    background: transparent;
-    border: 1px solid var(--border);
+    background: rgba(0,0,0,0.05);
     color: var(--text);
-    padding: 0.55rem 1rem;
-    border-radius: 8px;
+    padding: 10px 18px;
+    border-radius: var(--r-pill);
+    font-size: 14px;
+    font-weight: 550;
+    transition: background 0.15s var(--ease-out-quart);
   }
+  .dark .btn-secondary { background: rgba(255,255,255,0.1); }
+  .btn-secondary:hover { background: rgba(0,0,0,0.09); }
+  .dark .btn-secondary:hover { background: rgba(255,255,255,0.16); }
   .btn-primary {
     background: var(--accent);
     color: #fff;
-    padding: 0.55rem 1rem;
-    border-radius: 8px;
+    padding: 10px 20px;
+    border-radius: var(--r-pill);
+    font-size: 14px;
+    font-weight: 600;
   }
   .btn-primary:hover { background: var(--accent-hover); }
+
+  /* ── Toast ── */
   .toast {
     position: fixed;
     left: 50%%;
-    bottom: 5rem;
+    bottom: 2.5rem;
     transform: translateX(-50%%);
     background: var(--bg-panel);
-    border: 1px solid var(--border);
-    padding: 0.65rem 1rem;
-    border-radius: 8px;
-    box-shadow: var(--shadow);
+    box-shadow: var(--sh-panel);
+    padding: 10px 18px;
+    border-radius: var(--r-pill);
     display: none;
     z-index: 25;
-    font-size: 0.9rem;
+    font-size: 14px;
   }
   .toast.show { display: block; }
+
   .read-only .drag-handle,
   .read-only .card-edit,
   .read-only .card-delete,
   .read-only .add-btn { display: none; }
 </style>
 <header class="header">
-  <h1>GoProx</h1>
+  <h1>%s</h1>
   <div class="header-actions">
     <button type="button" class="add-btn" id="fab-add" title="添加服务">+</button>
     <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>

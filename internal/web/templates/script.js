@@ -6,6 +6,15 @@
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
 
+  // Sticky header: the hairline divider appears only once content actually
+  // scrolls beneath it (scroll-edge, not a permanent border).
+  var header = $(".header");
+  if (header) {
+    var onScroll = function() { header.classList.toggle("scrolled", window.scrollY > 8); };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  }
+
   function showToast(msg) {
     var el = $("#toast");
     if (!el) return;
@@ -62,7 +71,7 @@
     var proxyUrl = "/proxy/" + encodeURIComponent(boot.username) + s.path + "/";
     var desc = s.description ? '<p class="card-desc">' + esc(s.description) + '</p>' : '';
     var ws = s.websocket ? '<span class="badge ws">WebSocket</span>' : '';
-    var bw = s.bwlimit > 0 ? '<span class="badge ws">限速 ' + fmtRate(s.bwlimit) + '</span>' : '';
+    var bw = s.bwlimit > 0 ? '<span class="badge rate">限速 ' + fmtRate(s.bwlimit) + '</span>' : '';
     var toolbar = state.writable
       ? '<div class="card-toolbar"><span class="drag-handle" draggable="true" data-drag-handle="1" title="拖动排序">⋮⋮</span><div class="card-actions"><button type="button" class="card-edit" data-edit-id="' + esc(s.id) + '" title="编辑">✎</button><button type="button" class="card-delete" data-delete-id="' + esc(s.id) + '" title="删除">×</button></div></div>'
       : '';

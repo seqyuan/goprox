@@ -23,6 +23,12 @@ var dashboardTpl string
 //go:embed templates/notfound.html
 var notFoundTpl string
 
+//go:embed templates/twofa.html
+var twofaTpl string
+
+//go:embed templates/twofa_setup.html
+var twofaSetupTpl string
+
 //go:embed templates/script.js
 var dashboardScript string
 
@@ -32,20 +38,20 @@ var faviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <circle cx="23" cy="22" r="3" fill="#7aa0ff"/>
 </svg>`
 
-func PageShell(title, body string) string {
+func PageShell(siteTitle, title, body string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>%s — GoProx</title>
+  <title>%s — %s</title>
   <style>%s</style>
 </head>
 <body>
 %s
 <script>%s</script>
 </body>
-</html>`, esc(title), baseCSS, body, themeScript)
+</html>`, esc(title), esc(siteTitle), baseCSS, body, themeScript)
 }
 
 const themeScript = `
@@ -70,16 +76,16 @@ func esc(s string) string {
 	return html.EscapeString(s)
 }
 
-func LoginPage(errorMsg, next string) string {
+func LoginPage(siteTitle, errorMsg, next string) string {
 	errBlock := ""
 	if errorMsg != "" {
 		errBlock = fmt.Sprintf(`<p class="error">%s</p>`, esc(errorMsg))
 	}
-	body := fmt.Sprintf(loginTpl, errBlock, esc(next))
-	return PageShell("登录", body)
+	body := fmt.Sprintf(loginTpl, esc(siteTitle), errBlock, esc(next))
+	return PageShell(siteTitle, "登录", body)
 }
 
-func DashboardPage(username string, services []config.ServiceConfig, writable bool) string {
+func DashboardPage(siteTitle, username string, services []config.ServiceConfig, writable, twoFAEnabled bool) string {
 	grouped := config.GroupServicesByCategory(services)
 	bootJSON := marshalScriptJSON(dashboardBoot{
 		Username: username,
@@ -101,19 +107,52 @@ func DashboardPage(username string, services []config.ServiceConfig, writable bo
 		readOnlyClass = " read-only"
 	}
 
+	// Two-factor status + management link (hint text is rendered as HTML).
+	if twoFAEnabled {
+		hintText += ` 两步验证已开启 · <a href="/2fa/setup">管理</a>`
+	} else {
+		hintText += ` 两步验证未开启 · <a href="/2fa/setup">开启</a>`
+	}
+
 	body := fmt.Sprintf(dashboardTpl,
+		esc(siteTitle),
 		readOnlyClass,
 		hintText,
 		categoriesHTML,
 		bootJSON,
 		dashboardScript,
 	)
-	return PageShell("仪表盘", body)
+	return PageShell(siteTitle, "仪表盘", body)
 }
 
-func NotFoundPage() string {
+func NotFoundPage(siteTitle string) string {
 	body := notFoundTpl
-	return PageShell("404", body)
+	return PageShell(siteTitle, "404", body)
+}
+
+// TwoFAPage renders the second login step: enter the 6-digit TOTP code.
+func TwoFAPage(siteTitle, errorMsg, next string) string {
+	errBlock := ""
+	if errorMsg != "" {
+		errBlock = fmt.Sprintf(`<p class="error">%s</p>`, esc(errorMsg))
+	}
+	body := fmt.Sprintf(twofaTpl, errBlock, esc(next))
+	return PageShell(siteTitle, "两步验证", body)
+}
+
+// TwoFASetupPage renders the enrollment page: QR code + secret + verify form.
+// When 2FA is already enabled it also shows a disable form.
+func TwoFASetupPage(siteTitle, errorMsg, secret string, enabled bool) string {
+	errBlock := ""
+	if errorMsg != "" {
+		errBlock = fmt.Sprintf(`<p class="error">%s</p>`, esc(errorMsg))
+	}
+	disableBlock := ""
+	if enabled {
+		disableBlock = `<form method="POST" action="/2fa/disable"><button type="submit" class="cancel-link" style="border:none;background:none;cursor:pointer;margin:0 auto">关闭两步验证</button></form>`
+	}
+	body := fmt.Sprintf(twofaSetupTpl, errBlock, esc(secret), disableBlock)
+	return PageShell(siteTitle, "设置两步验证", body)
 }
 
 func FaviconSVG() string {
@@ -175,6 +214,10 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
 	if s.WebSocket {
 		wsBadge = `<span class="badge ws">WebSocket</span>`
 	}
+	rateBadge := ""
+	if s.BWLimit > 0 {
+		rateBadge = fmt.Sprintf(`<span class="badge rate">限速 %s</span>`, fmtRate(s.BWLimit))
+	}
 
 	toolbar := ""
 	if writable {
@@ -207,6 +250,7 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
         <div class="card-meta">
           <span class="endpoint">%s:%d</span>
           %s
+          %s
         </div>
       </div>
     </a>
@@ -220,7 +264,27 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
 		desc,
 		esc(s.Host), s.Port,
 		wsBadge,
+		rateBadge,
 	)
+}
+
+// fmtRate renders a bytes-per-second cap in human-readable units.
+func fmtRate(b int64) string {
+	const (
+		gb = int64(1) << 30
+		mb = int64(1) << 20
+		kb = int64(1) << 10
+	)
+	switch {
+	case b >= gb:
+		return fmt.Sprintf("%.1f GB/s", float64(b)/float64(gb))
+	case b >= mb:
+		return fmt.Sprintf("%.1f MB/s", float64(b)/float64(mb))
+	case b >= kb:
+		return fmt.Sprintf("%d KB/s", b/kb)
+	default:
+		return fmt.Sprintf("%d B/s", b)
+	}
 }
 
 // faviconOnError advances through the candidate favicon URLs (data-favs,

@@ -1,3 +1,25 @@
+# GoProx v0.3.0 变更日志（2026-08-15）
+
+## 安全
+
+- **两步验证（TOTP）可选二次验证**：按用户开启（默认关闭），支持 Google Authenticator / Authy / 1Password 等标准认证器；登录流程为「密码 → 6 位动态码 → 会话」；扫码绑定自助完成，动态码校验 ±1 个 30s 窗口容错并独立限速（IP+用户名，10 次/15 分钟）；`goprox 2fa-reset <name>` 供管理员在手机丢失时重置
+- **公网部署 TLS 文档**：新增 `docs/reverse-proxy-tls.md`，给出 Caddy / nginx 反代终结 TLS 的完整示例，并说明 `--host 127.0.0.1` + `--trusted-proxy 127.0.0.1/32` 的配套做法（避免公网直连 HTTP）
+
+## 新功能
+
+- **自定义站点标题**：`goprox serve --title "🧬 生信分析平台"` 替换登录页/仪表盘/404 的左上角标题与浏览器标签标题，写入 `state.yaml` 持久化
+- **示例补充**：用户配置示例新增局域网 IP（`192.168.0.109`）与单 HTML 网页（`backend_path` 指向入口文件）两种典型场景；后端路径章节拆分为「单 HTML 网页」与「入口在子目录文件」两个独立示例
+
+## 界面
+
+- **Apple Liquid Glass 视觉重设计**：冷灰 `#f5f5f7` 底色 + SF/PingFang 系统字体栈、毛玻璃导航（滚动时才显示 hairline）、白色卡片双层阴影与悬浮上移、单渐变 monogram（去除 A-Z 多彩色块）、pill 化徽章/按钮/输入框、玻璃材质弹窗与弹簧动效、`prefers-reduced-motion` 支持；暗色主题同步适配；登录页表单样式抽到公共 token
+
+## 依赖
+
+- 新增 `github.com/skip2/go-qrcode`（TOTP 二维码 PNG 生成）
+
+---
+
 # GoProx v0.2.6 变更日志（2026-08-15）
 
 ## CLI 精简：删除后台守护化，统一为前台 serve

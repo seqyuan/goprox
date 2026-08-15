@@ -59,7 +59,7 @@ func TestDashboardCardLetterUsesFirstRune(t *testing.T) {
 		{ID: "s1", Name: "阿凡达", Host: "127.0.0.1", Port: 1, Path: "/s1"},
 		{ID: "s2", Name: "Jupyter", Host: "127.0.0.1", Port: 1, Path: "/s2"},
 	}
-	page := DashboardPage("alice", svcs, true)
+	page := DashboardPage("GoProx", "alice", svcs, true, false)
 
 	if !utf8.ValidString(page) {
 		t.Fatal("dashboard page contains invalid UTF-8")
@@ -75,6 +75,38 @@ func TestDashboardCardLetterUsesFirstRune(t *testing.T) {
 	}
 }
 
+// The custom site title must appear in the dashboard header <h1> and the
+// browser tab title, and must be HTML-escaped against injection.
+func TestDashboardPageCustomTitle(t *testing.T) {
+	svcs := []config.ServiceConfig{{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 1, Path: "/app"}}
+	page := DashboardPage("🧬 生信分析平台", "alice", svcs, true, false)
+
+	if !strings.Contains(page, "<h1>🧬 生信分析平台</h1>") {
+		t.Fatal("custom title missing from dashboard header")
+	}
+	if !strings.Contains(page, "<title>仪表盘 — 🧬 生信分析平台</title>") {
+		t.Fatal("custom title missing from browser tab title")
+	}
+
+	// Hostile titles must be escaped, not injected into the DOM.
+	page = DashboardPage(`x</h1><script>alert(1)</script>`, "alice", svcs, true, false)
+	if strings.Contains(page, "</h1><script>") {
+		t.Fatal("title not HTML-escaped")
+	}
+}
+
+// A bwlimit-capped service must render the rate badge server-side, matching
+// the client-side re-render.
+func TestDashboardPageRateBadge(t *testing.T) {
+	svcs := []config.ServiceConfig{
+		{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 1, Path: "/app", BWLimit: 10 << 20},
+	}
+	page := DashboardPage("GoProx", "alice", svcs, true, false)
+	if !strings.Contains(page, `class="badge rate"`) || !strings.Contains(page, "限速 10.0 MB/s") {
+		t.Fatal("rate badge missing from server-rendered card")
+	}
+}
+
 // The card icon must try favicon.ico, favicon.svg, and favicon.png in turn
 // before falling back to the letter block, so modern apps that serve
 // /favicon.svg (like Next.js) still get a real icon.
@@ -82,7 +114,7 @@ func TestDashboardCardFaviconCandidates(t *testing.T) {
 	svcs := []config.ServiceConfig{
 		{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 1, Path: "/app"},
 	}
-	page := DashboardPage("alice", svcs, true)
+	page := DashboardPage("GoProx", "alice", svcs, true, false)
 
 	for _, want := range []string{
 		"/proxy/alice/app/favicon.ico",

@@ -2,9 +2,13 @@ package auth
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -19,6 +23,8 @@ import (
 
 const (
 	SessionCookieName = "goprox_session"
+	TOTACookieName    = "goprox_2fa"       // pending 2FA token after password step
+	TOTASetupCookie   = "goprox_2fa_setup" // pending secret during enrollment
 	RouteCookieName   = "goprox_route"
 	RouteCookiePrefix = "goprox_route_" // Prefix for service-specific route cookies
 )
@@ -486,4 +492,180 @@ func SameOriginRequest(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
+}
+
+// ---- TOTP (RFC 6238) two-factor authentication ----
+
+const (
+	// totpPeriod is the time-step size in seconds (RFC 6238 default).
+	totpPeriod = 30
+	// totpDigits is the number of digits in the one-time code.
+	totpDigits = 6
+	// totpIssuer is shown as the account issuer in authenticator apps.
+	totpIssuer = "GoProx"
+)
+
+// GenerateTOTPSecret returns a new random 20-byte secret encoded as
+// base32 (no padding) — the format authenticator apps expect.
+func GenerateTOTPSecret() (string, error) {
+	b := make([]byte, 20)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
+}
+
+// TOTPURI builds the otpauth:// provisioning URI for authenticator apps
+// (Google Authenticator, Authy, 1Password, …).
+func TOTPURI(account, secret string) string {
+	return fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=%d&period=%d",
+		totpIssuer, account, secret, totpIssuer, totpDigits, totpPeriod)
+}
+
+// VerifyTOTP checks a 6-digit code against a base32 secret, accepting the
+// current, previous and next 30-second window (clock drift tolerance).
+func VerifyTOTP(secret, code string, now time.Time) bool {
+	code = strings.TrimSpace(code)
+	if len(code) != totpDigits {
+		return false
+	}
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimSpace(secret)))
+	if err != nil || len(key) == 0 {
+		return false
+	}
+
+	counter := uint64(now.Unix() / totpPeriod)
+	for _, c := range []uint64{counter - 1, counter, counter + 1} {
+		if totpCode(key, c) == code {
+			return true
+		}
+	}
+	return false
+}
+
+// totpCode computes the HOTP value (truncated to 6 digits) for a counter.
+func totpCode(key []byte, counter uint64) string {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], counter)
+	mac := hmac.New(sha1.New, key)
+	mac.Write(buf[:])
+	h := mac.Sum(nil)
+	offset := h[len(h)-1] & 0x0f
+	binaryValue := (binary.BigEndian.Uint32(h[offset:offset+4]) & 0x7fffffff) % 1000000
+	return fmt.Sprintf("%0*d", totpDigits, binaryValue)
+}
+
+// ---- pending 2FA token (issued after the password step) ----
+
+// CreatePendingToken signs a short-lived token proving the password step
+// already succeeded, so the 2FA step can be entered without re-typing the
+// password. The "2fa" domain prefix keeps it distinct from session tokens.
+func CreatePendingToken(userID, secret string, ttlSec int) string {
+	expiry := time.Now().Unix() + int64(ttlSec)
+	payload := fmt.Sprintf("2fa|%s|%d", userID, expiry)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return base64URLEncode([]byte(payload + "|" + sig))
+}
+
+// ValidatePendingToken verifies a pending-2FA token and returns the username.
+func ValidatePendingToken(token, secret string) (string, bool) {
+	decoded, err := base64URLDecode(token)
+	if err != nil {
+		return "", false
+	}
+	parts := strings.SplitN(string(decoded), "|", 4)
+	if len(parts) != 4 || parts[0] != "2fa" {
+		return "", false
+	}
+	userID, expiryStr, sig := parts[1], parts[2], parts[3]
+	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
+	if err != nil || time.Now().Unix() > expiry {
+		return "", false
+	}
+
+	payload := fmt.Sprintf("2fa|%s|%d", userID, expiry)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if subtle.ConstantTimeCompare([]byte(sig), []byte(expected)) != 1 {
+		return "", false
+	}
+	return userID, true
+}
+
+// SetPendingCookie creates a Set-Cookie header for the pending 2FA token.
+func SetPendingCookie(secret string, ttlSec int, userID string, secure bool) string {
+	token := CreatePendingToken(userID, secret, ttlSec)
+	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
+	secureFlag := ""
+	if secure {
+		secureFlag = "; Secure"
+	}
+	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax; Expires=%s%s",
+		TOTACookieName, token, expires, secureFlag)
+}
+
+// ClearPendingCookie creates a Set-Cookie header to clear the pending token.
+func ClearPendingCookie() string {
+	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+		TOTACookieName)
+}
+
+// ---- pending TOTP secret (held during enrollment, not yet persisted) ----
+
+// CreateSetupToken signs a freshly generated TOTP secret so the enrollment
+// flow can show the QR code and verify a code without any server-side state.
+func CreateSetupToken(secret, sessionSecret string, ttlSec int) string {
+	expiry := time.Now().Unix() + int64(ttlSec)
+	payload := fmt.Sprintf("setup|%s|%d", secret, expiry)
+	mac := hmac.New(sha256.New, []byte(sessionSecret))
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return base64URLEncode([]byte(payload + "|" + sig))
+}
+
+// ValidateSetupToken verifies a setup token and returns the pending secret.
+func ValidateSetupToken(token, sessionSecret string) (string, bool) {
+	decoded, err := base64URLDecode(token)
+	if err != nil {
+		return "", false
+	}
+	parts := strings.SplitN(string(decoded), "|", 4)
+	if len(parts) != 4 || parts[0] != "setup" {
+		return "", false
+	}
+	secret, expiryStr, sig := parts[1], parts[2], parts[3]
+	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
+	if err != nil || time.Now().Unix() > expiry {
+		return "", false
+	}
+
+	payload := fmt.Sprintf("setup|%s|%d", secret, expiry)
+	mac := hmac.New(sha256.New, []byte(sessionSecret))
+	mac.Write([]byte(payload))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if subtle.ConstantTimeCompare([]byte(sig), []byte(expected)) != 1 {
+		return "", false
+	}
+	return secret, true
+}
+
+// SetSetupCookie creates a Set-Cookie header for the pending setup secret.
+func SetSetupCookie(secret, sessionSecret string, ttlSec int, secure bool) string {
+	token := CreateSetupToken(secret, sessionSecret, ttlSec)
+	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
+	secureFlag := ""
+	if secure {
+		secureFlag = "; Secure"
+	}
+	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax; Expires=%s%s",
+		TOTASetupCookie, token, expires, secureFlag)
+}
+
+// ClearSetupCookie creates a Set-Cookie header to clear the pending secret.
+func ClearSetupCookie() string {
+	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+		TOTASetupCookie)
 }

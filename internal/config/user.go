@@ -38,6 +38,7 @@ type UserConfig struct {
 
 type UserAuthConfig struct {
 	PasswordHash string `yaml:"password_hash"`
+	TOTPSecret   string `yaml:"totp_secret,omitempty"` // base32 TOTP secret; presence enables 2FA
 }
 
 // UserRecord contains a loaded user and their config path.
@@ -268,6 +269,26 @@ func UpdatePasswordHash(path, hash string) error {
 		auth = make(map[string]interface{})
 	}
 	auth["password_hash"] = hash
+	raw["auth"] = auth
+	return saveRawConfig(path, raw)
+}
+
+// UpdateTOTPSecret updates only the TOTP secret in a user config. An empty
+// secret removes the field (disabling 2FA).
+func UpdateTOTPSecret(path, secret string) error {
+	raw, err := loadRawConfig(path)
+	if err != nil {
+		return err
+	}
+	auth, _ := raw["auth"].(map[string]interface{})
+	if auth == nil {
+		auth = make(map[string]interface{})
+	}
+	if secret == "" {
+		delete(auth, "totp_secret")
+	} else {
+		auth["totp_secret"] = secret
+	}
 	raw["auth"] = auth
 	return saveRawConfig(path, raw)
 }

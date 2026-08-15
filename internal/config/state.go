@@ -19,6 +19,7 @@ type ServerState struct {
 	Host         string `yaml:"host"`
 	Port         int    `yaml:"port"`
 	TrustedProxy string `yaml:"trusted_proxy,omitempty"` // CIDR of a trusted reverse proxy; enables X-Forwarded-* header trust
+	Title        string `yaml:"title,omitempty"`         // site title shown in the top-left corner (default: GoProx)
 }
 
 type AuthState struct {
@@ -93,6 +94,7 @@ func LoadState(path string) (*StateConfig, error) {
 			"host":          s.Server.Host,
 			"port":          s.Server.Port,
 			"trusted_proxy": s.Server.TrustedProxy,
+			"title":         s.Server.Title,
 		}
 		raw["auth"] = map[string]interface{}{
 			"session_secret": s.Auth.SessionSecret,
@@ -106,7 +108,7 @@ func LoadState(path string) (*StateConfig, error) {
 	return &s, nil
 }
 
-func PersistServerConfig(path, host string, port int, trustedProxy string) error {
+func PersistServerConfig(path, host string, port int, trustedProxy, title string) error {
 	// Load existing or create default
 	var raw map[string]interface{}
 	data, err := os.ReadFile(path)
@@ -129,6 +131,9 @@ func PersistServerConfig(path, host string, port int, trustedProxy string) error
 	}
 	if trustedProxy != "" {
 		server["trusted_proxy"] = trustedProxy
+	}
+	if title != "" {
+		server["title"] = title
 	}
 	raw["server"] = server
 

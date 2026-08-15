@@ -1,0 +1,19 @@
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="top-actions">
+      <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>
+    </div>
+    <h1>设置两步验证</h1>
+    <p class="subtitle">用认证器 App 扫描二维码，或手动输入下方密钥</p>
+    %s
+    <div class="qr-box"><img src="/2fa/qr" alt="二维码"></div>
+    <p class="secret">密钥：<code>%s</code></p>
+    <form method="POST" action="/2fa/setup">
+      <label for="code">输入 App 显示的 6 位动态码以确认</label>
+      <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required autofocus>
+      <button type="submit" class="submit-btn">确认并启用</button>
+    </form>
+    <a href="/" class="cancel-link">暂不启用，返回仪表盘</a>
+    %s
+  </div>
+</div>

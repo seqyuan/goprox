@@ -1,49 +1,212 @@
+/* Apple Liquid Glass design tokens (adapted from the apple-design-skill).
+   Variable names kept stable so templates can reference them across themes. */
 :root {
-  --bg: #f4f6f9;
-  --bg-panel: #ffffff;
-  --accent: #3b6ef5;
-  --accent-hover: #2f5ad4;
-  --text: #1a1d26;
-  --text-muted: #5c6370;
-  --border: #dde1e8;
-  --shadow: 0 4px 24px rgba(0,0,0,0.08);
-  --danger: #e5484d;
+  /* neutrals */
+  --bg: #f5f5f7;               /* cool grey-white ground, never warm/cream */
+  --bg-panel: #ffffff;         /* surfaces / cards */
+  --hover: #fbfbfd;            /* row hover tint */
+  --text: #1d1d1f;
+  --text-muted: #6e6e73;       /* secondary / meta */
+  --border: rgba(0,0,0,0.07);  /* hairline divider */
+  /* accents (emphasis only — body stays grayscale) */
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --danger: #ff3b30;
+  --accent-bg: rgba(0,113,227,0.08);
+  --danger-bg: rgba(255,59,48,0.1);
+  --grad-cta: linear-gradient(135deg, #0071e3 0%, #5e5ce6 100%);
+  /* type */
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+          'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  /* radius tiers */
+  --r-pill: 999px;
+  --r-chip: 6px;
+  --r-thumb: 12px;
+  --r-card: 18px;
+  --r-panel: 22px;
+  /* shadows (two-layer: tight contact + soft spread) */
+  --sh-card: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.05);
+  --sh-panel: 0 1px 3px rgba(0,0,0,0.05), 0 14px 40px rgba(0,0,0,0.05);
+  --sh-lift: 0 12px 32px rgba(0,0,0,0.1);
+  --sh-overlay: 0 2px 8px rgba(0,0,0,0.10), 0 30px 80px rgba(0,0,0,0.24);
+  /* layout */
+  --max-grid: 1080px;
+  --pad-x: 22px;
+  /* motion easing */
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
 }
+
 .dark {
-  --bg: #0f1117;
-  --bg-panel: #1a1d27;
-  --accent: #5b8aff;
-  --accent-hover: #7aa0ff;
-  --text: #e8eaed;
-  --text-muted: #9aa0ad;
-  --border: #2d3140;
-  --shadow: 0 4px 24px rgba(0,0,0,0.4);
-  --danger: #ff6b6b;
+  --bg: #161617;
+  --bg-panel: #1d1d1f;
+  --hover: #232325;
+  --text: #f5f5f7;
+  --text-muted: #86868b;
+  --border: rgba(255,255,255,0.12);
+  --accent: #2997ff;
+  --accent-hover: #0a84ff;
+  --danger: #ff453a;
+  --accent-bg: rgba(41,151,255,0.12);
+  --danger-bg: rgba(255,69,58,0.14);
+  --grad-cta: linear-gradient(135deg, #0a84ff 0%, #5e5ce6 100%);
+  --sh-card: 0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.35);
+  --sh-panel: 0 1px 3px rgba(0,0,0,0.45), 0 14px 40px rgba(0,0,0,0.4);
+  --sh-lift: 0 12px 32px rgba(0,0,0,0.5);
+  --sh-overlay: 0 2px 8px rgba(0,0,0,0.5), 0 30px 80px rgba(0,0,0,0.6);
 }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font);
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 button, .btn {
   cursor: pointer;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r-pill);
+  font-family: var(--font);
   font-size: 0.95rem;
   font-weight: 500;
-  transition: background 0.15s, transform 0.1s;
+  transition: background 0.15s var(--ease-out-quart), transform 0.1s;
 }
-button:active, .btn:active { transform: scale(0.98); }
+button:active, .btn:active { transform: scale(0.97); }
 .theme-btn {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  padding: 0.4rem 0.65rem;
-  font-size: 1.1rem;
+  background: rgba(0,0,0,0.05);
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-pill);
+  font-size: 1rem;
   line-height: 1;
+  transition: background 0.15s var(--ease-out-quart);
 }
-.theme-btn:hover { background: var(--border); }
+.dark .theme-btn { background: rgba(255,255,255,0.1); }
+.theme-btn:hover { background: rgba(0,0,0,0.09); }
+.dark .theme-btn:hover { background: rgba(255,255,255,0.16); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ── Shared auth pages (login / 2FA) ── */
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+.login-card {
+  background: var(--bg-panel);
+  border-radius: var(--r-panel);
+  box-shadow: var(--sh-panel);
+  padding: 40px 32px 28px;
+  width: 100%;
+  max-width: 400px;
+  position: relative;
+}
+.login-card h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 6px;
+  text-align: center;
+}
+.login-card .subtitle {
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 28px;
+  font-size: 13.5px;
+}
+.login-card label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-muted);
+}
+.login-card input[type="password"],
+.login-card input[type="text"] {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-thumb);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 16px;
+  margin-bottom: 18px;
+  font-family: var(--font);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.login-card input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
+}
+.dark .login-card input:focus { box-shadow: 0 0 0 3px rgba(41,151,255,0.25); }
+.login-card .submit-btn {
+  width: 100%;
+  height: 46px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.login-card .submit-btn:hover { background: var(--accent-hover); }
+.login-card .error {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--r-thumb);
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  font-size: 13.5px;
+}
+.login-card .top-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+.login-card .qr-box {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.login-card .qr-box img {
+  width: 180px;
+  height: 180px;
+  border-radius: var(--r-thumb);
+}
+.login-card .secret {
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+  word-break: break-all;
+}
+.login-card .secret code {
+  font-family: var(--mono);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.login-card .cancel-link {
+  display: block;
+  text-align: center;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.login-card .cancel-link:hover { color: var(--text); text-decoration: none; }

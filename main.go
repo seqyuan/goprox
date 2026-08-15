@@ -31,6 +31,7 @@ const usage = `Usage:
   goprox user <name>            Create a user account (prompts for password)
   goprox passwd <name>          Reset a user's password
   goprox del <name>             Delete a user account
+  goprox 2fa-reset <name>       Disable a user's two-factor authentication
 
 Options:
   -d, --config-dir <dir>  Config directory (default: <program dir>/config)
@@ -38,6 +39,8 @@ Options:
   --port <port>           Gateway listen port (default: 1908)
   --trusted-proxy <cidr>  Trusted reverse-proxy CIDR (e.g. 127.0.0.1/32);
                           enables X-Forwarded-For/Proto trust (default: none)
+  --title <text>          Site title shown in the top-left corner of the
+                          dashboard and login page (default: GoProx)
   -h, --help              Show this help
 
 Run in the foreground (Ctrl+C to stop). For a persistent session, run it in
@@ -76,10 +79,10 @@ func main() {
 		args = args[1:]
 	}
 
-	// user/passwd/del take a positional username.
+	// user/passwd/del/2fa-reset take a positional username.
 	var username string
 	switch cmd {
-	case "user", "passwd", "del":
+	case "user", "passwd", "del", "2fa-reset":
 		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 			fmt.Fprintf(os.Stderr, "error: %s requires a username\n", cmd)
 			printUsage()
@@ -110,6 +113,8 @@ func main() {
 		runUserPasswd(opts, username)
 	case "del":
 		runUserDel(opts, username)
+	case "2fa-reset":
+		runTOTPReset(opts, username)
 	default:
 		if cmd == "start" || cmd == "stop" || cmd == "status" {
 			fmt.Fprintf(os.Stderr, "error: goprox %s 已移除；goprox 现为前台运行（goprox serve），停止用 Ctrl+C，后台可用 tmux/nohup\n", cmd)
@@ -126,6 +131,7 @@ type options struct {
 	host         string
 	port         int
 	trustedProxy string
+	title        string
 }
 
 func parseOptions(args []string) (options, error) {
@@ -172,6 +178,12 @@ func parseOptions(args []string) (options, error) {
 				return opts, fmt.Errorf("option %s requires a value", a)
 			}
 			opts.trustedProxy = v
+		case "--title":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.title = v
 		default:
 			return opts, fmt.Errorf("unknown option: %s", a)
 		}
@@ -238,6 +250,17 @@ func runUserDel(opts options, username string) {
 	fmt.Printf("[goprox] user %s deleted\n", username)
 }
 
+func runTOTPReset(opts options, username string) {
+	configPath := config.UserConfigPath(opts.configDir, username)
+	if _, err := os.Stat(configPath); err != nil {
+		log.Fatalf("user %s does not exist (%s)", username, configPath)
+	}
+	if err := config.UpdateTOTPSecret(configPath, ""); err != nil {
+		log.Fatalf("reset 2FA: %v", err)
+	}
+	fmt.Printf("[goprox] 2FA disabled for %s\n", username)
+}
+
 // ---- server ----
 
 func runServer(opts options) {
@@ -268,6 +291,9 @@ func runServer(opts options) {
 	if opts.trustedProxy != "" {
 		state.Server.TrustedProxy = opts.trustedProxy
 	}
+	if opts.title != "" {
+		state.Server.Title = opts.title
+	}
 
 	srv := server.New(state, configDir)
 
@@ -294,7 +320,7 @@ func runServer(opts options) {
 	// the already-running check / bind would let a failed start overwrite
 	// state.yaml with a port we never bound, corrupting the running gateway's
 	// recorded port for `status` and future default starts.
-	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy)
+	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy, opts.title)
 
 	// Start config scanner
 	stopScan := make(chan struct{})

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
+
 	"github.com/seqyuan/goprox/internal/api"
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
@@ -17,14 +19,19 @@ import (
 	"github.com/seqyuan/goprox/internal/web"
 )
 
-const loginErrorMsg = "用户名或密码错误"
+const (
+	loginErrorMsg     = "用户名或密码错误"
+	pendingTTLSeconds = 300 // pending 2FA token lifetime (5 minutes)
+)
 
 // Server is the main GoProx HTTP server.
 type Server struct {
 	state         *config.StateConfig
 	registry      *config.UserRegistry
 	sessionSecret string
+	siteTitle     string
 	loginLimiter  *rate.Limiter
+	totpLimiter   *rate.Limiter
 	apiHandler    *api.Handler
 	transport     *http.Transport
 }
@@ -44,11 +51,20 @@ func New(state *config.StateConfig, configDir string) *Server {
 	registry := config.NewUserRegistry(configDir)
 	registry.Reload()
 
+	// Site title shown in the top-left corner of the dashboard and login
+	// page; falls back to the product name when unset.
+	siteTitle := state.Server.Title
+	if siteTitle == "" {
+		siteTitle = "GoProx"
+	}
+
 	return &Server{
 		state:         state,
 		registry:      registry,
 		sessionSecret: state.Auth.SessionSecret,
+		siteTitle:     siteTitle,
 		loginLimiter:  rate.NewLimiter(10, 15*time.Minute),
+		totpLimiter:   rate.NewLimiter(10, 15*time.Minute),
 		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret),
 		// A shared transport lets connection pools be reused across requests
 		// instead of creating a fresh one per proxy request. SafeDialContext
@@ -166,6 +182,22 @@ func (s *Server) Handler() http.Handler {
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
 
+	// Two-factor authentication (second login step)
+	mux.HandleFunc("/login/2fa", func(w http.ResponseWriter, r *http.Request) {
+		s.handleTwoFA(w, r)
+	})
+
+	// TOTP enrollment + management (requires an active session)
+	mux.HandleFunc("/2fa/setup", func(w http.ResponseWriter, r *http.Request) {
+		s.handleTwoFASetup(w, r)
+	})
+	mux.HandleFunc("/2fa/qr", func(w http.ResponseWriter, r *http.Request) {
+		s.handleTwoFAQr(w, r)
+	})
+	mux.HandleFunc("/2fa/disable", func(w http.ResponseWriter, r *http.Request) {
+		s.handleTwoFADisable(w, r)
+	})
+
 	// Login
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
@@ -173,7 +205,7 @@ func (s *Server) Handler() http.Handler {
 			// victim's browser into the gateway (login CSRF). Browsers send
 			// Origin on POST; non-browser clients without Origin pass.
 			if !auth.SameOriginRequest(r) {
-				sendHTML(w, 403, web.LoginPage("登录请求被拒绝", ""))
+				sendHTML(w, 403, web.LoginPage(s.siteTitle, "登录请求被拒绝", ""))
 				return
 			}
 			if s.handleBackendLogin(w, r) {
@@ -219,7 +251,7 @@ func (s *Server) Handler() http.Handler {
 			if s.handleRefererProxy(w, r) {
 				return
 			}
-			sendHTML(w, 404, web.NotFoundPage())
+			sendHTML(w, 404, web.NotFoundPage(s.siteTitle))
 			return
 		}
 		// GET / is the GoProx dashboard. Only a clear backend referer may route it.
@@ -360,13 +392,15 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		user := s.registry.GetUser(session.UserID)
 		services := []config.ServiceConfig{}
 		writable := false
+		twoFAEnabled := false
 		if user != nil {
 			services = user.Config.Services
 			writable = config.IsWritable(user.ConfigPath)
+			twoFAEnabled = user.Config.Auth.TOTPSecret != ""
 		}
-		sendHTML(w, 200, web.DashboardPage(session.UserID, services, writable))
+		sendHTML(w, 200, web.DashboardPage(s.siteTitle, session.UserID, services, writable, twoFAEnabled))
 	} else {
-		sendHTML(w, 200, web.LoginPage("", ""))
+		sendHTML(w, 200, web.LoginPage(s.siteTitle, "", ""))
 	}
 }
 
@@ -375,7 +409,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if !validLoginNext(next) {
 		next = ""
 	}
-	sendHTML(w, 200, web.LoginPage("", next))
+	sendHTML(w, 200, web.LoginPage(s.siteTitle, "", next))
 }
 
 // validLoginNext restricts post-login redirects to in-site proxy URLs,
@@ -390,7 +424,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// out everyone on one user's typos, and an attacker cannot freeze a whole
 	// subnet by flooding failures.
 	if err := r.ParseForm(); err != nil {
-		sendHTML(w, 500, web.LoginPage("登录请求处理失败", ""))
+		sendHTML(w, 500, web.LoginPage(s.siteTitle, "登录请求处理失败", ""))
 		return
 	}
 
@@ -401,7 +435,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rateKey := ip + "|" + strings.ToLower(username)
 
 	if s.loginLimiter.IsBlocked(rateKey) {
-		sendHTML(w, 429, web.LoginPage("登录尝试过多，请 15 分钟后再试", ""))
+		sendHTML(w, 429, web.LoginPage(s.siteTitle, "登录尝试过多，请 15 分钟后再试", ""))
 		return
 	}
 
@@ -413,7 +447,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !config.IsValidUsername(username) || password == "" {
 		s.loginLimiter.RecordFailure(rateKey)
-		sendHTML(w, 401, web.LoginPage(loginErrorMsg, next))
+		sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
 		return
 	}
 
@@ -427,17 +461,216 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if auth.VerifyPasswordTimingSafe(password, passwordHash) {
 		s.loginLimiter.Reset(rateKey)
 		secure := auth.IsSecureRequest(r)
-		cookie := s.issueSessionCookie(username, secure)
-		w.Header().Set("Set-Cookie", cookie)
 		if next == "" {
 			next = "/"
 		}
+		// Account has TOTP enabled: hold at the second factor before issuing
+		// a real session.
+		if userConfig != nil && userConfig.Auth.TOTPSecret != "" {
+			w.Header().Set("Set-Cookie", auth.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, secure))
+			http.Redirect(w, r, "/login/2fa?next="+url.QueryEscape(next), http.StatusFound)
+			return
+		}
+		cookie := s.issueSessionCookie(username, secure)
+		w.Header().Set("Set-Cookie", cookie)
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}
 
 	s.loginLimiter.RecordFailure(rateKey)
-	sendHTML(w, 401, web.LoginPage(loginErrorMsg, next))
+	sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
+}
+
+// ---- two-factor authentication (TOTP) ----
+
+// handleTwoFA serves the second login step: GET renders the code form (only
+// when a valid pending token exists); POST verifies the code.
+func (s *Server) handleTwoFA(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		if !auth.SameOriginRequest(r) {
+			sendHTML(w, 403, web.TwoFAPage(s.siteTitle, "请求被拒绝", ""))
+			return
+		}
+		s.handleTwoFAPost(w, r)
+		return
+	}
+
+	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
+	userID, ok := auth.ValidatePendingToken(cookies[auth.TOTACookieName], s.sessionSecret)
+	if !ok || userID == "" {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	next := r.URL.Query().Get("next")
+	if !validLoginNext(next) {
+		next = ""
+	}
+	sendHTML(w, 200, web.TwoFAPage(s.siteTitle, "", next))
+}
+
+func (s *Server) handleTwoFAPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		sendHTML(w, 500, web.TwoFAPage(s.siteTitle, "请求处理失败", ""))
+		return
+	}
+
+	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
+	userID, ok := auth.ValidatePendingToken(cookies[auth.TOTACookieName], s.sessionSecret)
+	if !ok || userID == "" {
+		// Pending token missing/expired: back to the password step.
+		next := r.FormValue("next")
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
+		return
+	}
+
+	ip := auth.ClientIP(r)
+	rateKey := ip + "|2fa|" + strings.ToLower(userID)
+	if s.totpLimiter.IsBlocked(rateKey) {
+		sendHTML(w, 429, web.TwoFAPage(s.siteTitle, "验证尝试过多，请 15 分钟后再试", r.FormValue("next")))
+		return
+	}
+
+	uc := s.registry.GetUserConfigForLogin(userID)
+	if uc == nil || uc.Auth.TOTPSecret == "" {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	code := strings.TrimSpace(r.FormValue("code"))
+	if !auth.VerifyTOTP(uc.Auth.TOTPSecret, code, time.Now()) {
+		s.totpLimiter.RecordFailure(rateKey)
+		sendHTML(w, 401, web.TwoFAPage(s.siteTitle, "动态码错误或已过期", r.FormValue("next")))
+		return
+	}
+
+	s.totpLimiter.Reset(rateKey)
+	secure := auth.IsSecureRequest(r)
+	w.Header().Set("Set-Cookie", s.issueSessionCookie(userID, secure))
+	w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
+	next := r.FormValue("next")
+	if !validLoginNext(next) {
+		next = "/"
+	}
+	http.Redirect(w, r, next, http.StatusFound)
+}
+
+// handleTwoFASetup enrolls (or rotates) TOTP for the logged-in user.
+func (s *Server) handleTwoFASetup(w http.ResponseWriter, r *http.Request) {
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
+	if !session.Valid || session.UserID == "" {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	if r.Method == "POST" {
+		if !auth.SameOriginRequest(r) {
+			sendHTML(w, 403, web.TwoFASetupPage(s.siteTitle, "请求被拒绝", "", s.twoFAEnabled(session.UserID)))
+			return
+		}
+		s.handleTwoFASetupPost(w, r, session.UserID)
+		return
+	}
+
+	enabled := s.twoFAEnabled(session.UserID)
+	secret, err := auth.GenerateTOTPSecret()
+	if err != nil {
+		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "生成密钥失败", "", enabled))
+		return
+	}
+	secure := auth.IsSecureRequest(r)
+	w.Header().Set("Set-Cookie", auth.SetSetupCookie(secret, s.sessionSecret, pendingTTLSeconds, secure))
+	sendHTML(w, 200, web.TwoFASetupPage(s.siteTitle, "", secret, enabled))
+}
+
+func (s *Server) handleTwoFASetupPost(w http.ResponseWriter, r *http.Request, username string) {
+	enabled := s.twoFAEnabled(username)
+	if err := r.ParseForm(); err != nil {
+		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "请求处理失败", "", enabled))
+		return
+	}
+
+	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
+	secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
+	if !ok {
+		sendHTML(w, 401, web.TwoFASetupPage(s.siteTitle, "设置会话已过期，请重新开始", "", enabled))
+		return
+	}
+
+	code := strings.TrimSpace(r.FormValue("code"))
+	if !auth.VerifyTOTP(secret, code, time.Now()) {
+		sendHTML(w, 401, web.TwoFASetupPage(s.siteTitle, "动态码错误或已过期，请重试", secret, enabled))
+		return
+	}
+
+	user := s.registry.GetUser(username)
+	if user == nil {
+		sendHTML(w, 404, web.NotFoundPage(s.siteTitle))
+		return
+	}
+	if err := config.UpdateTOTPSecret(user.ConfigPath, secret); err != nil {
+		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "保存失败：配置文件不可写", secret, enabled))
+		return
+	}
+	s.registry.Reload()
+	w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// twoFAEnabled reports whether the user has a TOTP secret configured.
+func (s *Server) twoFAEnabled(username string) bool {
+	user := s.registry.GetUser(username)
+	return user != nil && user.Config.Auth.TOTPSecret != ""
+}
+
+// handleTwoFAQr renders the provisioning QR code for the pending setup secret.
+func (s *Server) handleTwoFAQr(w http.ResponseWriter, r *http.Request) {
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
+	if !session.Valid || session.UserID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
+	secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
+	if !ok {
+		http.Error(w, "invalid setup", http.StatusBadRequest)
+		return
+	}
+	png, err := qrcode.Encode(auth.TOTPURI(session.UserID, secret), qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "qr error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Write(png)
+}
+
+// handleTwoFADisable turns off TOTP for the logged-in user.
+func (s *Server) handleTwoFADisable(w http.ResponseWriter, r *http.Request) {
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
+	if !session.Valid || session.UserID == "" {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if !auth.SameOriginRequest(r) {
+		sendHTML(w, 403, web.NotFoundPage(s.siteTitle))
+		return
+	}
+
+	user := s.registry.GetUser(session.UserID)
+	if user == nil {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if err := config.UpdateTOTPSecret(user.ConfigPath, ""); err != nil {
+		sendHTML(w, 500, web.LoginPage(s.siteTitle, "关闭失败：配置文件不可写", ""))
+		return
+	}
+	s.registry.Reload()
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -464,7 +697,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if multiMatch != nil {
 		pathUser := config.UsernameFromProxyPath(path)
 		if pathUser == "" || pathUser != session.UserID {
-			sendHTML(w, 403, web.NotFoundPage())
+			sendHTML(w, 403, web.NotFoundPage(s.siteTitle))
 			return
 		}
 		s.proxyRequest(w, r, multiMatch)
@@ -474,7 +707,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Try legacy path
 	legacyMatch := s.registry.FindLegacyService(path, session.UserID)
 	if legacyMatch == nil {
-		sendHTML(w, 404, web.NotFoundPage())
+		sendHTML(w, 404, web.NotFoundPage(s.siteTitle))
 		return
 	}
 

@@ -1,0 +1,17 @@
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="top-actions">
+      <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>
+    </div>
+    <h1>两步验证</h1>
+    <p class="subtitle">输入认证器 App（Google Authenticator / Authy）显示的 6 位动态码</p>
+    %s
+    <form method="POST" action="/login/2fa">
+      <input type="hidden" name="next" value="%s">
+      <label for="code">动态码</label>
+      <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required autofocus>
+      <button type="submit" class="submit-btn">验证</button>
+    </form>
+    <a href="/login" class="cancel-link">使用其他账号登录</a>
+  </div>
+</div>
