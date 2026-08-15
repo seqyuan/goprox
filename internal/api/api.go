@@ -175,6 +175,7 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		BackendPath: body.BackendPath,
 		WebSocket:   ws,
 		Category:    body.Category,
+		BWLimit:     body.BWLimit,
 	}
 	if body.Path != "" {
 		svc.Path = config.NormalizePath(body.Path)
@@ -296,6 +297,7 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 		BackendPath: body.BackendPath,
 		WebSocket:   body.WebSocket,
 		Category:    body.Category,
+		BWLimit:     body.BWLimit,
 	}
 
 	if err := config.UpdateService(configPath, id, update); err != nil {
@@ -328,6 +330,7 @@ type addServiceBody struct {
 	BackendPath string `json:"backend_path,omitempty"`
 	WebSocket   *bool  `json:"websocket,omitempty"`
 	Category    string `json:"category,omitempty"`
+	BWLimit     int64  `json:"bwlimit,omitempty"`
 }
 
 type layoutBody struct {
@@ -349,6 +352,7 @@ type updateBody struct {
 	BackendPath *string `json:"backend_path,omitempty"`
 	WebSocket   *bool   `json:"websocket,omitempty"`
 	Category    *string `json:"category,omitempty"`
+	BWLimit     *int64  `json:"bwlimit,omitempty"`
 }
 
 // Helpers

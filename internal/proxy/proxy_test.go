@@ -261,3 +261,63 @@ func TestClientForwardedForNotForwarded(t *testing.T) {
 		t.Fatalf("client-supplied XFF must not be forwarded; got %q, want the peer IP 203.0.113.9", gotXFF)
 	}
 }
+
+// A bwlimit-capped service must still deliver intact bodies for both the
+// injected-HTML path (defer wrapping happens after <base> injection) and the
+// pass-through non-HTML path.
+func TestBWLimitDoesNotCorruptResponse(t *testing.T) {
+	t.Run("html injection intact", func(t *testing.T) {
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte("<html><head></head><body>hello</body></html>"))
+		}))
+		defer backend.Close()
+		host, port := splitHostPort(backend.Listener.Addr().String())
+		svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/jupyter", BWLimit: 1 << 20}
+		rp := NewReverseProxy(svc, testFwdCtx())
+
+		rec := httptest.NewRecorder()
+		rp.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+		body := rec.Body.String()
+		if !strings.Contains(body, "<base") || !strings.Contains(body, "hello") {
+			t.Fatalf("bwlimit broke html injection/passthrough: %q", body)
+		}
+	})
+
+	t.Run("non-html passthrough intact", func(t *testing.T) {
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ok":true}`))
+		}))
+		defer backend.Close()
+		host, port := splitHostPort(backend.Listener.Addr().String())
+		svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/api", BWLimit: 1 << 20}
+		rp := NewReverseProxy(svc, testFwdCtx())
+
+		rec := httptest.NewRecorder()
+		rp.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+		if rec.Body.String() != `{"ok":true}` {
+			t.Fatalf("bwlimit corrupted non-html body: %q", rec.Body.String())
+		}
+	})
+}
+
+// A bwlimit-capped upload must still reach the backend with its body intact.
+func TestBWLimitPreservesUpload(t *testing.T) {
+	var gotBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app", BWLimit: 1 << 20}
+	rp := NewReverseProxy(svc, testFwdCtx())
+
+	req := httptest.NewRequest("POST", "/", strings.NewReader("upload-me"))
+	rp.ServeHTTP(httptest.NewRecorder(), req)
+	if gotBody != "upload-me" {
+		t.Fatalf("bwlimit corrupted upload: %q", gotBody)
+	}
+}

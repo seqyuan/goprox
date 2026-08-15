@@ -15,6 +15,7 @@ import (
 
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/rate"
 )
 
 // stripGatewayCookie removes gateway cookies from a Cookie header.
@@ -138,8 +139,26 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.Out.Header.Set("X-Forwarded-Proto", fc.Proto)
 			pr.Out.Header.Set("X-Forwarded-Host", fc.Host)
 			pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
+
+			// Throttle the request body (upload) to the per-service cap. The
+			// transport reads pr.Out.Body, so wrapping it here limits the rate
+			// at which the client's upload reaches the backend.
+			if svc.BWLimit > 0 && pr.Out.Body != nil {
+				pr.Out.Body = rate.NewLimitedReaderContext(pr.Out.Body, svc.BWLimit, pr.Out.Context())
+			}
 		},
-		ModifyResponse: func(resp *http.Response) error {
+		ModifyResponse: func(resp *http.Response) (retErr error) {
+			// Throttle the response body (download) to the per-service cap.
+			// The defer runs after every other body rewrite below, so whatever
+			// body this function ends with (streamed, buffered, injected) is
+			// rate-limited exactly once.
+			if svc.BWLimit > 0 && resp.Body != nil {
+				defer func() {
+					if retErr == nil && resp.Body != nil && resp.Request != nil {
+						resp.Body = rate.NewLimitedReaderContext(resp.Body, svc.BWLimit, resp.Request.Context())
+					}
+				}()
+			}
 			// HEAD responses carry no body; injecting would advertise a
 			// Content-Length the client never receives.
 			if resp.Request != nil && resp.Request.Method == "HEAD" {

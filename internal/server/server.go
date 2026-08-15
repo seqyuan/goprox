@@ -37,6 +37,10 @@ func New(state *config.StateConfig, configDir string) *Server {
 	// peer directly (X-Forwarded-* is spoofable by any direct client).
 	auth.ConfigureTrustedProxy(state.Server.TrustedProxy)
 
+	// Record the gateway's own listen port so backend targets pointing back
+	// at it can be rejected as self-loops (write-time and dial-time).
+	config.SetGatewayListenPort(state.Server.Port)
+
 	registry := config.NewUserRegistry(configDir)
 	registry.Reload()
 

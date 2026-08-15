@@ -241,6 +241,8 @@
     <input id="add-path" name="path" type="text" placeholder="根据名称自动生成">
     <label for="add-backend-path">后端路径 <small style="color:var(--text-muted)">(可选，例如 /app/index.html)</small></label>
     <input id="add-backend-path" name="backend_path" type="text" placeholder="留空则直接转发到根路径">
+    <label for="add-bwlimit">带宽上限 <small style="color:var(--text-muted)">(可选，字节/秒，留空不限速)</small></label>
+    <input id="add-bwlimit" name="bwlimit" type="number" min="0" step="1" placeholder="例如 10485760 = 10 MB/s">
     <label for="add-category">分类</label>
     <input id="add-category" name="category" type="text">
     <label class="checkbox-row">
@@ -270,6 +272,8 @@
     <input id="edit-path" name="path" type="text">
     <label for="edit-backend-path">后端路径 <small style="color:var(--text-muted)">(可选，例如 /app/index.html)</small></label>
     <input id="edit-backend-path" name="backend_path" type="text" placeholder="留空则直接转发到根路径">
+    <label for="edit-bwlimit">带宽上限 <small style="color:var(--text-muted)">(可选，字节/秒，留空不限速)</small></label>
+    <input id="edit-bwlimit" name="bwlimit" type="number" min="0" step="1" placeholder="例如 10485760 = 10 MB/s">
     <label for="edit-category">分类</label>
     <input id="edit-category" name="category" type="text">
     <label class="checkbox-row">

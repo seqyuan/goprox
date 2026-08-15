@@ -27,6 +27,7 @@ type ServiceConfig struct {
 	WebSocket   bool   `yaml:"websocket" json:"websocket"`
 	Category    string `yaml:"category,omitempty" json:"category,omitempty"`
 	Order       int    `yaml:"order,omitempty" json:"order,omitempty"`
+	BWLimit     int64  `yaml:"bwlimit,omitempty" json:"bwlimit,omitempty"` // Per-service bandwidth cap in bytes/sec; 0 = unlimited
 }
 
 // UserConfig represents a user's configuration file.
@@ -301,6 +302,12 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 		if svc.Port < 1 || svc.Port > 65535 {
 			return fmt.Errorf("port must be between 1 and 65535, got %d", svc.Port)
 		}
+		if svc.BWLimit < 0 {
+			return fmt.Errorf("bwlimit must be >= 0 (bytes/sec), got %d", svc.BWLimit)
+		}
+		if err := AssertNotSelfTarget(svc.Host, svc.Port); err != nil {
+			return err
+		}
 
 		// Guarantee a unique ID. Non-ASCII names all slugify to the same base
 		// (e.g. "service"), so append a numeric suffix when needed.
@@ -406,6 +413,7 @@ type ServiceUpdate struct {
 	BackendPath *string `json:"backend_path,omitempty"`
 	WebSocket   *bool   `json:"websocket,omitempty"`
 	Category    *string `json:"category,omitempty"`
+	BWLimit     *int64  `json:"bwlimit,omitempty"`
 }
 
 // UpdateService updates an existing service with optional fields.
@@ -458,6 +466,17 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 				}
 				if update.Category != nil {
 					cfg.Services[i].Category = *update.Category
+				}
+				if update.BWLimit != nil {
+					if *update.BWLimit < 0 {
+						return fmt.Errorf("bwlimit must be >= 0 (bytes/sec), got %d", *update.BWLimit)
+					}
+					cfg.Services[i].BWLimit = *update.BWLimit
+				}
+				// Validate the final host:port pair (both may have changed in
+				// this same update) against routing back into the gateway.
+				if err := AssertNotSelfTarget(cfg.Services[i].Host, cfg.Services[i].Port); err != nil {
+					return err
 				}
 				break
 			}
@@ -534,6 +553,9 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 		}
 		if s.Category != "" {
 			m["category"] = s.Category
+		}
+		if s.BWLimit > 0 {
+			m["bwlimit"] = s.BWLimit
 		}
 		m["websocket"] = s.WebSocket
 		m["order"] = s.Order

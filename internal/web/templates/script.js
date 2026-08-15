@@ -62,6 +62,7 @@
     var proxyUrl = "/proxy/" + encodeURIComponent(boot.username) + s.path + "/";
     var desc = s.description ? '<p class="card-desc">' + esc(s.description) + '</p>' : '';
     var ws = s.websocket ? '<span class="badge ws">WebSocket</span>' : '';
+    var bw = s.bwlimit > 0 ? '<span class="badge ws">限速 ' + fmtRate(s.bwlimit) + '</span>' : '';
     var toolbar = state.writable
       ? '<div class="card-toolbar"><span class="drag-handle" draggable="true" data-drag-handle="1" title="拖动排序">⋮⋮</span><div class="card-actions"><button type="button" class="card-edit" data-edit-id="' + esc(s.id) + '" title="编辑">✎</button><button type="button" class="card-delete" data-delete-id="' + esc(s.id) + '" title="删除">×</button></div></div>'
       : '';
@@ -75,7 +76,14 @@
       '<a class="card-link" href="' + esc(proxyUrl) + '" target="_blank" rel="noopener noreferrer">' +
       '<div class="card-icon">' + favIcon + '</div>' +
       '<div class="card-body"><h2>' + esc(s.name) + '</h2>' +
-      desc + '<div class="card-meta"><span class="endpoint">' + esc(s.host) + ':' + s.port + '</span>' + ws + '</div></div></a></div>';
+      desc + '<div class="card-meta"><span class="endpoint">' + esc(s.host) + ':' + s.port + '</span>' + ws + bw + '</div></div></a></div>';
+  }
+
+  function fmtRate(b) {
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB/s';
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB/s';
+    if (b >= 1024) return Math.round(b / 1024) + ' KB/s';
+    return b + ' B/s';
   }
 
   function esc(str) {
@@ -216,6 +224,7 @@
       ev.preventDefault();
       var path = ($("#add-path").value || "").trim();
       var backendPath = ($("#add-backend-path").value || "").trim();
+      var bwRaw = ($("#add-bwlimit").value || "").trim();
       var payload = {
         name: $("#add-name").value.trim(),
         description: ($("#add-description").value || "").trim() || undefined,
@@ -223,6 +232,7 @@
         port: parseInt($("#add-port").value, 10),
         path: path || undefined,
         backend_path: backendPath || undefined,
+        bwlimit: bwRaw ? parseInt(bwRaw, 10) : undefined,
         category: ($("#add-category").value || "").trim() || undefined,
         websocket: $("#add-ws").checked
       };
@@ -249,6 +259,7 @@
     $("#edit-port").value = svc.port;
     $("#edit-path").value = svc.path || "";
     $("#edit-backend-path").value = svc.backend_path || "";
+    $("#edit-bwlimit").value = svc.bwlimit || "";
     $("#edit-category").value = svc.category || "";
     $("#edit-ws").checked = !!svc.websocket;
     $("#edit-modal").classList.add("open");
@@ -265,6 +276,7 @@
     editForm.addEventListener("submit", function(ev) {
       ev.preventDefault();
       var id = $("#edit-id").value;
+      var bwRaw = ($("#edit-bwlimit").value || "").trim();
       var payload = {};
       payload.name = ($("#edit-name").value || "").trim();
       payload.description = ($("#edit-description").value || "").trim();
@@ -272,6 +284,7 @@
       payload.port = parseInt($("#edit-port").value, 10);
       payload.path = ($("#edit-path").value || "").trim();
       payload.backend_path = ($("#edit-backend-path").value || "").trim();
+      payload.bwlimit = bwRaw ? parseInt(bwRaw, 10) : undefined;
       payload.category = ($("#edit-category").value || "").trim();
       payload.websocket = $("#edit-ws").checked;
 

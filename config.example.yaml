@@ -21,4 +21,5 @@ services:
     websocket: true                 # 是否允许 WebSocket 升级
     category: "开发工具"
     order: 0
+    # bwlimit: 10485760              # 可选：该服务带宽上限（字节/秒，0/缺省 = 不限速）
     # backend_path: "/app/index.html"  # 可选：后端实际监听路径（含扩展名时子资源解析到其目录）

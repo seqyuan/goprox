@@ -107,6 +107,7 @@ services:
     websocket: true
     category: "开发工具"
     order: 0
+    # bwlimit: 10485760              # 可选：该服务带宽上限（字节/秒，0/缺省 = 不限速）
     # backend_path: "/app/index.html"  # 可选：后端实际监听路径（见下方 BackendPath 说明）
 ```
 
@@ -133,6 +134,7 @@ services:
 | `path` | string | — | 按 `id` 自动生成 | 前端访问路径，如 `/jupyter`；仅允许 `A-Za-z0-9._~-` 与 `/`，同用户内唯一 |
 | `backend_path` | string | — | 空 | 后端实际监听子路径/文件，如 `/app/index.html`（见下方 BackendPath 说明） |
 | `websocket` | bool | — | `true` | 是否允许 WebSocket 升级（Jupyter/RStudio 需开启） |
+| `bwlimit` | int | — | `0` | 该服务带宽上限（字节/秒），上行/下行各限 `bwlimit`，`0`/缺省 = 不限速 |
 | `description` | string | — | 空 | 说明文字（≤500 字符） |
 | `category` | string | — | 未分类 | 分类/分组名（≤100 字符） |
 | `id` | string | — | 🔒 系统自动 | 服务唯一 ID，由名称自动生成，重名自动加 `-2`、`-3`… |

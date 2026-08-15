@@ -2,10 +2,12 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -159,6 +161,17 @@ func SafeDialContext(ctx context.Context, network, address string) (net.Conn, er
 	ips, err := ResolveAllowedIPs(ctx, host)
 	if err != nil {
 		return nil, err
+	}
+
+	// Self-loop guard: dialing the gateway's own listen port on a local
+	// interface would bounce the request straight back into the gateway. This
+	// is the dial-time backstop to the write-time AssertNotSelfTarget check.
+	if gatewayListenPort != 0 {
+		if p, perr := strconv.Atoi(port); perr == nil && p == gatewayListenPort {
+			if containsLocalInterfaceIP(ips) {
+				return nil, fmt.Errorf("backend %s points back at the gateway itself (self-loop rejected)", address)
+			}
+		}
 	}
 
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
