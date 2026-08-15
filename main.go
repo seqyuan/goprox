@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,9 +28,6 @@ var version = "dev"
 
 const usage = `Usage:
   goprox serve [options]        Start the gateway server (foreground)
-  goprox start [options]        Start in background
-  goprox stop [options]         Stop the running gateway
-  goprox status [options]       Show gateway status
   goprox user <name>            Create a user account (prompts for password)
   goprox passwd <name>          Reset a user's password
   goprox del <name>             Delete a user account
@@ -44,9 +40,13 @@ Options:
                           enables X-Forwarded-For/Proto trust (default: none)
   -h, --help              Show this help
 
-All config (state, pid, log, users/) lives in the config directory next to
-the binary, so the whole directory is portable. Copy the binary to a writable
-directory - do NOT use a symlink (symlinks are resolved to the real path).
+Run in the foreground (Ctrl+C to stop). For a persistent session, run it in
+tmux/screen or with nohup:
+    nohup ./goprox serve --port 1908 > goprox.log 2>&1 &
+
+All config (state, users/) lives in the config directory next to the binary,
+so the whole directory is portable. Copy the binary to a writable directory -
+do NOT use a symlink (symlinks are resolved to the real path).
 
 Manage services via the web dashboard at http://host:port/
 `
@@ -102,16 +102,8 @@ func main() {
 	}
 
 	switch cmd {
-	case "serve", "start":
-		if cmd == "start" {
-			daemonize(opts)
-			return
-		}
+	case "serve":
 		runServer(opts)
-	case "stop":
-		runStop(opts)
-	case "status":
-		runStatus(opts)
 	case "user":
 		runUserAdd(opts, username)
 	case "passwd":
@@ -119,7 +111,11 @@ func main() {
 	case "del":
 		runUserDel(opts, username)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		if cmd == "start" || cmd == "stop" || cmd == "status" {
+			fmt.Fprintf(os.Stderr, "error: goprox %s 已移除；goprox 现为前台运行（goprox serve），停止用 Ctrl+C，后台可用 tmux/nohup\n", cmd)
+		} else {
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		}
 		printUsage()
 		os.Exit(1)
 	}
@@ -257,14 +253,6 @@ func runServer(opts options) {
 
 	statePath := config.StatePath(configDir)
 
-	// Check if already running
-	pidPath := config.PidPath(configDir)
-	if pid, err := readPidFile(pidPath); err == nil && pid > 0 {
-		if processRunning(pid) {
-			log.Fatalf("goprox is already running (pid %d); stop it first: goprox stop", pid)
-		}
-	}
-
 	state, err := config.LoadState(statePath)
 	if err != nil {
 		log.Fatalf("load state: %v", err)
@@ -308,11 +296,6 @@ func runServer(opts options) {
 	// recorded port for `status` and future default starts.
 	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy)
 
-	// Write PID file only after the listener is up (the `start` command waits
-	// for this file to consider the daemon ready).
-	writePidFile(pidPath, os.Getpid())
-	defer os.Remove(pidPath)
-
 	// Start config scanner
 	stopScan := make(chan struct{})
 	go srv.ScanLoop(10*time.Second, stopScan)
@@ -324,7 +307,6 @@ func runServer(opts options) {
 		sig := <-sigCh
 		log.Printf("received %s, shutting down", sig)
 		close(stopScan)
-		os.Remove(pidPath)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(ctx); err != nil {
@@ -348,158 +330,6 @@ func runServer(opts options) {
 
 	if err := httpServer.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
-	}
-}
-
-// ---- daemonize ----
-
-func daemonize(opts options) {
-	// Get the executable path
-	exe, err := os.Executable()
-	if err != nil {
-		log.Fatalf("get executable: %v", err)
-	}
-
-	// Build args for the child process (serve mode)
-	childArgs := []string{exe, "serve"}
-	if opts.configDir != config.DefaultConfigDir() {
-		childArgs = append(childArgs, "--config-dir", opts.configDir)
-	}
-	if opts.host != config.DefaultHost {
-		childArgs = append(childArgs, "--host", opts.host)
-	}
-	if opts.port != config.DefaultPort {
-		childArgs = append(childArgs, "--port", strconv.Itoa(opts.port))
-	}
-	if opts.trustedProxy != "" {
-		childArgs = append(childArgs, "--trusted-proxy", opts.trustedProxy)
-	}
-
-	// Open log file
-	logPath := config.LogPath(opts.configDir)
-	os.MkdirAll(filepath.Dir(logPath), 0700)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		log.Fatalf("open log file: %v", err)
-	}
-
-	pidPath := config.PidPath(opts.configDir)
-	// Refuse to start while another instance is running.
-	if pid, err := readPidFile(pidPath); err == nil && pid > 0 {
-		if processRunning(pid) {
-			log.Fatalf("goprox is already running (pid %d); stop it first: goprox stop", pid)
-		}
-	}
-
-	// Start child process
-	procAttr := &os.ProcAttr{
-		Dir:   "/",
-		Env:   os.Environ(),
-		Files: []*os.File{nil, logFile, logFile},
-		Sys:   &syscall.SysProcAttr{Setsid: true},
-	}
-
-	process, err := os.StartProcess(exe, childArgs, procAttr)
-	if err != nil {
-		log.Fatalf("start process: %v", err)
-	}
-	logFile.Close()
-
-	// Wait for the child to become ready (it writes its own pidfile once the
-	// listener is up) or to exit with an error. The parent must NOT write the
-	// pidfile: the child owns it, otherwise it sees itself as "already running".
-	done := make(chan error, 1)
-	go func() { _, werr := process.Wait(); done <- werr }()
-
-	deadline := time.After(10 * time.Second)
-	for {
-		if pid, err := readPidFile(pidPath); err == nil && pid == process.Pid && processRunning(pid) {
-			process.Release()
-			displayHost := opts.host
-			if displayHost == "0.0.0.0" || displayHost == "::" {
-				displayHost = getLocalIP()
-			}
-			log.Printf("started (pid %d)", process.Pid)
-			log.Printf("listening on http://%s:%d", displayHost, opts.port)
-			log.Printf("log: %s", logPath)
-			return
-		}
-		select {
-		case werr := <-done:
-			log.Printf("goprox failed to start: %v (see %s)", werr, logPath)
-			os.Remove(pidPath)
-			return
-		case <-deadline:
-			log.Printf("timed out waiting for goprox to start (see %s)", logPath)
-			return
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
-// ---- stop ----
-
-func runStop(opts options) {
-	pidPath := config.PidPath(opts.configDir)
-	pid, err := readPidFile(pidPath)
-	if err != nil || pid <= 0 {
-		log.Println("not running")
-		return
-	}
-
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		os.Remove(pidPath)
-		log.Println("not running")
-		return
-	}
-
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		os.Remove(pidPath)
-		log.Println("not running")
-		return
-	}
-
-	// Wait for process to stop
-	for i := 0; i < 50; i++ {
-		if !processRunning(pid) {
-			os.Remove(pidPath)
-			log.Printf("stopped (pid %d)", pid)
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Force kill
-	process.Signal(syscall.SIGKILL)
-	os.Remove(pidPath)
-	log.Printf("force stopped (pid %d)", pid)
-}
-
-// ---- status ----
-
-func runStatus(opts options) {
-	pidPath := config.PidPath(opts.configDir)
-	pid, err := readPidFile(pidPath)
-
-	if err != nil || pid <= 0 || !processRunning(pid) {
-		fmt.Println("[goprox] not running")
-	} else {
-		fmt.Printf("[goprox] running (pid %d)\n", pid)
-	}
-
-	logPath := config.LogPath(opts.configDir)
-	fmt.Printf("[goprox] log: %s\n", logPath)
-
-	if pid > 0 && processRunning(pid) {
-		state, err := config.LoadState(config.StatePath(opts.configDir))
-		if err == nil {
-			displayHost := state.Server.Host
-			if displayHost == "0.0.0.0" || displayHost == "::" {
-				displayHost = getLocalIP()
-			}
-			fmt.Printf("[goprox] listening on http://%s:%d\n", displayHost, state.Server.Port)
-		}
 	}
 }
 
@@ -546,28 +376,6 @@ func readPassword() (string, error) {
 	return strings.TrimSuffix(strings.TrimSuffix(password, "\n"), "\r"), nil
 }
 
-func processRunning(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
-}
-
-func readPidFile(path string) (int, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(strings.TrimSpace(string(data)))
-}
-
-func writePidFile(path string, pid int) error {
-	os.MkdirAll(filepath.Dir(path), 0700)
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0600)
-}
-
 func checkWritableDir(dir string) error {
 	f, err := os.CreateTemp(dir, ".goprox-write-test-*")
 	if err != nil {
@@ -576,17 +384,4 @@ func checkWritableDir(dir string) error {
 	name := f.Name()
 	f.Close()
 	return os.Remove(name)
-}
-
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "127.0.0.1"
-	}
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-			return ipnet.IP.String()
-		}
-	}
-	return "127.0.0.1"
 }

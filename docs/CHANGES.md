@@ -1,3 +1,16 @@
+# GoProx v0.2.6 变更日志（2026-08-15）
+
+## CLI 精简：删除后台守护化，统一为前台 serve
+
+- **删除 `start` / `stop` / `status` 子命令**：不再需要 pidfile、Setsid fork、后台进程、就绪轮询等守护化机制（删除约 230 行）
+- **`goprox serve`（或裸 `goprox`）成为唯一启动命令**：前台运行，日志打印到终端，`Ctrl+C` 优雅停机
+- **后台运行方式改为 tmux/screen 或 nohup**：`nohup ./goprox serve --port 1908 > goprox.log 2>&1 &`
+- **过渡提示**：执行 `goprox start/stop/status` 会打印「已移除」提示与替代方式，老用户不会被 `unknown command` 卡住
+- **配置目录精简**：不再生成 `daemon.pid` / `goprox.log`
+- README 同步更新（快速开始、日常管理、命令参考、目录结构）
+
+---
+
 # GoProx v0.2.5 变更日志（2026-08-15）
 
 ## 新功能
