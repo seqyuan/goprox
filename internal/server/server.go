@@ -3,7 +3,6 @@ package server
 import (
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -48,15 +47,53 @@ func New(state *config.StateConfig, configDir string) *Server {
 		loginLimiter:  rate.NewLimiter(10, 15*time.Minute),
 		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret),
 		// A shared transport lets connection pools be reused across requests
-		// instead of creating a fresh one per proxy request.
+		// instead of creating a fresh one per proxy request. SafeDialContext
+		// re-validates backend addresses (and pins the validated IP) at dial
+		// time, so the write-time host allowlist cannot be bypassed by a
+		// DNS-rebinding / TOCTOU change to the hostname.
 		transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			DialContext:           config.SafeDialContext,
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   10,
 		},
 	}
+}
+
+// currentSessionRev returns the per-account session revision derived from the
+// user's current password hash. Because the revision is embedded in session
+// tokens, changing the password revokes all previously-issued sessions.
+func (s *Server) currentSessionRev(username string) string {
+	if !config.IsValidUsername(username) {
+		return ""
+	}
+	uc := s.registry.GetUserConfigForLogin(username)
+	if uc == nil {
+		return ""
+	}
+	return auth.SessionRev(uc.Auth.PasswordHash)
+}
+
+// issueSessionCookie signs a session cookie bound to the user's current
+// password-hash revision.
+func (s *Server) issueSessionCookie(username string, secure bool) string {
+	return auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, username, s.currentSessionRev(username), secure)
+}
+
+// sessionFromCookies validates the session cookie, binding it to the user's
+// current password-hash revision.
+func (s *Server) sessionFromCookies(cookieHeader string) auth.SessionResult {
+	cookies := auth.ParseCookies(cookieHeader)
+	token := cookies[auth.SessionCookieName]
+	if token == "" {
+		return auth.SessionResult{}
+	}
+	userID, _, _, err := auth.SessionTokenParts(token)
+	if err != nil || userID == "" {
+		return auth.SessionResult{}
+	}
+	return auth.ValidateSessionToken(token, s.sessionSecret, s.currentSessionRev(userID))
 }
 
 // Handler returns the HTTP handler for the server.
@@ -144,7 +181,7 @@ func (s *Server) Handler() http.Handler {
 		// GET /login: may be a backend service login page (e.g. AnnoVibe redirect).
 		// Only forward when a valid session exists; otherwise a stale route
 		// cookie would hijack the GoProx login page after logout.
-		session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+		session := s.sessionFromCookies(r.Header.Get("Cookie"))
 		if session.Valid && session.UserID != "" {
 			if s.handleRouteCookieProxy(w, r) {
 				return
@@ -166,7 +203,7 @@ func (s *Server) Handler() http.Handler {
 		if r.URL.Path != "/" {
 			// Bare service paths (e.g. /jupyter) must be redirected to the proxied
 			// URL before route-cookie forwarding can hijack them and 404.
-			session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+			session := s.sessionFromCookies(r.Header.Get("Cookie"))
 			if session.Valid && session.UserID != "" && r.Method == "GET" {
 				if s.redirectBareService(w, r, session.UserID) {
 					return
@@ -209,7 +246,7 @@ func (s *Server) Handler() http.Handler {
 // If the user already has a valid session and the Referer or route cookie points to a
 // backend service, the request is forwarded there instead of being handled by goprox.
 func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool {
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		return false
 	}
@@ -286,7 +323,7 @@ func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool 
 	if r.URL.RawQuery == "" {
 		return false
 	}
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		return false
 	}
@@ -306,12 +343,12 @@ func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool 
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 
 	// Refresh session if needed
 	if session.Valid && session.UserID != "" && auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
 		secure := auth.IsSecureRequest(r)
-		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		cookie := s.issueSessionCookie(session.UserID, secure)
 		w.Header().Add("Set-Cookie", cookie)
 	}
 
@@ -377,10 +414,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userConfig := s.registry.GetUserConfigForLogin(username)
-	if userConfig != nil && auth.VerifyPassword(password, userConfig.Auth.PasswordHash) {
+	passwordHash := ""
+	if userConfig != nil {
+		passwordHash = userConfig.Auth.PasswordHash
+	}
+	// Timing-safe verify: even for unknown usernames a bcrypt comparison runs,
+	// so login latency cannot be used to enumerate valid accounts.
+	if auth.VerifyPasswordTimingSafe(password, passwordHash) {
 		s.loginLimiter.Reset(rateKey)
 		secure := auth.IsSecureRequest(r)
-		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, username, secure)
+		cookie := s.issueSessionCookie(username, secure)
 		w.Header().Set("Set-Cookie", cookie)
 		if next == "" {
 			next = "/"
@@ -394,7 +437,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		// Send the unauthenticated user to the login page and remember where
 		// they were headed so they land back on their service after login.
@@ -406,7 +449,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Refresh session if needed
 	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
 		secure := auth.IsSecureRequest(r)
-		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		cookie := s.issueSessionCookie(session.UserID, secure)
 		w.Header().Add("Set-Cookie", cookie)
 	}
 
@@ -443,6 +486,11 @@ func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *con
 	}
 
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
+	// The injected <base> must point at the directory of the actual document
+	// (e.g. /proxy/user/svc/report/page.html -> /proxy/user/svc/report/), not
+	// the service prefix, so relative links in plain HTML files in
+	// subdirectories resolve correctly.
+	forwardCtx.Base = proxy.BaseForPath(forwardCtx.Prefix, match.RemainingPath)
 	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
 		w.Header().Add("Set-Cookie", c)
 	}
@@ -486,7 +534,7 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 }
 
 func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool {
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		return false
 	}
@@ -494,7 +542,7 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 	// Refresh session if needed
 	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
 		secure := auth.IsSecureRequest(r)
-		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		cookie := s.issueSessionCookie(session.UserID, secure)
 		w.Header().Add("Set-Cookie", cookie)
 	}
 
@@ -536,7 +584,7 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 	// Route cookies are context hints, not credentials: without a valid
 	// session they must never grant backend access (the session may have
 	// expired or the user may have logged out).
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), s.sessionSecret)
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		next := r.URL.RequestURI()
 		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
@@ -546,7 +594,7 @@ func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) 
 	// Refresh session if needed
 	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
 		secure := auth.IsSecureRequest(r)
-		cookie := auth.SetSessionCookie(s.sessionSecret, s.state.Auth.SessionTTL, session.UserID, secure)
+		cookie := s.issueSessionCookie(session.UserID, secure)
 		w.Header().Add("Set-Cookie", cookie)
 	}
 
@@ -626,6 +674,11 @@ func (s *Server) UserCount() int {
 
 func sendHTML(w http.ResponseWriter, status int, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Gateway-owned pages must not be framed by unrelated sites (clickjacking
+	// of the login/dashboard) or sniffed as a different content type.
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	io.WriteString(w, html)
 }

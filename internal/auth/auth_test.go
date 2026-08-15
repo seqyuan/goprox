@@ -65,6 +65,22 @@ func TestGetRouteCookieForRequestAllowsSingleCookieFallback(t *testing.T) {
 	}
 }
 
+// Changing the password-hash revision must invalidate previously-issued
+// session tokens, so a stolen session dies when the password is reset.
+func TestSessionRevInvalidatesOldTokens(t *testing.T) {
+	token := CreateSessionToken("alice", "secret", 3600, SessionRev("hash-A"))
+
+	if got := ValidateSessionToken(token, "secret", SessionRev("hash-A")); !got.Valid || got.UserID != "alice" {
+		t.Fatalf("token must validate against its own revision: %+v", got)
+	}
+	if got := ValidateSessionToken(token, "secret", SessionRev("hash-B")); got.Valid {
+		t.Fatal("token must be invalid after the password-hash revision changes")
+	}
+	if got := ValidateSessionToken(token, "wrong-secret", SessionRev("hash-A")); got.Valid {
+		t.Fatal("token must be invalid with the wrong secret")
+	}
+}
+
 func TestSameOriginRequest(t *testing.T) {
 	cases := []struct {
 		name   string

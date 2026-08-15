@@ -60,7 +60,7 @@ func TestBarePathRedirectsEvenWithRouteCookie(t *testing.T) {
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 
-	cookies := auth.SetSessionCookie("testsecret", 86400, "alice", false) + "; " + auth.SetRouteCookie("/proxy/alice/jupyter")
+	cookies := auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false) + "; " + auth.SetRouteCookie("/proxy/alice/jupyter")
 	req := httptest.NewRequest("GET", "/jupyter", nil)
 	req.Header.Set("Cookie", cookies)
 	rr := httptest.NewRecorder()
@@ -141,7 +141,7 @@ func TestAPIStillForwardsViaRouteCookie(t *testing.T) {
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 
-	cookies := auth.SetSessionCookie("testsecret", 86400, "alice", false) + "; " + auth.SetRouteCookie("/proxy/alice/jupyter")
+	cookies := auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false) + "; " + auth.SetRouteCookie("/proxy/alice/jupyter")
 	req := httptest.NewRequest("GET", "/api/contents", nil)
 	req.Header.Set("Cookie", cookies)
 	rr := httptest.NewRecorder()

@@ -110,6 +110,36 @@ services:
     # backend_path: "/app/index.html"  # 可选：后端实际监听路径（见下方 BackendPath 说明）
 ```
 
+#### 卡片（服务）参数一览
+
+**仪表盘上的服务卡片**（点击卡片访问服务；✎ 编辑、× 删除、⋮⋮ 拖动排序）：
+
+![仪表盘服务卡片](docs/dashboard-cards.png)
+
+**添加 / 编辑服务的表单**（即卡片的全部可配置参数）：
+
+![添加服务弹窗](docs/service-add-modal.png)
+
+> 在网页「+ 添加 / 编辑」弹窗、或 `/api/services` 接口中配置以上字段；`id`、`order` 由系统自动维护。
+
+<details>
+<summary>📋 文字版参数表（便于检索 / 复制）</summary>
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `name` | string | ✅ | — | 卡片显示名称（≤200 字符） |
+| `host` | string | — | `127.0.0.1` | 后端地址，仅允许回环/私网（公网、链路本地/云元数据地址被拒） |
+| `port` | int | ✅ | — | 后端端口（1–65535） |
+| `path` | string | — | 按 `id` 自动生成 | 前端访问路径，如 `/jupyter`；仅允许 `A-Za-z0-9._~-` 与 `/`，同用户内唯一 |
+| `backend_path` | string | — | 空 | 后端实际监听子路径/文件，如 `/app/index.html`（见下方 BackendPath 说明） |
+| `websocket` | bool | — | `true` | 是否允许 WebSocket 升级（Jupyter/RStudio 需开启） |
+| `description` | string | — | 空 | 说明文字（≤500 字符） |
+| `category` | string | — | 未分类 | 分类/分组名（≤100 字符） |
+| `id` | string | — | 🔒 系统自动 | 服务唯一 ID，由名称自动生成，重名自动加 `-2`、`-3`… |
+| `order` | int | — | 🔒 系统自动 | 排序号（新增 = 最大 order+1，拖拽排序时更新） |
+
+</details>
+
 > `password_hash` 为新版 `goprox user` / `goprox passwd` 生成的 **bcrypt** 哈希（`$2a$10$...`，示例值是口令 `change-me`）。
 > 旧版遗留的 SHA-256 哈希兼容细节见下方「密码存储」。
 
@@ -257,19 +287,72 @@ code-server \
 
 ### BackendPath（后端实际路径）
 
-如果后端服务本身监听在某个子路径（如静态站点根目录是 `/public/index.html`），
-在卡片/API 中设置 `backend_path`，GoProx 会把代理前缀后的剩余路径映射到该后端路径上：
+「前端路径 `path`」和「后端路径 `backend_path`」是两个不同概念：
+
+| | 前端路径 `path` | 后端路径 `backend_path` |
+|---|---|---|
+| 是谁的路径 | 网关对外暴露的访问路径 | 后端服务自身实际监听的路径 |
+| 用户是否可见 | 可见（浏览器地址栏） | 不可见（转发时拼接） |
+
+转发规则：
+
+```text
+前端:  /proxy/<用户>/<path>/<剩余路径>
+              ↓ 网关转发
+后端:  <backend_path 或 根>/<剩余路径>
+```
+
+**三种典型配置：**
+
+**① 后端挂在根目录（最常见，`backend_path` 留空）**
+
+```yaml
+services:
+  - name: "Jupyter Lab"
+    port: 8888
+    path: "/jupyter"   # 前端路径
+    # backend_path 留空
+```
+
+- 访问 `/proxy/alice/jupyter/` → 后端收到 `/`
+- Jupyter / RStudio 等基本都是这种情况，留空即可。
+
+**② 后端跑在某个子路径下**
+
+后端 API 的所有路由都在 `/api/v1/...` 下：
+
+```yaml
+services:
+  - name: "我的 API"
+    port: 8000
+    path: "/myapi"            # 前端路径
+    backend_path: "/api/v1"   # 后端路径（目录前缀）
+```
+
+- 访问 `/proxy/alice/myapi/users` → 后端收到 `/api/v1/users`
+- 访问 `/proxy/alice/myapi/` → 后端收到 `/api/v1`
+
+**③ 后端静态站入口在某个文件**
+
+后端静态站首页是 `/public/index.html`（不是 `/`）：
 
 ```yaml
 services:
   - name: "静态站点"
     port: 8080
-    path: "/docs"
-    backend_path: "/public/index.html"  # 可选；留空则直接转发到根路径
+    path: "/docs"                       # 前端路径
+    backend_path: "/public/index.html"  # 后端路径（文件）
 ```
+
+- 访问 `/proxy/alice/docs/` → 后端收到 `/public/index.html`
+- 访问 `/proxy/alice/docs/assets/app.js` → 后端收到 `/public/assets/app.js`
+
+补充规则：
 
 - `backend_path` 指向**文件**（含扩展名）时，子资源会解析到该文件所在目录；
 - 后端重定向到该路径时，GoProx 会先剥离 `backend_path` 再拼接代理前缀。
+
+> **怎么判断要不要填 `backend_path`**：先留空，直接访问看能否打开；若 404 或资源路径不对，说明后端不是挂在根路径，再把它的实际前缀/入口文件填进 `backend_path`。
 
 ## License
 

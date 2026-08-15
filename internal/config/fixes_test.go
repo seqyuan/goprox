@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+	"net"
 	"strings"
 	"testing"
 )
@@ -85,5 +87,81 @@ func TestIsPrivateOrLocalHostname(t *testing.T) {
 	// Unresolvable hostname must be rejected, not panic.
 	if IsPrivateOrLocal("no-such-host.invalid") {
 		t.Fatal("unresolvable hostname must be rejected")
+	}
+}
+
+// Link-local addresses (including cloud metadata 169.254.169.254) must be
+// rejected even though they are not publicly routable; allowing them would let
+// a gateway user proxy to the instance metadata service and read credentials.
+func TestPrivateIPRejectsLinkLocalAndMetadata(t *testing.T) {
+	rejected := []string{
+		"169.254.169.254",
+		"169.254.0.0",
+		"fe80::1",
+		"::ffff:169.254.169.254",
+		"ff02::1",
+		"8.8.8.8",
+	}
+	for _, h := range rejected {
+		if IsPrivateOrLocal(h) {
+			t.Errorf("IsPrivateOrLocal(%q) = true, want false", h)
+		}
+	}
+
+	allowed := []string{"127.0.0.1", "::1", "10.1.2.3", "192.168.1.1", "172.16.0.1", "fd00::1"}
+	for _, h := range allowed {
+		if !IsPrivateOrLocal(h) {
+			t.Errorf("IsPrivateOrLocal(%q) = false, want true", h)
+		}
+	}
+}
+
+// IsTrustedProxyTooBroad flags ranges that would let any client spoof
+// X-Forwarded-* headers.
+func TestIsTrustedProxyTooBroad(t *testing.T) {
+	if !IsTrustedProxyTooBroad("0.0.0.0/0") {
+		t.Fatal("0.0.0.0/0 must be reported as too broad")
+	}
+	if !IsTrustedProxyTooBroad("::/0") {
+		t.Fatal("::/0 must be reported as too broad")
+	}
+	if IsTrustedProxyTooBroad("127.0.0.1/32") {
+		t.Fatal("127.0.0.1/32 must not be too broad")
+	}
+	if IsTrustedProxyTooBroad("10.0.0.0/8") {
+		t.Fatal("10.0.0.0/8 must not be too broad")
+	}
+	if IsTrustedProxyTooBroad("") {
+		t.Fatal("empty must not be too broad")
+	}
+}
+
+// SafeDialContext must refuse public and link-local destinations and dial a
+// validated loopback listener directly.
+func TestSafeDialContext(t *testing.T) {
+	if _, err := SafeDialContext(context.Background(), "tcp", "8.8.8.8:80"); err == nil {
+		t.Fatal("expected public IP to be rejected")
+	}
+	if _, err := SafeDialContext(context.Background(), "tcp", "169.254.169.254:80"); err == nil {
+		t.Fatal("expected link-local metadata IP to be rejected")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	if _, err := SafeDialContext(context.Background(), "tcp", ln.Addr().String()); err != nil {
+		t.Fatalf("expected local dial to succeed, got %v", err)
 	}
 }

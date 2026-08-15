@@ -96,10 +96,45 @@ func VerifyPassword(password, expectedHash string) bool {
 	return subtle.ConstantTimeCompare(expected, actual) == 1
 }
 
-// CreateSessionToken creates a signed session token.
-func CreateSessionToken(userID, secret string, ttlSec int) string {
+// dummyPasswordHash is a bcrypt hash of a fixed string, used only to equalize
+// login latency for unknown usernames. Verifying against it costs the same as
+// verifying a real account, so response timing cannot be used to enumerate
+// valid usernames. It never matches a real password.
+const dummyPasswordHash = "$2a$10$d2yql/LCIBoPfN3skgZhW.Nb5TDZ4UOKEJAsQWyZ7i/nP4bOlnSq6"
+
+// VerifyPasswordTimingSafe verifies a password against a stored hash, but runs
+// a bcrypt comparison even when the hash is missing (unknown user), so login
+// latency does not reveal whether a username exists.
+func VerifyPasswordTimingSafe(password, expectedHash string) bool {
+	if expectedHash == "" {
+		pw := []byte(password)
+		if len(pw) > bcryptPasswordMax {
+			pw = pw[:bcryptPasswordMax]
+		}
+		// Burn the same CPU as a real bcrypt verify without accepting anything.
+		bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), pw)
+		return false
+	}
+	return VerifyPassword(password, expectedHash)
+}
+
+// SessionRev derives a short per-account revision from the stored password
+// hash. The session token embeds this revision, so changing the password
+// changes the revision and invalidates all previously-issued sessions.
+func SessionRev(passwordHash string) string {
+	if passwordHash == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(passwordHash))
+	return hex.EncodeToString(h[:8]) // 16 hex chars
+}
+
+// CreateSessionToken creates a signed session token bound to a per-account
+// revision (derived from the password hash). The revision is part of the
+// signed payload, so a token cannot be replayed after the password changes.
+func CreateSessionToken(userID, secret string, ttlSec int, rev string) string {
 	expiry := time.Now().Unix() + int64(ttlSec)
-	payload := fmt.Sprintf("%s|%d", userID, expiry)
+	payload := fmt.Sprintf("%s|%d|%s", userID, expiry, rev)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
@@ -107,28 +142,49 @@ func CreateSessionToken(userID, secret string, ttlSec int) string {
 	return base64URLEncode([]byte(token))
 }
 
-// ValidateSessionToken validates a session token.
-func ValidateSessionToken(token, secret string) SessionResult {
+// SessionTokenParts decodes a session token and returns its userID, expiry and
+// revision WITHOUT verifying the signature. Callers use the userID to look up
+// the current revision, then call ValidateSessionToken to verify.
+func SessionTokenParts(token string) (userID string, expiry int64, rev string, err error) {
 	decoded, err := base64URLDecode(token)
 	if err != nil {
-		return SessionResult{Valid: false}
+		return "", 0, "", err
 	}
-
-	parts := strings.SplitN(string(decoded), "|", 3)
-	if len(parts) != 3 {
-		return SessionResult{Valid: false}
+	parts := strings.SplitN(string(decoded), "|", 4)
+	if len(parts) != 4 {
+		return "", 0, "", fmt.Errorf("malformed session token")
 	}
+	expiry, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return "", 0, "", err
+	}
+	return parts[0], expiry, parts[2], nil
+}
 
-	userID, expiryStr, sig := parts[0], parts[1], parts[2]
-	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
+// ValidateSessionToken validates a session token against the account's current
+// revision. The signature is recomputed over the CURRENT revision, so a token
+// issued before a password change (an older revision) fails verification.
+func ValidateSessionToken(token, secret, currentRev string) SessionResult {
+	userID, expiry, _, err := SessionTokenParts(token)
 	if err != nil || userID == "" {
 		return SessionResult{Valid: false}
 	}
 
-	payload := fmt.Sprintf("%s|%s", userID, expiryStr)
+	payload := fmt.Sprintf("%s|%d|%s", userID, expiry, currentRev)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	expectedSig := hex.EncodeToString(mac.Sum(nil))
+
+	// Extract the token's signature for a constant-time comparison.
+	decoded, err := base64URLDecode(token)
+	if err != nil {
+		return SessionResult{Valid: false}
+	}
+	parts := strings.SplitN(string(decoded), "|", 4)
+	if len(parts) != 4 {
+		return SessionResult{Valid: false}
+	}
+	sig := parts[3]
 
 	if subtle.ConstantTimeCompare([]byte(sig), []byte(expectedSig)) != 1 {
 		return SessionResult{Valid: false}
@@ -168,16 +224,6 @@ func ParseCookies(cookieHeader string) map[string]string {
 		}
 	}
 	return cookies
-}
-
-// GetSessionFromCookies extracts and validates session from cookies.
-func GetSessionFromCookies(cookieHeader, secret string) SessionResult {
-	cookies := ParseCookies(cookieHeader)
-	token := cookies[SessionCookieName]
-	if token == "" {
-		return SessionResult{Valid: false}
-	}
-	return ValidateSessionToken(token, secret)
 }
 
 // trustedProxy holds the CIDR of a trusted reverse proxy in front of the
@@ -235,9 +281,10 @@ func IsSecureRequest(r *http.Request) bool {
 	return strings.HasPrefix(strings.ToLower(proto), "https")
 }
 
-// SetSessionCookie creates a Set-Cookie header value for the session.
-func SetSessionCookie(secret string, ttlSec int, userID string, secure bool) string {
-	token := CreateSessionToken(userID, secret, ttlSec)
+// SetSessionCookie creates a Set-Cookie header value for the session, bound
+// to the account's current password-hash revision.
+func SetSessionCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+	token := CreateSessionToken(userID, secret, ttlSec, rev)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
 	if secure {

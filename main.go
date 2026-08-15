@@ -286,10 +286,13 @@ func runServer(opts options) {
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(state.Server.Host, strconv.Itoa(state.Server.Port)),
 		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second, // slowloris protection
+		ReadHeaderTimeout: 10 * time.Second, // slow header (slowloris) protection
+		ReadTimeout:       60 * time.Second, // bound slow request bodies (slowloris variant)
 		IdleTimeout:       120 * time.Second,
-		// No ReadTimeout/WriteTimeout: they would kill long-lived WebSocket
-		// connections to proxied services.
+		// No WriteTimeout: it would cut off long-lived streaming responses
+		// (SSE, log tails) from proxied services. WebSocket upgrades are safe
+		// from both timeouts because http.Server clears the connection
+		// deadlines when the handler hijacks the connection for the upgrade.
 	}
 
 	// Bind the listener before writing the pidfile so that a failed bind
@@ -335,6 +338,9 @@ func runServer(opts options) {
 	log.Printf("users: %s", config.UsersDir(configDir))
 	log.Printf("%d user(s) loaded", srv.UserCount())
 	if state.Server.TrustedProxy != "" {
+		if config.IsTrustedProxyTooBroad(state.Server.TrustedProxy) {
+			log.Printf("WARNING: trusted proxy %q covers the whole address space; any client can spoof X-Forwarded-* headers and defeat login rate limiting", state.Server.TrustedProxy)
+		}
 		log.Printf("trusted proxy: %s (X-Forwarded-For/Proto trusted only from this CIDR)", state.Server.TrustedProxy)
 	} else {
 		log.Printf("trusted proxy: none (X-Forwarded-* headers ignored)")

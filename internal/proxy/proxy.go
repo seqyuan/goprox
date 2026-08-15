@@ -41,6 +41,7 @@ func stripGatewayCookie(cookieHeader string) string {
 // ProxyForwardContext holds forwarding metadata.
 type ProxyForwardContext struct {
 	Prefix   string
+	Base     string // <base href> to inject: directory of the served document
 	ClientIP string
 	Proto    string
 	Host     string
@@ -54,10 +55,25 @@ func BuildProxyForwardContext(r *http.Request, username, servicePath string, leg
 	}
 	return ProxyForwardContext{
 		Prefix:   prefix,
+		Base:     prefix + "/",
 		ClientIP: auth.ClientIP(r),
 		Proto:    proto(r),
 		Host:     r.Host,
 	}
+}
+
+// BaseForPath computes the <base href> (a directory URL with trailing slash)
+// that relative links in a document served at the given remaining path should
+// resolve against. For a page at /proxy/user/svc/report/page.html the base is
+// /proxy/user/svc/report/; for the service root (remaining "/") it is the
+// service prefix. The result is URL-escaped.
+func BaseForPath(prefix, remaining string) string {
+	full := prefix + remaining
+	if !strings.HasSuffix(full, "/") {
+		full = pathpkg.Dir(full)
+	}
+	full = strings.TrimSuffix(full, "/") + "/"
+	return (&url.URL{Path: full}).EscapedPath()
 }
 
 func proto(r *http.Request) string {
@@ -92,6 +108,11 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			if backendPath != "" {
 				pr.Out.URL.Path = joinBackendPath(backendPath, pr.Out.URL.Path)
 			}
+			// Clear RawPath so the (possibly rewritten) Path is what goes on
+			// the wire. SetURL may leave a stale RawPath when the original
+			// request had encoded characters; without clearing it, EscapedPath
+			// would prefer the stale value over the rewritten Path.
+			pr.Out.URL.RawPath = ""
 
 			// HTML bodies must reach ModifyResponse uncompressed so <base>
 			// injection does not corrupt a gzip stream. For likely-static
@@ -109,12 +130,11 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				pr.Out.Header.Set("Cookie", stripGatewayCookie(cookie))
 			}
 
-			// Set forwarded headers
-			xForwardedFor := fc.ClientIP
-			if prior := pr.In.Header.Get("X-Forwarded-For"); prior != "" {
-				xForwardedFor = prior + ", " + fc.ClientIP
-			}
-			pr.Out.Header.Set("X-Forwarded-For", xForwardedFor)
+			// Forwarded headers: send only the peer address computed by
+			// ClientIP. A client-supplied X-Forwarded-For must not be passed
+			// through, otherwise a backend that trusts XFF (for logging or
+			// IP-based access control) would see an attacker-controlled source.
+			pr.Out.Header.Set("X-Forwarded-For", fc.ClientIP)
 			pr.Out.Header.Set("X-Forwarded-Proto", fc.Proto)
 			pr.Out.Header.Set("X-Forwarded-Host", fc.Host)
 			pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
@@ -181,7 +201,7 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				return nil
 			}
 
-			baseTag := fmt.Sprintf("<base href=\"%s/\">", html.EscapeString(fc.Prefix))
+			baseTag := fmt.Sprintf("<base href=\"%s\">", html.EscapeString(fc.Base))
 			modified := injectBaseTag(body, []byte(baseTag))
 
 			resp.Body = io.NopCloser(bytes.NewReader(modified))

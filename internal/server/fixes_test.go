@@ -66,7 +66,7 @@ func TestGzipHTMLBaseInjection(t *testing.T) {
 	srv := srvForBackend(t, host, port)
 
 	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/", nil)
-	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br") // browser behavior
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -141,7 +141,7 @@ func TestLogoutClearsRouteCookies(t *testing.T) {
 	srv, _ := newTestServer(t)
 	req := httptest.NewRequest("GET", "/logout", nil)
 	req.Header.Set("Cookie",
-		auth.SetSessionCookie("testsecret", 86400, "alice", false)+"; "+
+		auth.SetSessionCookie("testsecret", 86400, "alice", "rev", false)+"; "+
 			auth.SetRouteCookie("/proxy/alice/jupyter")+"; "+
 			auth.SetRouteCookie("/proxy/alice/rstudio"))
 	rr := httptest.NewRecorder()
@@ -158,6 +158,52 @@ func TestLogoutClearsRouteCookies(t *testing.T) {
 	}
 	if cleared < 3 {
 		t.Fatalf("expected session + 2 route cookies cleared, got %d: %v", cleared, rr.Result().Header.Values("Set-Cookie"))
+	}
+}
+
+// A plain HTML file served from a subdirectory must get a <base> pointing at
+// that subdirectory (not the service prefix), so relative links resolve there.
+func TestSubdirectoryHTMLGetsDirectoryBase(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, "<html><head></head><body><a href=\"next.html\">next</a></body></html>")
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendAddr(t, backend)
+	srv := srvForBackend(t, host, port)
+
+	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/report/page.html", nil)
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `<base href="/proxy/alice/jupyter/report/">`) {
+		t.Fatalf("expected directory-scoped base tag, got body: %s", rr.Body.String())
+	}
+}
+
+// Gateway-owned HTML pages must not be framed by other sites (clickjacking)
+// or sniffed as a different content type.
+func TestGatewayPagesSetSecurityHeaders(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest("GET", "/", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("expected X-Frame-Options DENY, got %q", got)
+	}
+	if got := rr.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+		t.Fatalf("expected CSP frame-ancestors 'none', got %q", got)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected X-Content-Type-Options nosniff, got %q", got)
 	}
 }
 
@@ -187,7 +233,7 @@ func TestAbsoluteRedirectRewrittenToGatewayPath(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/", nil)
-	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
@@ -221,7 +267,7 @@ func TestChunkedHTMLForwardedWithBaseInjection(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/", nil)
-	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
 	srv.Handler().ServeHTTP(rec, req)
 
 	body := rec.Body.String()

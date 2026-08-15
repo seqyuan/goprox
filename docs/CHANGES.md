@@ -1,3 +1,30 @@
+# GoProx v0.2.3 变更日志（2026-08-15）
+
+## 安全修复
+
+- **拒绝链路本地 / 云元数据地址**：后端 host 白名单拒绝 169.254.0.0/16、fe80::/10 等链路本地地址，防止用户代理到云实例元数据服务（AWS/GCP/Azure IMDS）读取凭据
+- **修复 DNS rebinding 绕过**：新增 `SafeDialContext`，转发建连时重新校验后端地址并直接拨号已校验的 IP，封死「写入时校验、拨号时重解析」的 TOCTOU 绕过
+- **不再透传客户端伪造的 X-Forwarded-For**：后端只收到真实对端 IP，避免后端按 XFF 做日志/访问控制时被伪造来源 IP 绕过
+- **会话绑定密码哈希版本**：改密码后所有已签发 session 立即失效（token 载荷由 `user|expiry` 升级为 `user|expiry|rev`；升级后旧会话需重新登录一次）
+- **登录时序用户枚举防护**：未知用户名也执行等价的 bcrypt 比对，消除「已知用户慢 / 未知用户快」的时序侧信道
+- **网关页面防点击劫持 / MIME 嗅探**：登录页、仪表盘、404 等增加 `X-Frame-Options: DENY`、`Content-Security-Policy: frame-ancestors 'none'`、`X-Content-Type-Options: nosniff`
+- **修复更新服务时字段长度校验缺口**：仅改 description/category 时同样强制 ≤500/≤100 上限
+- **请求体超限返回 413**：`/api/services` 请求体超过 64KB 不再静默截断，改为 413
+- **慢速请求体防护**：`http.Server` 增加 `ReadTimeout`（60s）；已确认 WebSocket 升级劫持时会清空连接 deadline，故不影响 WebSocket
+- **过宽 trusted-proxy 启动告警**：配置 `0.0.0.0/0`、`::/0` 等全域网段时打印 WARNING
+
+## 路径解析修复
+
+- **`<base>` 改为目录级注入**：纯 HTML 文件位于子目录时，注入的 `<base>` 指向文档所在目录（而非服务前缀），相对链接/相对重定向正确解析；服务根行为不变
+- **清理代理重写后的 `RawPath`**：避免原请求带 `%2F` 等编码时路径错乱
+
+## 文档
+
+- 卡片参数一览：新增仪表盘与「添加服务」弹窗的真实界面截图，并保留可折叠的文字版参数表
+- BackendPath 章节扩充：前端路径 `path` 与后端路径 `backend_path` 的对比与三种典型配置示例
+
+---
+
 # GoProx v0.2.2 变更日志（2026-08-15）
 
 ## 用户体验修复

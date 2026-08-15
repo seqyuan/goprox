@@ -32,7 +32,7 @@ func apiPost(t *testing.T, h *Handler, url, body, origin string) *httptest.Respo
 	t.Helper()
 	req := httptest.NewRequest("POST", url, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
 	if origin != "" {
 		req.Header.Set("Origin", origin)
 	}
@@ -90,7 +90,7 @@ func TestDeleteServiceRejectsCrossOrigin(t *testing.T) {
 		t.Fatalf("setup add failed: %d", rr.Code)
 	}
 	req := httptest.NewRequest("DELETE", "/api/services/x", nil)
-	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", false))
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
 	req.Header.Set("Origin", "http://evil.example")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -115,5 +115,36 @@ func TestAddServiceRejectsOversizedName(t *testing.T) {
 	rr := apiPost(t, h, "/api/services", `{"name":"`+long+`","port":8080}`, "http://gw:1908")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized name, got %d", rr.Code)
+	}
+}
+
+// Oversized request bodies must be rejected with 413, not silently truncated.
+func TestAddServiceRejectsOversizedBody(t *testing.T) {
+	h := newTestHandler(t)
+	big := `{"name":"x","port":8080,"description":"` + strings.Repeat("a", 70000) + `"}`
+	rr := apiPost(t, h, "/api/services", big, "http://gw:1908")
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized body, got %d", rr.Code)
+	}
+}
+
+// Updating only description/category must still enforce their length bounds.
+func TestUpdateServiceRejectsOversizedDescriptionWithoutName(t *testing.T) {
+	h := newTestHandler(t)
+	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:1908")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("setup add failed: %d", rr.Code)
+	}
+
+	body := `{"description":"` + strings.Repeat("b", 501) + `"}`
+	req := httptest.NewRequest("PUT", "/api/services/x", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
+	req.Header.Set("Origin", "http://gw:1908")
+	req.Host = "gw:1908"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized description, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

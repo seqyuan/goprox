@@ -44,6 +44,21 @@ func TestVerifyPasswordLongInput(t *testing.T) {
 	}
 }
 
+// Unknown usernames must verify against a dummy bcrypt hash (equalizing timing)
+// and always fail; known hashes must still verify normally.
+func TestVerifyPasswordTimingSafe(t *testing.T) {
+	if VerifyPasswordTimingSafe("pw", "") {
+		t.Fatal("empty hash must never verify")
+	}
+	bc := HashPassword("s3cret")
+	if !VerifyPasswordTimingSafe("s3cret", bc) {
+		t.Fatal("bcrypt hash must verify via timing-safe path")
+	}
+	if VerifyPasswordTimingSafe("wrong", bc) {
+		t.Fatal("wrong password must not verify")
+	}
+}
+
 // ClientIP must ignore spoofed X-Forwarded-For unless a trusted proxy is
 // configured and the request actually arrives from it.
 func TestClientIPTrustedProxyGating(t *testing.T) {
@@ -89,7 +104,7 @@ func TestClientIPTrustedProxyGating(t *testing.T) {
 
 // ClearRouteCookies must emit expiry Set-Cookie headers for every route cookie.
 func TestClearRouteCookies(t *testing.T) {
-	cookies := SetSessionCookie("testsecret", 3600, "alice", false) + "; " +
+	cookies := SetSessionCookie("testsecret", 3600, "alice", "rev", false) + "; " +
 		SetRouteCookie("/proxy/alice/jupyter") + "; " +
 		SetRouteCookie("/proxy/alice/rstudio") + "; " +
 		"backend_cookie=1"

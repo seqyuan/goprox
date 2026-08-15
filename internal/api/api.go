@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,12 +73,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) string {
-	session := auth.GetSessionFromCookies(r.Header.Get("Cookie"), h.SessionSecret)
+	session := h.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		writeJSON(w, 401, map[string]string{"error": "Unauthorized"})
 		return ""
 	}
 	return session.UserID
+}
+
+// currentSessionRev returns the per-account session revision derived from the
+// user's current password hash.
+func (h *Handler) currentSessionRev(username string) string {
+	if !config.IsValidUsername(username) {
+		return ""
+	}
+	uc := h.Registry.GetUserConfigForLogin(username)
+	if uc == nil {
+		return ""
+	}
+	return auth.SessionRev(uc.Auth.PasswordHash)
+}
+
+// sessionFromCookies validates the session cookie, binding it to the user's
+// current password-hash revision so password changes revoke old sessions.
+func (h *Handler) sessionFromCookies(cookieHeader string) auth.SessionResult {
+	cookies := auth.ParseCookies(cookieHeader)
+	token := cookies[auth.SessionCookieName]
+	if token == "" {
+		return auth.SessionResult{}
+	}
+	userID, _, _, err := auth.SessionTokenParts(token)
+	if err != nil || userID == "" {
+		return auth.SessionResult{}
+	}
+	return auth.ValidateSessionToken(token, h.SessionSecret, h.currentSessionRev(userID))
 }
 
 func (h *Handler) getConfigPath(username string) (string, error) {
@@ -105,7 +134,7 @@ func (h *Handler) handleListServices(w http.ResponseWriter, r *http.Request, use
 func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, username string) {
 	var body addServiceBody
 	if err := parseBody(r, &body); err != nil {
-		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		writeBodyError(w, err)
 		return
 	}
 
@@ -166,7 +195,7 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 func (h *Handler) handleUpdateLayout(w http.ResponseWriter, r *http.Request, username string) {
 	var body layoutBody
 	if err := parseBody(r, &body); err != nil {
-		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		writeBodyError(w, err)
 		return
 	}
 
@@ -226,7 +255,7 @@ func (h *Handler) handleDeleteService(w http.ResponseWriter, username, id string
 func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, username, id string) {
 	var body updateBody
 	if err := parseBody(r, &body); err != nil {
-		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		writeBodyError(w, err)
 		return
 	}
 
@@ -237,10 +266,15 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 			writeJSON(w, 400, map[string]string{"error": "name cannot be empty"})
 			return
 		}
-		if len(name) > 200 || (body.Description != nil && len(*body.Description) > 500) || (body.Category != nil && len(*body.Category) > 100) {
-			writeJSON(w, 400, map[string]string{"error": "field too long (name ≤ 200, description ≤ 500, category ≤ 100 chars)"})
+		if len(name) > 200 {
+			writeJSON(w, 400, map[string]string{"error": "name too long (≤ 200 chars)"})
 			return
 		}
+	}
+	// Description/category bounds apply even when name is not being changed.
+	if (body.Description != nil && len(*body.Description) > 500) || (body.Category != nil && len(*body.Category) > 100) {
+		writeJSON(w, 400, map[string]string{"error": "field too long (description ≤ 500, category ≤ 100 chars)"})
+		return
 	}
 
 	configPath, err := h.getConfigPath(username)
@@ -325,18 +359,37 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
+// maxBodySize caps JSON request bodies. Bodies larger than this are rejected
+// with 413 instead of being silently truncated mid-JSON.
+const maxBodySize = 1 << 16 // 64KB
+
+var errBodyTooLarge = fmt.Errorf("request body too large (max 64KB)")
+
 func parseBody(r *http.Request, v interface{}) error {
 	if r.Body == nil {
 		return fmt.Errorf("missing body")
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, 1<<16)) // 64KB limit
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize+1))
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
+	}
+	if len(data) > maxBodySize {
+		return errBodyTooLarge
 	}
 	if err := json.Unmarshal(data, v); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	return nil
+}
+
+// writeBodyError maps a parseBody error to the right HTTP status: 413 for
+// oversized bodies, 400 otherwise.
+func writeBodyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSON(w, 413, map[string]string{"error": "request body too large"})
+		return
+	}
+	writeJSON(w, 400, map[string]string{"error": err.Error()})
 }
 
 func isWritable(path string) bool {

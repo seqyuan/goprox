@@ -42,7 +42,27 @@ func TestJoinBackendPathFileSubresource(t *testing.T) {
 }
 
 func testFwdCtx() ProxyForwardContext {
-	return ProxyForwardContext{Prefix: "/proxy/alice/jupyter"}
+	return ProxyForwardContext{Prefix: "/proxy/alice/jupyter", Base: "/proxy/alice/jupyter/"}
+}
+
+// The injected <base> must be the directory of the served document, not the
+// service prefix, so relative links in subdirectory HTML files resolve there.
+func TestBaseForPath(t *testing.T) {
+	cases := []struct {
+		prefix    string
+		remaining string
+		want      string
+	}{
+		{"/proxy/alice/docs", "/", "/proxy/alice/docs/"},
+		{"/proxy/alice/docs", "/report/page.html", "/proxy/alice/docs/report/"},
+		{"/proxy/alice/docs", "/report/", "/proxy/alice/docs/report/"},
+		{"/proxy/alice/docs", "/my dir/page.html", "/proxy/alice/docs/my%20dir/"},
+	}
+	for _, c := range cases {
+		if got := BaseForPath(c.prefix, c.remaining); got != c.want {
+			t.Errorf("BaseForPath(%q, %q) = %q, want %q", c.prefix, c.remaining, got, c.want)
+		}
+	}
 }
 
 func TestRewriteLocationRelativePath(t *testing.T) {
@@ -212,5 +232,32 @@ func TestHTMLStripsAcceptEncoding(t *testing.T) {
 
 	if strings.Contains(gotAE, "br") {
 		t.Fatalf("HTML should strip the browser's Accept-Encoding (no br), got %q", gotAE)
+	}
+}
+
+// A client-supplied X-Forwarded-For must be dropped: the backend receives only
+// the peer address computed by ClientIP, never an attacker-controlled value
+// that a backend might trust for logging or IP-based access control.
+func TestClientForwardedForNotForwarded(t *testing.T) {
+	var gotXFF string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFF = r.Header.Get("X-Forwarded-For")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.9:4321"
+	req.Header.Set("X-Forwarded-For", "6.6.6.6")
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	rp := NewReverseProxy(svc, fc)
+
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	if gotXFF != "203.0.113.9" {
+		t.Fatalf("client-supplied XFF must not be forwarded; got %q, want the peer IP 203.0.113.9", gotXFF)
 	}
 }
