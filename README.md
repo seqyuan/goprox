@@ -110,6 +110,12 @@ TLS 设置会持久化到 `state.yaml`（`tls_cert` / `tls_key`），之后的 `
 ./goprox del <name>         删除用户账号
 ./goprox 2fa-reset <name>   关闭指定用户的两步验证
 
+# 轻量级单点登录（可选）
+./goprox sso                                查看当前 SSO 配置
+./goprox sso --user-header X-Authenticated-User \
+            --hmac-secret <key>              启用 SSO（身份头 + HMAC 签名）
+./goprox sso --off                           关闭 SSO
+
 Options:
   -d, --config-dir <dir>  配置目录（默认 <程序目录>/config）
   --host <host>           监听地址（默认 0.0.0.0）
@@ -274,6 +280,43 @@ auth:
 > **清除方法**：`trusted_proxy` 一旦写入会一直生效（与 `host`/`port` 相同的语义，
 > 去掉启动参数不会清除它）。要关闭请编辑 `config/state.yaml`，删除 `trusted_proxy` 行
 > 后重启网关。每次启动时日志会打印当前生效值（`trusted proxy: ...`），可据此确认。
+
+### 轻量级单点登录（`sso`，可选）
+
+登录网关一次后，把当前用户名以请求头的形式带给后端服务，后端信任该头即可
+“免登录”识别用户——适合个人 Jupyter / RStudio / dsh 这类挂在网关后面的服务。
+用 `goprox sso` 配置，写入 `config/state.yaml` 的 `sso` 段：
+
+```yaml
+sso:
+  user_header: X-Authenticated-User   # 携带登录用户名的请求头名；空 = 关闭
+  hmac_secret: ""                      # 可选：设置后同时下发 HMAC 签名头
+```
+
+- `user_header`：每次代理请求都会带上 `user_header: <登录用户名>`，后端读取即知当前用户；
+- `hmac_secret`：可选共享密钥。设置后每个请求还带 `user_header-Signature` 头，值为
+  `HMAC-SHA256(secret, "goprox-sso:v1:" + 用户名)` 的 base64url（无填充）编码，
+  后端验签即可确认身份，不再完全依赖网络隔离。
+
+> **安全前提（重要）**：身份头是后端的唯一身份凭证，因此后端**必须只能经网关访问**
+> （只监听回环地址或防火墙仅放行网关），否则任何能直连后端的人都可以伪造
+> `X-Authenticated-User: admin` 冒充任意用户。无法保证网络隔离时，务必设置
+> `hmac_secret` 并用 `hmac.Equal` 验签（见下方示例）。
+> 网关始终**覆盖**客户端传入的身份头（绝不透传），并剥离 `X-Authenticated-User`、
+> `X-Forwarded-User`、`X-Auth-Request-User`、`Remote-User`、`Remote_User` 等常见身份头，
+> 防止浏览器伪造。改动后需重启网关生效（启动日志会打印 `sso: ...`）。
+
+后端验签示例（Go）：
+
+```go
+user := r.Header.Get("X-Authenticated-User")
+sig := r.Header.Get("X-Authenticated-User-Signature")
+mac := hmac.New(sha256.New, []byte(secret))
+mac.Write([]byte("goprox-sso:v1:" + user))
+if !hmac.Equal([]byte(sig), []byte(base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))) {
+    http.Error(w, "bad sso signature", http.StatusUnauthorized)
+}
+```
 
 ### 密码存储
 

@@ -33,6 +33,8 @@ const usage = `Usage:
   goprox passwd <name>          Reset a user's password
   goprox del <name>             Delete a user account
   goprox 2fa-reset <name>       Disable a user's two-factor authentication
+  goprox sso [options]          Show or configure lightweight SSO (identity
+                                header forwarded to backends; see below)
 
 Options:
   -d, --config-dir <dir>  Config directory (default: <program dir>/config)
@@ -49,6 +51,19 @@ Options:
                           dashboard and login page (default: GoProx)
   -V, --version           Show version
   -h, --help              Show this help
+
+SSO options (with goprox sso):
+  --user-header <name>    Request header carrying the logged-in username on
+                          every proxied request (e.g. X-Authenticated-User);
+                          backends that opt in trust it as the user identity
+  --hmac-secret <key>     Optional shared secret: additionally signs the
+                          header (HMAC-SHA256, base64url) so backends can
+                          verify the identity without network isolation alone
+  --off                   Disable SSO (clears user_header and hmac_secret)
+
+With no options, goprox sso prints the current configuration.
+The backend must be reachable only through the gateway (loopback/firewall),
+otherwise anyone who can reach it directly can forge the identity header.
 
 HTTPS turns the whole site into a secure context, which unlocks every
 secure-context Web API (crypto.randomUUID, crypto.subtle, navigator.storage,
@@ -110,6 +125,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: invalid username %q\n", username)
 			os.Exit(1)
 		}
+	}
+
+	// sso has its own option set, so it is handled before the shared parse.
+	if cmd == "sso" {
+		runSSO(parseSSOArgs(args))
+		return
 	}
 
 	// Parse options
@@ -300,6 +321,124 @@ func runTOTPReset(opts options, username string) {
 	fmt.Printf("[goprox] 2FA disabled for %s\n", username)
 }
 
+// ---- lightweight SSO (admin CLI) ----
+
+// ssoArgs holds the parsed `goprox sso` options.
+type ssoArgs struct {
+	configDir  string
+	userHeader string
+	hmacSecret string
+	haveHeader bool
+	haveHMAC   bool
+	off        bool
+}
+
+// parseSSOArgs parses `goprox sso` options (its own set, distinct from the
+// serve options).
+func parseSSOArgs(args []string) ssoArgs {
+	sa := ssoArgs{configDir: config.DefaultConfigDir()}
+	for i := 0; i < len(args); i++ {
+		next := func() (string, bool) {
+			if i+1 < len(args) {
+				i++
+				return args[i], true
+			}
+			return "", false
+		}
+		switch args[i] {
+		case "-d", "--config-dir":
+			v, ok := next()
+			if !ok {
+				log.Fatalf("option %s requires a value", args[i])
+			}
+			sa.configDir = v
+		case "--user-header":
+			v, ok := next()
+			if !ok {
+				log.Fatalf("option --user-header requires a value")
+			}
+			sa.userHeader, sa.haveHeader = v, true
+		case "--hmac-secret":
+			v, ok := next()
+			if !ok {
+				log.Fatalf("option --hmac-secret requires a value")
+			}
+			sa.hmacSecret, sa.haveHMAC = v, true
+		case "--off":
+			sa.off = true
+		default:
+			log.Fatalf("unknown sso option: %s", args[i])
+		}
+	}
+	return sa
+}
+
+// runSSO shows or updates the lightweight SSO configuration in state.yaml.
+func runSSO(sa ssoArgs) {
+	statePath := config.StatePath(sa.configDir)
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		log.Fatalf("load state: %v", err)
+	}
+
+	if sa.off {
+		if err := config.PersistSSOConfig(statePath, "", ""); err != nil {
+			log.Fatalf("update state: %v", err)
+		}
+		fmt.Println("[goprox] sso disabled")
+		fmt.Println("[goprox] restart the gateway for changes to take effect")
+		return
+	}
+
+	if !sa.haveHeader {
+		// No changes requested: show the current configuration.
+		if state.SSO.UserHeader == "" {
+			fmt.Println("[goprox] sso: disabled")
+			return
+		}
+		mode := "unsigned (backend must be network-isolated)"
+		if state.SSO.HMACSecret != "" {
+			mode = "HMAC-signed"
+		}
+		fmt.Printf("[goprox] sso: user_header=%s hmac_secret=%s (%s)\n",
+			state.SSO.UserHeader, maskSecret(state.SSO.HMACSecret), mode)
+		return
+	}
+
+	if sa.userHeader == "" {
+		log.Fatalf("--user-header requires a non-empty header name (use --off to disable)")
+	}
+	if !config.IsValidHeaderName(sa.userHeader) {
+		log.Fatalf("invalid header name %q (must be a valid HTTP header name)", sa.userHeader)
+	}
+	if sa.haveHMAC && sa.hmacSecret == "" {
+		log.Fatalf("--hmac-secret requires a non-empty key (omit it to keep the current one)")
+	}
+
+	hmacSecret := state.SSO.HMACSecret // keep the current secret unless replaced
+	if sa.haveHMAC {
+		hmacSecret = sa.hmacSecret
+	}
+	if err := config.PersistSSOConfig(statePath, sa.userHeader, hmacSecret); err != nil {
+		log.Fatalf("update state: %v", err)
+	}
+
+	mode := "unsigned (backend must be network-isolated)"
+	if hmacSecret != "" {
+		mode = "HMAC-signed"
+	}
+	fmt.Printf("[goprox] sso: user_header=%s (%s)\n", sa.userHeader, mode)
+	fmt.Println("[goprox] restart the gateway for changes to take effect")
+}
+
+// maskSecret hides a configured secret in status output.
+func maskSecret(s string) string {
+	if s == "" {
+		return "<unset>"
+	}
+	return "<set>"
+}
+
 // ---- server ----
 
 func runServer(opts options) {
@@ -420,6 +559,14 @@ func runServer(opts options) {
 		log.Printf("trusted proxy: %s (X-Forwarded-For/Proto trusted only from this CIDR)", state.Server.TrustedProxy)
 	} else {
 		log.Printf("trusted proxy: none (X-Forwarded-* headers ignored)")
+	}
+
+	if state.SSO.UserHeader != "" {
+		mode := "unsigned (backend must be network-isolated)"
+		if state.SSO.HMACSecret != "" {
+			mode = "HMAC-signed"
+		}
+		log.Printf("sso: %s = <username> (%s)", state.SSO.UserHeader, mode)
 	}
 
 	if tlsEnabled {

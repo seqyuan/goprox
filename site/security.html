@@ -24,7 +24,7 @@
 
 <main class="container">
   <h1 class="page-title">认证与公网部署</h1>
-  <p class="page-sub">密码存储、会话机制、可选的 TOTP 两步验证，以及暴露到公网前必须做的 TLS。</p>
+  <p class="page-sub">密码存储、会话机制、可选的 TOTP 两步验证、轻量级单点登录，以及暴露到公网前必须做的 TLS。</p>
 
   <div class="card">
     <h2>密码存储</h2>
@@ -57,6 +57,29 @@
     <div class="note">密钥以 base32 形式存在 <code>config/users/&lt;用户名&gt;.yaml</code> 的
       <code>auth.totp_secret</code> 字段（权限 0600，与 <code>session_secret</code> 同级保护）。
       动态码校验带有 ±1 个 30 秒窗口的时钟容错，且同样受登录限速保护。</div>
+  </div>
+
+  <div class="card">
+    <h2>轻量级单点登录（SSO，可选）</h2>
+    <p>在网关登录一次后，把当前用户名以请求头形式带给后端服务，后端信任该头即可免登录识别用户——
+      适合个人 Jupyter / RStudio / dsh 这类挂在网关后面的服务。用 <code>goprox sso</code> 配置，
+      写入 <code>config/state.yaml</code> 的 <code>sso</code> 段：</p>
+    <pre>goprox sso                                      # 查看当前配置
+goprox sso --user-header X-Authenticated-User \
+           --hmac-secret &lt;key&gt;                 # 启用（身份头 + HMAC 签名）
+goprox sso --off                                # 关闭</pre>
+    <ul>
+      <li><code>user_header</code>：每次代理请求带上 <code>user_header: &lt;登录用户名&gt;</code>，后端读取即知当前用户；</li>
+      <li><code>hmac_secret</code>：可选共享密钥。设置后每个请求还带 <code>user_header-Signature</code> 头
+        （HMAC-SHA256 对 <code>goprox-sso:v1:+用户名</code> 的 base64url 签名），后端验签即可确认身份。</li>
+    </ul>
+    <div class="warn"><strong>后端必须只能经网关访问</strong>（只监听回环或防火墙仅放行网关）。
+      身份头是后端的唯一身份凭证，任何能直连后端的人都能伪造 <code>X-Authenticated-User: admin</code>。
+      无法保证网络隔离时，务必设置 <code>hmac_secret</code> 并用 <code>hmac.Equal</code> 验签。</div>
+    <p>网关始终<strong>覆盖</strong>客户端传入的身份头（绝不透传），并剥离
+      <code>X-Authenticated-User</code> / <code>X-Forwarded-User</code> / <code>X-Auth-Request-User</code> /
+      <code>Remote-User</code> / <code>Remote_User</code> 等常见身份头，防止浏览器伪造。
+      改动后重启网关生效，启动日志会打印 <code>sso: ...</code> 当前模式。</p>
   </div>
 
   <div class="card">

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,6 +14,47 @@ import (
 type StateConfig struct {
 	Server ServerState `yaml:"server"`
 	Auth   AuthState   `yaml:"auth"`
+	SSO    SSOState    `yaml:"sso"`
+}
+
+// SSOState configures the lightweight single sign-on layer: the gateway
+// authenticates the user once and vouches for their identity to proxied
+// backends by setting a request header on every forwarded request.
+//
+//   - UserHeader: name of the header carrying the logged-in username
+//     (e.g. X-Authenticated-User). Empty disables the feature.
+//   - HMACSecret: optional shared secret. When set, every forwarded request
+//     also carries UserHeader+"-Signature": an HMAC-SHA256 of
+//     "goprox-sso:v1:"+username (base64url, unpadded) that backends can
+//     verify without relying on network isolation alone.
+//
+// Security note: the header is the backend's only proof of identity, so the
+// backend must be reachable only through the gateway (loopback/firewall).
+// A directly reachable backend could be impersonated with a forged header;
+// HMACSecret fixes that even when the backend cannot be network-isolated.
+type SSOState struct {
+	UserHeader string `yaml:"user_header,omitempty"`
+	HMACSecret string `yaml:"hmac_secret,omitempty"`
+}
+
+// IsValidHeaderName reports whether s is a valid HTTP header field name
+// (RFC 7230 token). http.Header.Set panics on invalid names, so the name is
+// validated at configuration time and guarded again before every use.
+func IsValidHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			continue
+		}
+		if strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0 {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 type ServerState struct {
@@ -86,6 +128,14 @@ func LoadState(path string) (*StateConfig, error) {
 		s.Auth.SessionTTL = DefaultSessionTTL
 	}
 
+	// A hand-edited user_header must be a valid header name; anything else
+	// would panic http.Header.Set on every proxied request.
+	if s.SSO.UserHeader != "" && !IsValidHeaderName(s.SSO.UserHeader) {
+		fmt.Printf("[goprox] WARNING: ignoring invalid sso.user_header %q (must be a valid HTTP header name)\n", s.SSO.UserHeader)
+		s.SSO.UserHeader = ""
+		s.SSO.HMACSecret = ""
+	}
+
 	// Generate session secret if empty
 	if s.Auth.SessionSecret == "" {
 		secret := make([]byte, 32)
@@ -107,6 +157,10 @@ func LoadState(path string) (*StateConfig, error) {
 		raw["auth"] = map[string]interface{}{
 			"session_secret": s.Auth.SessionSecret,
 			"session_ttl":    s.Auth.SessionTTL,
+		}
+		raw["sso"] = map[string]interface{}{
+			"user_header": s.SSO.UserHeader,
+			"hmac_secret": s.SSO.HMACSecret,
 		}
 		out, _ := yaml.Marshal(raw)
 		os.WriteFile(path, out, 0600)
@@ -151,6 +205,24 @@ func PersistServerConfig(path, host string, port int, trustedProxy, title, tlsCe
 	}
 	raw["server"] = server
 
+	return writeStateFile(path, raw)
+}
+
+// PersistSSOConfig writes the sso section of state.yaml. Pass empty strings
+// to disable SSO.
+func PersistSSOConfig(path, userHeader, hmacSecret string) error {
+	var raw map[string]interface{}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		yaml.Unmarshal(data, &raw)
+	}
+	if raw == nil {
+		raw = make(map[string]interface{})
+	}
+	raw["sso"] = map[string]interface{}{
+		"user_header": userHeader,
+		"hmac_secret": hmacSecret,
+	}
 	return writeStateFile(path, raw)
 }
 

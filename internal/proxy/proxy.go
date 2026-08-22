@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"html"
 	"io"
@@ -46,6 +49,8 @@ type ProxyForwardContext struct {
 	ClientIP string
 	Proto    string
 	Host     string
+	Username string          // authenticated session user (lightweight SSO identity)
+	SSO      config.SSOState // lightweight SSO: identity header name + optional HMAC key
 }
 
 // BuildProxyForwardContext creates forwarding context from a request and match.
@@ -60,6 +65,7 @@ func BuildProxyForwardContext(r *http.Request, username, servicePath string, leg
 		ClientIP: auth.ClientIP(r),
 		Proto:    proto(r),
 		Host:     r.Host,
+		Username: username,
 	}
 }
 
@@ -82,6 +88,56 @@ func proto(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+// SSOSignaturePrefix domain-separates the HMAC input so a signature computed
+// for this scheme cannot be replayed against a different scheme that reuses
+// the same secret. Backends verify: hmac.Equal(header, HMAC-SHA256(secret,
+// SSOSignaturePrefix+username)) — the header value is base64url (unpadded).
+const SSOSignaturePrefix = "goprox-sso:v1:"
+
+// identityHeaderNames are well-known "authenticated user" headers that
+// backends commonly trust (JupyterHub, oauth2-proxy, nginx auth_request,
+// Apache mod_authnz_forwarded, ...). They are stripped unconditionally: the
+// gateway is the only entity that may vouch for an identity, so a backend
+// trusting any of these cannot be spoofed through the gateway — even when
+// the admin's SSO header has a different name, or SSO is disabled.
+var identityHeaderNames = []string{
+	"X-Authenticated-User",
+	"X-Forwarded-User",
+	"X-Auth-Request-User",
+	"Remote-User",
+	"Remote_User",
+}
+
+// applySSOHeaders sets (or strips) authenticated-user identity headers on an
+// outbound proxied request.
+//
+// When SSO is configured, UserHeader carries the username from the verified
+// session — never from the browser: any client-supplied value is deleted
+// first, then replaced, so a forged header cannot reach the backend. When
+// HMACSecret is set, UserHeader+"-Signature" additionally carries an
+// HMAC-SHA256 signature of SSOSignaturePrefix+username so the backend can
+// verify the identity without depending on network isolation alone.
+func applySSOHeaders(out http.Header, sso config.SSOState, username string) {
+	for _, h := range identityHeaderNames {
+		out.Del(h)
+		out.Del(h + "-Signature")
+	}
+	if sso.UserHeader == "" || !config.IsValidHeaderName(sso.UserHeader) {
+		return
+	}
+	out.Del(sso.UserHeader)
+	out.Del(sso.UserHeader + "-Signature")
+	if username == "" {
+		return
+	}
+	out.Set(sso.UserHeader, username)
+	if sso.HMACSecret != "" {
+		mac := hmac.New(sha256.New, []byte(sso.HMACSecret))
+		mac.Write([]byte(SSOSignaturePrefix + username))
+		out.Set(sso.UserHeader+"-Signature", base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
+	}
 }
 
 // originAuthorityMatches reports whether the Origin header's authority equals
@@ -156,6 +212,11 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.Out.Header.Set("X-Forwarded-Proto", fc.Proto)
 			pr.Out.Header.Set("X-Forwarded-Host", fc.Host)
 			pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
+
+			// Lightweight SSO: carry the authenticated session user to
+			// backends that opt in, and never let the browser supply an
+			// identity the gateway did not vouch for (see applySSOHeaders).
+			applySSOHeaders(pr.Out.Header, fc.SSO, fc.Username)
 
 			// The Host header was rewritten to the backend target above, so a
 			// browser-sent Origin (the gateway's authority) would mismatch and

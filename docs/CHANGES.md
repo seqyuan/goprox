@@ -1,3 +1,16 @@
+# GoProx v0.4.1 变更日志（2026-08-22）
+
+## 新功能
+
+- **轻量级单点登录（SSO）**：`goprox sso` 开启后，网关把登录用户名以请求头形式带给所有被代理的后端（如 `X-Authenticated-User: alice`），后端信任该头即可免登录识别用户。可选 `--hmac-secret` 共享密钥：同时下发 `user_header-Signature`（HMAC-SHA256，base64url），后端验签后不再依赖网络隔离。配置持久化到 `state.yaml` 的 `sso` 段，重启生效，启动日志打印当前模式
+- **身份头防伪造**：网关始终覆盖（而非透传）客户端传入的身份头，并无条件剥离 `X-Authenticated-User` / `X-Forwarded-User` / `X-Auth-Request-User` / `Remote-User` / `Remote_User` 等常见身份头——即使 SSO 未开启，浏览器也无法通过这些名字冒充用户；非法头名配置会被忽略（`http.Header.Set` 会 panic）
+
+## 安全
+
+- **SSO 部署约束文档化**：后端必须只能经网关访问（回环/防火墙）；无法网络隔离时必须使用 `hmac_secret` 签名。README 增加完整章节与后端验签示例
+
+---
+
 # GoProx v0.4.0 变更日志（2026-08-15）
 
 ## 新功能

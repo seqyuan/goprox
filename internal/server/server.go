@@ -751,6 +751,7 @@ func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *con
 	}
 
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
+	forwardCtx.SSO = s.state.SSO
 	// The injected <base> must point at the directory of the actual document
 	// (e.g. /proxy/user/svc/report/page.html -> /proxy/user/svc/report/), not
 	// the service prefix, so relative links in plain HTML files in
@@ -773,6 +774,7 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 	}
 
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
+	forwardCtx.SSO = s.state.SSO
 	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
 		w.Header().Add("Set-Cookie", c)
 	}

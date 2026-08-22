@@ -58,7 +58,13 @@ nohup ./goprox serve --port 1908 > goprox.log 2>&1 &</pre>
 ./goprox user &lt;name&gt;        创建用户账号（交互设置密码）
 ./goprox passwd &lt;name&gt;      重置用户密码
 ./goprox del &lt;name&gt;         删除用户账号
-./goprox 2fa-reset &lt;name&gt;   关闭指定用户的两步验证</pre>
+./goprox 2fa-reset &lt;name&gt;   关闭指定用户的两步验证
+
+# 轻量级单点登录（可选）
+./goprox sso                                查看当前 SSO 配置
+./goprox sso --user-header X-Authenticated-User \
+            --hmac-secret &lt;key&gt;              启用（身份头 + HMAC 签名）
+./goprox sso --off                           关闭 SSO</pre>
     <h3>Options</h3>
     <table>
       <tr><th>选项</th><th>说明</th></tr>
@@ -72,6 +78,16 @@ nohup ./goprox serve --port 1908 > goprox.log 2>&1 &</pre>
       <tr><td><code>--title &lt;text&gt;</code></td><td>页面左上角站点标题（默认 GoProx），支持中文/emoji</td></tr>
       <tr><td><code>-h, --help</code></td><td>显示帮助</td></tr>
     </table>
+    <h3>SSO 选项（<code>goprox sso</code>）</h3>
+    <table>
+      <tr><th>选项</th><th>说明</th></tr>
+      <tr><td><code>--user-header &lt;name&gt;</code></td><td>携带登录用户名的请求头名（如 <code>X-Authenticated-User</code>）；每个被代理的请求都会带上 <code>user_header: &lt;用户名&gt;</code>，后端读取即知当前用户。详情见<a href="security.html">安全</a>页面</td></tr>
+      <tr><td><code>--hmac-secret &lt;key&gt;</code></td><td>可选共享密钥：同时下发 <code>user_header-Signature</code>（HMAC-SHA256，base64url），后端验签后不再依赖网络隔离</td></tr>
+      <tr><td><code>--off</code></td><td>关闭 SSO（清除 user_header 与 hmac_secret）</td></tr>
+    </table>
+    <div class="warn"><strong>后端必须只能经网关访问</strong>（只监听回环或防火墙仅放行网关）。
+      身份头是后端的唯一身份凭证，任何能直连后端的人都能伪造 <code>X-Authenticated-User: admin</code>；
+      无法保证网络隔离时务必设置 <code>--hmac-secret</code>。改动后重启网关生效。</div>
     <p><code>user</code> / <code>passwd</code> / <code>del</code> / <code>2fa-reset</code>
       需要与网关相同的目录写权限（root 启动的网关，管理命令也用 root 执行）。
       用户名需写在选项<strong>之前</strong>：<code>goprox user alice -d /opt/goprox/config</code>。</p>
@@ -82,7 +98,7 @@ nohup ./goprox serve --port 1908 > goprox.log 2>&1 &</pre>
     <pre>/opt/goprox/
 ├── goprox                  # 二进制
 └── config/                 # 0700，网关属主
-    ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、title、session_secret）
+    ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、title、session_secret、sso）
     └── users/              # 每个用户一个独立配置文件
         ├── alice.yaml
         └── bob.yaml</pre>

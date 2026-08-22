@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -262,6 +265,172 @@ func TestClientForwardedForNotForwarded(t *testing.T) {
 
 	if gotXFF != "203.0.113.9" {
 		t.Fatalf("client-supplied XFF must not be forwarded; got %q, want the peer IP 203.0.113.9", gotXFF)
+	}
+}
+
+// Lightweight SSO: when enabled, the backend receives the authenticated
+// session user in the configured header, and a client-supplied value is
+// overwritten (never passed through) so the browser cannot forge an identity.
+func TestSSOUserHeaderSetFromSession(t *testing.T) {
+	tests := []struct {
+		name       string
+		headerName string
+		clientVal  string
+	}{
+		{"default name, no forgery", "X-Authenticated-User", ""},
+		{"default name, forged", "X-Authenticated-User", "admin"},
+		{"custom name, forged", "X-Custom-User", "root"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotHeader, gotSig string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHeader = r.Header.Get(tt.headerName)
+				gotSig = r.Header.Get(tt.headerName + "-Signature")
+				w.Write([]byte("ok"))
+			}))
+			defer backend.Close()
+			host, port := splitHostPort(backend.Listener.Addr().String())
+			svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+			fc := testFwdCtx()
+			fc.Username = "alice"
+			fc.SSO = config.SSOState{UserHeader: tt.headerName}
+
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.clientVal != "" {
+				req.Header.Set(tt.headerName, tt.clientVal)
+			}
+			rp := NewReverseProxy(svc, fc)
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, req)
+
+			if gotHeader != "alice" {
+				t.Fatalf("backend got %s=%q, want the session user %q", tt.headerName, gotHeader, "alice")
+			}
+			if gotSig != "" {
+				t.Fatalf("unsigned SSO must not send a signature header, got %q", gotSig)
+			}
+		})
+	}
+}
+
+// With a shared secret configured, the gateway signs the user header with
+// HMAC-SHA256 over SSOSignaturePrefix+username (base64url, unpadded) so a
+// backend can verify the identity without relying on network isolation alone.
+// A client-supplied signature is overwritten, not passed through.
+func TestSSOUserHeaderHMACSignature(t *testing.T) {
+	const secret = "test-sso-secret"
+	var gotUser, gotSig string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser = r.Header.Get("X-Authenticated-User")
+		gotSig = r.Header.Get("X-Authenticated-User-Signature")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	fc := testFwdCtx()
+	fc.Username = "alice"
+	fc.SSO = config.SSOState{UserHeader: "X-Authenticated-User", HMACSecret: secret}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Authenticated-User", "admin")
+	req.Header.Set("X-Authenticated-User-Signature", "forged")
+	rp := NewReverseProxy(svc, fc)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	if gotUser != "alice" {
+		t.Fatalf("backend got user %q, want %q", gotUser, "alice")
+	}
+	want := hmacSHA256Base64URL(secret, SSOSignaturePrefix+"alice")
+	if gotSig != want {
+		t.Fatalf("backend got signature %q, want %q", gotSig, want)
+	}
+}
+
+func hmacSHA256Base64URL(secret, msg string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(msg))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// Well-known identity headers (JupyterHub, oauth2-proxy, nginx auth_request,
+// mod_authnz_forwarded, ...) must never pass through from the browser: they
+// are stripped even when SSO is disabled or uses a different header name,
+// otherwise a backend trusting one of them could be spoofed through the
+// gateway. With SSO enabled under a custom name, the configured header
+// carries the session user while the known names stay stripped.
+func TestSSOIdentityHeadersStripped(t *testing.T) {
+	known := []string{"X-Authenticated-User", "X-Forwarded-User", "X-Auth-Request-User", "Remote-User", "Remote_User"}
+	for _, tc := range []struct {
+		name       string
+		sso        config.SSOState
+		clientVal  string
+		wantCustom string
+	}{
+		{"disabled", config.SSOState{}, "admin", "admin"}, // unknown names pass through untouched
+		{"enabled with custom name", config.SSOState{UserHeader: "X-Custom-User"}, "admin", "alice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = make(map[string]string)
+				for _, n := range known {
+					got[n] = r.Header.Get(n)
+				}
+				got["X-Custom-User"] = r.Header.Get("X-Custom-User")
+				w.Write([]byte("ok"))
+			}))
+			defer backend.Close()
+			host, port := splitHostPort(backend.Listener.Addr().String())
+			svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+			fc := testFwdCtx()
+			fc.Username = "alice"
+			fc.SSO = tc.sso
+
+			req := httptest.NewRequest("GET", "/", nil)
+			for _, n := range known {
+				req.Header.Set(n, tc.clientVal)
+			}
+			req.Header.Set("X-Custom-User", tc.clientVal)
+			rp := NewReverseProxy(svc, fc)
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, req)
+
+			for _, n := range known {
+				if got[n] != "" {
+					t.Fatalf("identity header %s must be stripped, got %q", n, got[n])
+				}
+			}
+			if got["X-Custom-User"] != tc.wantCustom {
+				t.Fatalf("X-Custom-User got %q, want %q", got["X-Custom-User"], tc.wantCustom)
+			}
+		})
+	}
+}
+
+// An invalid configured header name must be ignored (http.Header.Set would
+// panic on it), and no identity header may be set.
+func TestSSOInvalidHeaderNameIgnored(t *testing.T) {
+	var got string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Bad Header Name")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	fc := testFwdCtx()
+	fc.Username = "alice"
+	fc.SSO = config.SSOState{UserHeader: "Bad Header Name"} // space: not a valid token
+
+	rp := NewReverseProxy(svc, fc)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if got != "" {
+		t.Fatalf("invalid header name must be ignored, got %q", got)
 	}
 }
 

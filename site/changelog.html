@@ -27,6 +27,15 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.4.1 — 轻量级单点登录（SSO）</h2>
+    <ul>
+      <li><strong>轻量级 SSO</strong>：<code>goprox sso</code> 开启后，网关把登录用户名以请求头形式带给所有被代理的后端（如 <code>X-Authenticated-User: alice</code>），后端信任该头即可免登录识别用户——个人 Jupyter / RStudio / dsh 无需各自登录。可选 <code>--hmac-secret</code> 共享密钥：同时下发 <code>user_header-Signature</code>（HMAC-SHA256，base64url），后端验签后不再依赖网络隔离。配置持久化到 <code>state.yaml</code> 的 <code>sso</code> 段，重启生效。</li>
+      <li><strong>身份头防伪造</strong>：网关始终覆盖（而非透传）客户端传入的身份头，并无条件剥离 <code>X-Authenticated-User</code> / <code>X-Forwarded-User</code> / <code>X-Auth-Request-User</code> / <code>Remote-User</code> / <code>Remote_User</code> 等常见身份头——即使 SSO 未开启，浏览器也无法通过这些名字冒充用户。</li>
+      <li><strong>安全约束</strong>：后端必须只能经网关访问（回环/防火墙）；无法网络隔离时必须使用 <code>hmac_secret</code> 签名。详见<a href="security.html">安全</a>页面。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.4.0 — 2026-08-15</h2>
     <ul>
       <li><strong>原生 TLS 终结</strong>：<code>--tls-selfsigned</code> 自动生成覆盖 localhost + 局域网 IP 的自签证书并直接提供 HTTPS；整个站点成为安全上下文，代理应用的 <code>crypto.randomUUID</code> / <code>crypto.subtle</code> / <code>navigator.storage</code> 等安全上下文 API 全部原生可用。也可用 <code>--tls-cert/--tls-key</code> 指定自有证书。</li>
