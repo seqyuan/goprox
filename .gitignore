@@ -24,3 +24,6 @@ Thumbs.db
 # State/config (user-specific)
 state.yaml
 config.yaml
+
+# WeChat draft articles (公众号软文)
+docs/公众号软文*
