@@ -26,16 +26,16 @@ func TestAssertNotSelfTargetDisabledByDefault(t *testing.T) {
 }
 
 func TestAssertNotSelfTarget(t *testing.T) {
-	const port = 1908
+	const port = 30152
 	SetGatewayListenPort(port)
 	defer SetGatewayListenPort(0)
 
 	// localhost/loopback on the gateway's own port is a self-loop.
 	if err := AssertNotSelfTarget("localhost", port); err == nil {
-		t.Fatal("localhost:1908 must be rejected as a self-loop")
+		t.Fatal("localhost:30152 must be rejected as a self-loop")
 	}
 	if err := AssertNotSelfTarget("127.0.0.1", port); err == nil {
-		t.Fatal("127.0.0.1:1908 must be rejected as a self-loop")
+		t.Fatal("127.0.0.1:30152 must be rejected as a self-loop")
 	}
 
 	// Same machine, different port: the normal use case, must stay allowed.
@@ -92,7 +92,7 @@ func TestSafeDialContextRejectsSelfLoop(t *testing.T) {
 }
 
 func TestAddServiceRejectsSelfLoop(t *testing.T) {
-	const port = 1908
+	const port = 30152
 	SetGatewayListenPort(port)
 	defer SetGatewayListenPort(0)
 
@@ -103,7 +103,7 @@ func TestAddServiceRejectsSelfLoop(t *testing.T) {
 }
 
 func TestUpdateServiceRejectsSelfLoop(t *testing.T) {
-	const port = 1908
+	const port = 30152
 	SetGatewayListenPort(port)
 	defer SetGatewayListenPort(0)
 

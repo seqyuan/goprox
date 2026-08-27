@@ -14,7 +14,7 @@ import (
 
 const (
 	DefaultHost       = "0.0.0.0"
-	DefaultPort       = 1908
+	DefaultPort       = 30152
 	DefaultSessionTTL = 86400
 	StateFile         = "state.yaml"
 	PidFile           = "daemon.pid"

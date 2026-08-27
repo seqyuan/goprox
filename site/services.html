@@ -106,7 +106,7 @@ services:
     port: 3301
     path: "/xifeng"
     websocket: true</pre>
-    <p>访问 <code>http://网关:1908/dashboard</code>、<code>/dashboard/api</code> 直接进入应用页面
+    <p>访问 <code>http://网关:30152/dashboard</code>、<code>/dashboard/api</code> 直接进入应用页面
       （页面类路径确定性路由）；页面内的资源与 API 请求跟随页面 Referer 转发到同一服务。
       未配置默认服务的用户行为不变。</p>
   </div>
@@ -120,7 +120,7 @@ services:
     port: 8787
     path: "/rstudio"
     websocket: true</pre>
-    <p>访问 <code>http://网关:1908/proxy/alice/rstudio/</code> 即可，无需记住对方的 IP 和端口。</p>
+    <p>访问 <code>http://网关:30152/proxy/alice/rstudio/</code> 即可，无需记住对方的 IP 和端口。</p>
   </div>
 
   <div class="card">

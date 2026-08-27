@@ -1,0 +1,94 @@
+name: release
+
+# 打 release tag（v*，如 v0.5.0）时自动编译并发布 GitHub Release。
+# 产物：Linux / macOS (amd64 + arm64) 的 tar.gz 压缩包 + SHA256 校验和。
+# Windows 因终端适配（makeRaw）尚未实现，暂不编译。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run tests
+        run: go test ./...
+
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 需要 tag 历史让 git describe 拿到版本号
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
+          mkdir -p dist/pkg
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o dist/pkg/goprox .
+          # 配置目录跟着二进制走，压缩包附带示例配置与许可证，解压即用
+          cp config.example.yaml LICENSE dist/pkg/
+          tar -C dist -czf dist/goprox-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goprox-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/goprox-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz > checksums.txt
+      - name: List artifacts
+        run: ls -la dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: GoProx ${{ github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -47,10 +47,10 @@ cd /opt/goprox
 ./goprox user bob
 
 # ③ 启动网关 —— 日常只需记住这一条命令
-./goprox serve --port 1908
+./goprox serve --port 30152
 ```
 
-- 浏览器访问 `http://lab.example.com:1908/`，用刚创建的账号登录；
+- 浏览器访问 `http://lab.example.com:30152/`，用刚创建的账号登录；
 - 登录后点 **+** 添加自己的服务卡片，拖动排序，点击卡片访问。
 - **两步验证（TOTP）默认不开启**，纯密码即可登录；需要时在仪表盘点「两步验证未开启 · 开启」自助绑定（详见下方「两步验证」章节）。
 
@@ -84,10 +84,10 @@ hostname 不匹配问题）——正解是本地 CA + `localhost` SAN + 系统�
 
 ```bash
 # 自动生成自签证书（覆盖 localhost + 本机所有局域网 IP），直接 HTTPS
-./goprox serve --port 1908 --tls-selfsigned
+./goprox serve --port 30152 --tls-selfsigned
 
 # 或者用你自己的证书
-./goprox serve --port 1908 --tls-cert server.crt --tls-key server.key
+./goprox serve --port 30152 --tls-cert server.crt --tls-key server.key
 ```
 
 HTTPS 把整个站点变成**安全上下文**，代理的 Web 应用就能用上所有安全上下文 API——
@@ -119,7 +119,7 @@ TLS 设置会持久化到 `state.yaml`（`tls_cert` / `tls_key`），之后的 `
 Options:
   -d, --config-dir <dir>  配置目录（默认 <程序目录>/config）
   --host <host>           监听地址（默认 0.0.0.0）
-  --port <port>           监听端口（默认 1908）
+  --port <port>           监听端口（默认 30152）
   --trusted-proxy <cidr>  可信反向代理网段（如 127.0.0.1/32），
                           启用后信任其 X-Forwarded-For/Proto 头（默认不信任）
   --tls-cert <file>       TLS 证书（PEM），与 --tls-key 一起启用 HTTPS
@@ -263,7 +263,7 @@ services:
 ```yaml
 server:
   host: "0.0.0.0"
-  port: 1908
+  port: 30152
   # 仅在网关前面有反向代理时设置：
   # trusted_proxy: "127.0.0.1/32"
   # 页面左上角标题（可选，默认 GoProx），如 "🧬 生信分析平台"

@@ -10,11 +10,11 @@ GoProx 本身只监听 HTTP，暴露到公网前**必须在前面放一个反向
 反代和 GoProx 跑在同一台机器时，把网关绑定到 `127.0.0.1`，让公网**无法绕过反代直连 HTTP**：
 
 ```bash
-./goprox serve --host 127.0.0.1 --port 1908 \
+./goprox serve --host 127.0.0.1 --port 30152 \
   --trusted-proxy 127.0.0.1/32
 ```
 
-- `--host 127.0.0.1`：只监听回环，只有本机的反代能连到它（也可以用防火墙只放行 1908 给反代）
+- `--host 127.0.0.1`：只监听回环，只有本机的反代能连到它（也可以用防火墙只放行 30152 给反代）
 - `--trusted-proxy 127.0.0.1/32`：信任来自回环的 `X-Forwarded-For` / `X-Forwarded-Proto` 头，
   这样 GoProx 才能正确识别「真实客户端 IP」（登录限速用）和「请求是 HTTPS」（Secure Cookie 用）
 
@@ -26,7 +26,7 @@ GoProx 本身只监听 HTTP，暴露到公网前**必须在前面放一个反向
 
 ```
 lab.example.com {
-    reverse_proxy 127.0.0.1:1908
+    reverse_proxy 127.0.0.1:30152
 }
 ```
 
@@ -46,7 +46,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/lab.example.com/privkey.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:1908;
+        proxy_pass http://127.0.0.1:30152;
 
         proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;

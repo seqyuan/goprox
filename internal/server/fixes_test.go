@@ -55,7 +55,7 @@ func srvForBackend(t *testing.T, host, port string) *Server {
 	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\nservices:\n  - id: jupyter\n    name: Jupyter\n    host: %s\n    port: %s\n    path: /jupyter\n    websocket: true\n", strings.Repeat("1", 64), host, port)
 	os.WriteFile(cfgPath, []byte(cfg), 0600)
 	return New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 }
@@ -307,7 +307,7 @@ func TestDefaultServiceForwardsBarePath(t *testing.T) {
 	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\ndefault_service: xifeng\nservices:\n  - id: xifeng\n    name: Xifeng\n    host: %s\n    port: %s\n    path: /xifeng\n    websocket: true\n", strings.Repeat("1", 64), host, port)
 	os.WriteFile(cfgPath, []byte(cfg), 0600)
 	srv := New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 
@@ -345,7 +345,7 @@ func TestDefaultServiceRequiresSession(t *testing.T) {
 	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\ndefault_service: xifeng\nservices:\n  - id: xifeng\n    name: Xifeng\n    host: %s\n    port: %s\n    path: /xifeng\n    websocket: true\n", strings.Repeat("1", 64), host, port)
 	os.WriteFile(cfgPath, []byte(cfg), 0600)
 	srv := New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 
@@ -380,7 +380,7 @@ func TestDefaultServicePageVsResourceRouting(t *testing.T) {
 	cfg := fmt.Sprintf("auth:\n  password_hash: \"%s\"\ndefault_service: xifeng\nservices:\n  - id: xifeng\n    name: Xifeng\n    host: %s\n    port: %s\n    path: /xifeng\n    websocket: true\n", strings.Repeat("1", 64), host, port)
 	os.WriteFile(cfgPath, []byte(cfg), 0600)
 	srv := New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 

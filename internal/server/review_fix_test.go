@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 		t.Fatal(err)
 	}
 	srv := New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 	return srv, cfgPath
@@ -56,7 +56,7 @@ func TestBarePathRedirectsEvenWithRouteCookie(t *testing.T) {
 	os.WriteFile(cfgPath, []byte(cfg), 0600)
 
 	srv := New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 
@@ -137,7 +137,7 @@ func TestAPIStillForwardsViaRouteCookie(t *testing.T) {
 	os.WriteFile(cfgPath, []byte(cfg), 0600)
 
 	srv := New(&config.StateConfig{
-		Server: config.ServerState{Host: "127.0.0.1", Port: 1908},
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
 		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
 	}, configDir)
 
@@ -171,8 +171,8 @@ func TestLoginRejectsCrossOrigin(t *testing.T) {
 	// Same-origin browser login must still succeed.
 	req2 := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req2.Header.Set("Origin", "http://gw:1908")
-	req2.Host = "gw:1908"
+	req2.Header.Set("Origin", "http://gw:30152")
+	req2.Host = "gw:30152"
 	rr2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr2, req2)
 	if rr2.Code != http.StatusFound {

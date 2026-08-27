@@ -41,13 +41,13 @@ cp ~/go/bin/goprox /opt/goprox/</pre>
   <div class="card">
     <h2>启动</h2>
     <p>GoProx 只有<strong>前台运行</strong>这一种模式，<code>Ctrl+C</code> 优雅停机：</p>
-    <pre>./goprox serve --port 1908</pre>
+    <pre>./goprox serve --port 30152</pre>
     <p>需要常驻后台时：</p>
     <pre># tmux / screen 会话
-tmux new -s goprox -d './goprox serve --port 1908'
+tmux new -s goprox -d './goprox serve --port 30152'
 
 # 或 nohup
-nohup ./goprox serve --port 1908 > goprox.log 2>&1 &</pre>
+nohup ./goprox serve --port 30152 > goprox.log 2>&1 &</pre>
   </div>
 
   <div class="card">
@@ -70,7 +70,7 @@ nohup ./goprox serve --port 1908 > goprox.log 2>&1 &</pre>
       <tr><th>选项</th><th>说明</th></tr>
       <tr><td><code>-d, --config-dir &lt;dir&gt;</code></td><td>配置目录（默认 <code>&lt;程序目录&gt;/config</code>）</td></tr>
       <tr><td><code>--host &lt;host&gt;</code></td><td>监听地址（默认 <code>0.0.0.0</code>）</td></tr>
-      <tr><td><code>--port &lt;port&gt;</code></td><td>监听端口（默认 1908）</td></tr>
+      <tr><td><code>--port &lt;port&gt;</code></td><td>监听端口（默认 30152）</td></tr>
       <tr><td><code>--trusted-proxy &lt;cidr&gt;</code></td><td>可信反向代理网段（如 <code>127.0.0.1/32</code>），启用后信任其 X-Forwarded-For/Proto 头（默认不信任）</td></tr>
       <tr><td><code>--tls-cert &lt;file&gt;</code></td><td>TLS 证书（PEM），与 <code>--tls-key</code> 一起启用 HTTPS</td></tr>
       <tr><td><code>--tls-key &lt;file&gt;</code></td><td>TLS 私钥（PEM）</td></tr>

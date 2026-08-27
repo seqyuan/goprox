@@ -1,3 +1,12 @@
+# GoProx v0.4.2 变更日志（2026-08-27）
+
+## 变更
+
+- **默认端口改为 30152**：`--port` 缺省值从 1908 调整为 30152，同步更新帮助文本、README、GitHub Pages 站点与全部文档示例
+- **GitHub Actions 自动发版**：新增 `.github/workflows/release.yml`，push `v*` tag 时自动跑测试、交叉编译 Linux/macOS（amd64 + arm64）并发布 GitHub Release（tar.gz 包 + SHA256 校验和，版本号取自 tag）
+
+---
+
 # GoProx v0.4.1 变更日志（2026-08-22）
 
 ## 新功能
@@ -72,7 +81,7 @@
 
 - **删除 `start` / `stop` / `status` 子命令**：不再需要 pidfile、Setsid fork、后台进程、就绪轮询等守护化机制（删除约 230 行）
 - **`goprox serve`（或裸 `goprox`）成为唯一启动命令**：前台运行，日志打印到终端，`Ctrl+C` 优雅停机
-- **后台运行方式改为 tmux/screen 或 nohup**：`nohup ./goprox serve --port 1908 > goprox.log 2>&1 &`
+- **后台运行方式改为 tmux/screen 或 nohup**：`nohup ./goprox serve --port 30152 > goprox.log 2>&1 &`
 - **过渡提示**：执行 `goprox start/stop/status` 会打印「已移除」提示与替代方式，老用户不会被 `unknown command` 卡住
 - **配置目录精简**：不再生成 `daemon.pid` / `goprox.log`
 - README 同步更新（快速开始、日常管理、命令参考、目录结构）

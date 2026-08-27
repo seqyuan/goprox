@@ -39,7 +39,7 @@ const usage = `Usage:
 Options:
   -d, --config-dir <dir>  Config directory (default: <program dir>/config)
   --host <host>           Listen address (default: 0.0.0.0)
-  --port <port>           Gateway listen port (default: 1908)
+  --port <port>           Gateway listen port (default: 30152)
   --trusted-proxy <cidr>  Trusted reverse-proxy CIDR (e.g. 127.0.0.1/32);
                           enables X-Forwarded-For/Proto trust (default: none)
   --tls-cert <file>       TLS certificate (PEM); with --tls-key serves HTTPS
@@ -72,7 +72,7 @@ state.yaml; to disable, delete the tls_cert/tls_key lines and restart.
 
 Run in the foreground (Ctrl+C to stop). For a persistent session, run it in
 tmux/screen or with nohup:
-    nohup ./goprox serve --port 1908 > goprox.log 2>&1 &
+    nohup ./goprox serve --port 30152 > goprox.log 2>&1 &
 
 All config (state, users/) lives in the config directory next to the binary,
 so the whole directory is portable. Copy the binary to a writable directory -

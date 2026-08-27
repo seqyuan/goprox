@@ -88,16 +88,16 @@ func TestSameOriginRequest(t *testing.T) {
 		host   string
 		want   bool
 	}{
-		{"no origin (curl/script)", "", "gw:1908", true},
-		{"same origin", "http://gw:1908", "gw:1908", true},
-		{"same origin case-insensitive host", "http://GW:1908", "gw:1908", true},
+		{"no origin (curl/script)", "", "gw:30152", true},
+		{"same origin", "http://gw:30152", "gw:30152", true},
+		{"same origin case-insensitive host", "http://GW:30152", "gw:30152", true},
 		{"https browser behind proxy", "https://gw:443", "gw:443", true},
-		{"cross site", "http://evil.example", "gw:1908", false},
-		{"cross host same scheme", "http://other:1908", "gw:1908", false},
-		{"cross site same host different port", "http://gw:9999", "gw:1908", false},
-		{"null origin (sandboxed iframe)", "null", "gw:1908", false},
-		{"malformed", "http://", "gw:1908", false},
-		{"non-http scheme", "ftp://gw:1908", "gw:1908", false},
+		{"cross site", "http://evil.example", "gw:30152", false},
+		{"cross host same scheme", "http://other:30152", "gw:30152", false},
+		{"cross site same host different port", "http://gw:9999", "gw:30152", false},
+		{"null origin (sandboxed iframe)", "null", "gw:30152", false},
+		{"malformed", "http://", "gw:30152", false},
+		{"non-http scheme", "ftp://gw:30152", "gw:30152", false},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest("POST", "http://"+c.host+"/x", nil)

@@ -36,9 +36,9 @@ func apiPost(t *testing.T, h *Handler, url, body, origin string) *httptest.Respo
 	if origin != "" {
 		req.Header.Set("Origin", origin)
 	}
-	// The gateway the browser is talking to is gw:1908; callers pass an
+	// The gateway the browser is talking to is gw:30152; callers pass an
 	// Origin that either matches it (same-origin) or not (CSRF attempt).
-	req.Host = "gw:1908"
+	req.Host = "gw:30152"
 	rr := httptest.NewRecorder()
 	if !h.ServeHTTP(rr, req) {
 		t.Fatalf("ServeHTTP did not claim request %s", url)
@@ -67,7 +67,7 @@ func TestAddServiceRejectsNullOrigin(t *testing.T) {
 // Same-origin and non-browser (no Origin) adds must still work.
 func TestAddServiceSameOriginAllowed(t *testing.T) {
 	h := newTestHandler(t)
-	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:1908")
+	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:30152")
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("expected 201 for same-origin add, got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -85,7 +85,7 @@ func TestAddServiceNoOriginAllowed(t *testing.T) {
 func TestDeleteServiceRejectsCrossOrigin(t *testing.T) {
 	h := newTestHandler(t)
 	// Create one service first via the same-origin path.
-	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:1908")
+	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:30152")
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("setup add failed: %d", rr.Code)
 	}
@@ -103,7 +103,7 @@ func TestDeleteServiceRejectsCrossOrigin(t *testing.T) {
 // nonsense cards or bloat the dashboard page.
 func TestAddServiceRejectsEmptyName(t *testing.T) {
 	h := newTestHandler(t)
-	rr := apiPost(t, h, "/api/services", `{"name":"   ","port":8080}`, "http://gw:1908")
+	rr := apiPost(t, h, "/api/services", `{"name":"   ","port":8080}`, "http://gw:30152")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty name, got %d", rr.Code)
 	}
@@ -112,7 +112,7 @@ func TestAddServiceRejectsEmptyName(t *testing.T) {
 func TestAddServiceRejectsOversizedName(t *testing.T) {
 	h := newTestHandler(t)
 	long := strings.Repeat("a", 201)
-	rr := apiPost(t, h, "/api/services", `{"name":"`+long+`","port":8080}`, "http://gw:1908")
+	rr := apiPost(t, h, "/api/services", `{"name":"`+long+`","port":8080}`, "http://gw:30152")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized name, got %d", rr.Code)
 	}
@@ -122,7 +122,7 @@ func TestAddServiceRejectsOversizedName(t *testing.T) {
 func TestAddServiceRejectsOversizedBody(t *testing.T) {
 	h := newTestHandler(t)
 	big := `{"name":"x","port":8080,"description":"` + strings.Repeat("a", 70000) + `"}`
-	rr := apiPost(t, h, "/api/services", big, "http://gw:1908")
+	rr := apiPost(t, h, "/api/services", big, "http://gw:30152")
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413 for oversized body, got %d", rr.Code)
 	}
@@ -131,7 +131,7 @@ func TestAddServiceRejectsOversizedBody(t *testing.T) {
 // Updating only description/category must still enforce their length bounds.
 func TestUpdateServiceRejectsOversizedDescriptionWithoutName(t *testing.T) {
 	h := newTestHandler(t)
-	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:1908")
+	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:30152")
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("setup add failed: %d", rr.Code)
 	}
@@ -140,8 +140,8 @@ func TestUpdateServiceRejectsOversizedDescriptionWithoutName(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/services/x", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
-	req.Header.Set("Origin", "http://gw:1908")
-	req.Host = "gw:1908"
+	req.Header.Set("Origin", "http://gw:30152")
+	req.Host = "gw:30152"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
