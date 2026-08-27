@@ -1,8 +1,17 @@
 name: release
 
 # 打 release tag（v*，如 v0.5.0）时自动编译并发布 GitHub Release。
-# 产物：Linux / macOS (amd64 + arm64) 的 tar.gz 压缩包 + SHA256 校验和。
-# Windows 因终端适配（makeRaw）尚未实现，暂不编译。
+# 产物：Linux (amd64 + arm64) 的 tar.gz 压缩包 + SHA256 校验和。
+#
+# 仅支持 Linux，不编译 macOS：
+#   terminal_unix.go 的终端适配依赖 Linux 专属 syscall 常量
+#   （syscall.TCGETS / syscall.TCSETS），darwin 编译期即报 undefined，
+#   故矩阵不含 darwin（docs/公众号软文 已说明服务端面向 Linux/Unix）。
+#
+# 静态编译（CGO_ENABLED=0）：
+#   项目无 cgo 依赖（无 os/user、无 cgo 指令，依赖均为纯 Go），
+#   关闭 CGO 产出 fully static 二进制，任何 Linux 发行版
+#   （glibc / musl / Alpine）解压即用，契合「整个目录拷贝即用」的设计。
 
 on:
   push:
@@ -30,21 +39,13 @@ jobs:
         run: go test ./...
 
   build:
-    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    name: Build linux-${{ matrix.goarch }}
     needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,17 +60,17 @@ jobs:
           set -euo pipefail
           VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
           mkdir -p dist/pkg
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
             go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o dist/pkg/goprox .
           # 配置目录跟着二进制走，压缩包附带示例配置与许可证，解压即用
           cp config.example.yaml LICENSE dist/pkg/
-          tar -C dist -czf dist/goprox-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz pkg
+          tar -C dist -czf dist/goprox-linux-${{ matrix.goarch }}.tar.gz pkg
       - uses: actions/upload-artifact@v4
         with:
-          name: goprox-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/goprox-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          name: goprox-linux-${{ matrix.goarch }}
+          path: dist/goprox-linux-${{ matrix.goarch }}.tar.gz
           if-no-files-found: error
 
   release:
