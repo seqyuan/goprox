@@ -27,6 +27,19 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.5.0 — 2026-10-11</h2>
+    <ul>
+      <li><strong>仪表盘交互改版</strong>：新增搜索框（按名称/说明过滤）、分类导航条、卡片「上移/下移」按钮、右上角账户菜单（两步验证 / 外观 / 退出）。</li>
+      <li><strong>带宽上限改用 MB/s 输入</strong>：留空即不限速；卡片不再显示 <code>host:port</code> 与限速徽标（WebSocket 徽标保留）。</li>
+      <li><strong>修复带宽输入框挡住表单提交</strong>：已保存的非整数 MB 限速（如 <code>bwlimit: 10000000</code> 显示为 <code>9.537</code>）此前会因 step 校验失败而无法提交，现改为 <code>step="any"</code> 并在未改动时按原始字节回写。</li>
+      <li><strong>修复上移/下移连点导致布局错乱</strong>：布局保存改为串行，避免并发响应乱序覆盖服务器结果。</li>
+      <li><strong>修复自动路径冲突</strong>：<code>AddService</code> 生成默认路径时也去重，不再与已有自定义路径撞车。</li>
+      <li>其余修复：分类并列排序稳定化、卡片操作选择器不再拼接、表单失败只留行内错误、添加按钮忙碌文案。</li>
+      <li><strong>测试</strong>：前端纯函数抽出并可被 Node 单测，新增 Playwright 浏览器端到端用例。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.4.1 — 轻量级单点登录（SSO）</h2>
     <ul>
       <li><strong>轻量级 SSO</strong>：<code>goprox sso</code> 开启后，网关把登录用户名以请求头形式带给所有被代理的后端（如 <code>X-Authenticated-User: alice</code>），后端信任该头即可免登录识别用户——个人 Jupyter / RStudio / dsh 无需各自登录。可选 <code>--hmac-secret</code> 共享密钥：同时下发 <code>user_header-Signature</code>（HMAC-SHA256，base64url），后端验签后不再依赖网络隔离。配置持久化到 <code>state.yaml</code> 的 <code>sso</code> 段，重启生效。</li>
