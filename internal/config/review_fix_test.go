@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -46,6 +47,77 @@ func TestAddServiceChineseNamesGetUniqueIDs(t *testing.T) {
 	}
 	if len(cfg.Services) != 2 {
 		t.Fatalf("expected 2 services, got %d", len(cfg.Services))
+	}
+}
+
+// Category grouping must be deterministic when services share an Order value
+// (hand-written configs often omit order, leaving every service at 0). Groups
+// follow first appearance in the input, matching the client renderer.
+func TestGroupServicesByCategoryDeterministicOnTiedOrders(t *testing.T) {
+	services := []ServiceConfig{
+		{ID: "a", Name: "A", Category: "乙", Order: 0},
+		{ID: "b", Name: "B", Category: "甲", Order: 0},
+		{ID: "c", Name: "C", Category: "丙", Order: 0},
+		{ID: "d", Name: "D", Category: "丁", Order: 0},
+	}
+	want := []string{"乙", "甲", "丙", "丁"}
+	for i := 0; i < 25; i++ {
+		groups := GroupServicesByCategory(services)
+		got := make([]string, len(groups))
+		for j, g := range groups {
+			got[j] = g.Category
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("nondeterministic grouping: got %v want %v", got, want)
+		}
+	}
+}
+
+// Category order follows the lowest Order; within a category services keep
+// Order order; an empty category maps to 未分类.
+func TestGroupServicesByCategoryOrder(t *testing.T) {
+	services := []ServiceConfig{
+		{ID: "a1", Name: "A1", Category: "A", Order: 5},
+		{ID: "b1", Name: "B1", Category: "B", Order: 1},
+		{ID: "a0", Name: "A0", Category: "A", Order: 0},
+		{ID: "u1", Name: "U1", Order: 3},
+	}
+	groups := GroupServicesByCategory(services)
+	gotCats := []string{groups[0].Category, groups[1].Category, groups[2].Category}
+	if !reflect.DeepEqual(gotCats, []string{"A", "B", "未分类"}) {
+		t.Fatalf("category order = %v", gotCats)
+	}
+	if groups[0].Services[0].ID != "a0" || groups[0].Services[1].ID != "a1" {
+		t.Fatalf("within-category order = %+v", groups[0].Services)
+	}
+}
+
+// An auto-generated path must step aside when another service already owns
+// "/"+ID as a custom path. Previously only the ID was uniquified, so this
+// produced two services sharing one path.
+func TestAddServiceAutoPathAvoidsCustomPathCollision(t *testing.T) {
+	path := newTestConfig(t)
+	if _, err := AddService(path, ServiceConfig{ID: "x", Name: "X", Host: "127.0.0.1", Port: 1, Path: "/myapp"}); err != nil {
+		t.Fatal(err)
+	}
+	added, err := AddService(path, ServiceConfig{ID: SlugifyName("Myapp"), Name: "Myapp", Host: "127.0.0.1", Port: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added.Path == "/myapp" {
+		t.Fatalf("auto path collided with existing custom path: %q", added.Path)
+	}
+
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	for _, s := range cfg.Services {
+		if seen[s.Path] {
+			t.Fatalf("duplicate service path persisted: %q", s.Path)
+		}
+		seen[s.Path] = true
 	}
 }
 
