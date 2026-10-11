@@ -98,9 +98,9 @@ func TestDashboardPageCustomTitle(t *testing.T) {
 	}
 }
 
-// Cards hide the backend address and bandwidth cap. Those values stay in the
-// boot JSON so the edit form can still load them. A WebSocket service keeps
-// its badge; a plain service does not get an empty meta row.
+// Cards hide the backend address, bandwidth cap, and the WebSocket badge so
+// each card stays one compact row. Those values stay in the boot JSON so the
+// edit form can still load them.
 func TestDashboardPageHidesEndpointAndRate(t *testing.T) {
 	svcs := []config.ServiceConfig{
 		{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 18080, Path: "/app", BWLimit: 10 << 20},
@@ -114,16 +114,13 @@ func TestDashboardPageHidesEndpointAndRate(t *testing.T) {
 		t.Fatal("dashboard markup missing")
 	}
 	cards := page[dashStart:dashEnd]
-	for _, forbidden := range []string{`class="endpoint"`, `class="badge rate"`, "限速", "127.0.0.1:18080", "10.1.2.3:9"} {
+	for _, forbidden := range []string{
+		`class="endpoint"`, `class="badge rate"`, `class="card-meta"`, `class="badge ws"`,
+		"限速", "WebSocket", "127.0.0.1:18080", "10.1.2.3:9",
+	} {
 		if strings.Contains(cards, forbidden) {
 			t.Fatalf("card HTML still shows %q", forbidden)
 		}
-	}
-	if strings.Count(cards, `class="card-meta"`) != 1 {
-		t.Fatalf("expected one card-meta (websocket only), got %d", strings.Count(cards, `class="card-meta"`))
-	}
-	if !strings.Contains(cards, `class="badge ws"`) {
-		t.Fatal("websocket badge missing from server-rendered card")
 	}
 
 	bootStart := strings.Index(page, "window.__GOPROX_BOOT__ = ")
@@ -142,9 +139,10 @@ func TestDashboardPageHidesEndpointAndRate(t *testing.T) {
 		}
 	}
 
-	// Client re-render must match: the embedded script no longer paints address or rate.
+	// Client re-render must match: the embedded script no longer paints
+	// address, rate, or the WebSocket badge.
 	script := page[bootEnd:]
-	for _, forbidden := range []string{`class="endpoint"`, `class="badge rate"`, "限速 "} {
+	for _, forbidden := range []string{`class="endpoint"`, `class="badge rate"`, `class="card-meta"`, `class="badge ws"`, "限速 "} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("client render still includes %q", forbidden)
 		}

@@ -245,11 +245,6 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
 	if s.Description != "" {
 		desc = fmt.Sprintf(`<p class="card-desc">%s</p>`, esc(s.Description))
 	}
-	meta := ""
-	if s.WebSocket {
-		meta = `<div class="card-meta"><span class="badge ws">WebSocket</span></div>`
-	}
-
 	toolbar := ""
 	if writable {
 		upDis := ""
@@ -288,7 +283,6 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
       <div class="card-body">
         <h2>%s</h2>
         %s
-        %s
       </div>
     </a>
   </div>`,
@@ -299,7 +293,6 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
 		faviconHTML,
 		esc(s.Name),
 		desc,
-		meta,
 	)
 }
 

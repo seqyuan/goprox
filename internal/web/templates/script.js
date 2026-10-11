@@ -123,7 +123,6 @@
   function renderCard(s, index, total) {
     var proxyUrl = "/proxy/" + encodeURIComponent(boot.username) + s.path + "/";
     var desc = s.description ? '<p class="card-desc">' + esc(s.description) + '</p>' : '';
-    var meta = s.websocket ? '<div class="card-meta"><span class="badge ws">WebSocket</span></div>' : '';
     var upDis = index === 0 ? " disabled" : "";
     var downDis = index >= total - 1 ? " disabled" : "";
     var toolbar = state.writable
@@ -144,7 +143,7 @@
       '<a class="card-link" href="' + esc(proxyUrl) + '" target="_blank" rel="noopener noreferrer">' +
       '<div class="card-icon">' + favIcon + '</div>' +
       '<div class="card-body"><h2>' + esc(s.name) + '</h2>' +
-      desc + meta + '</div></a></div>';
+      desc + '</div></a></div>';
   }
 
   // Preview-only path resolver: delegates to the shared helper with the
