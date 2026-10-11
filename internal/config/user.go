@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -360,9 +361,14 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 
 		// Auto-generate a default path from the unique ID (slugified, always
 		// safe); a custom path must be valid and not collide with an existing
-		// one.
+		// one. The auto path is also collision-checked: a different service may
+		// own "/"+ID as a custom path even though the ID itself is free.
 		if svc.Path == "" {
-			svc.Path = normalizePath("/" + svc.ID)
+			basePath := normalizePath("/" + svc.ID)
+			svc.Path = basePath
+			for n := 2; serviceWithPath(cfg.Services, svc.Path); n++ {
+				svc.Path = fmt.Sprintf("%s-%d", basePath, n)
+			}
 		} else {
 			svc.Path = normalizePath(svc.Path)
 			if err := ValidatePath(svc.Path); err != nil {
@@ -612,57 +618,40 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 	return result
 }
 
-// GroupServicesByCategory groups services by category, sorted by order.
+// DefaultCategory is the bucket for services without an explicit category.
+// It is the single source of truth for the label: the web UI receives it in
+// the boot payload so the client renders the same string.
+const DefaultCategory = "未分类"
+
+// GroupServicesByCategory groups services by category, ordered by each
+// service's Order field. Category order follows the first (lowest-order)
+// service seen, matching the client-side renderDashboard grouping: a stable
+// sort by Order, then first-encounter category order. Ties on Order keep the
+// input (config file) order, so the grouping is deterministic across map
+// iteration and page loads.
 func GroupServicesByCategory(services []ServiceConfig) []GroupedServices {
+	sorted := make([]ServiceConfig, len(services))
+	copy(sorted, services)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Order < sorted[j].Order })
+
+	order := make([]string, 0)
 	groups := make(map[string][]ServiceConfig)
-	for _, s := range services {
+	for _, s := range sorted {
 		cat := s.Category
 		if cat == "" {
-			cat = "未分类"
+			cat = DefaultCategory
+		}
+		if _, seen := groups[cat]; !seen {
+			order = append(order, cat)
 		}
 		groups[cat] = append(groups[cat], s)
 	}
 
-	// Calculate min order per group
-	type groupInfo struct {
-		name     string
-		services []ServiceConfig
-		minOrder int
-	}
-	infos := make([]groupInfo, 0, len(groups))
-	for name, svcs := range groups {
-		minOrder := 999999
-		for _, s := range svcs {
-			if s.Order < minOrder {
-				minOrder = s.Order
-			}
-		}
-		infos = append(infos, groupInfo{name, svcs, minOrder})
-	}
-
-	// Sort by minOrder
-	for i := 0; i < len(infos); i++ {
-		for j := i + 1; j < len(infos); j++ {
-			if infos[i].minOrder > infos[j].minOrder {
-				infos[i], infos[j] = infos[j], infos[i]
-			}
-		}
-	}
-
-	result := make([]GroupedServices, 0, len(infos))
-	for _, info := range infos {
-		// Sort within group by order
-		svcs := info.services
-		for i := 0; i < len(svcs); i++ {
-			for j := i + 1; j < len(svcs); j++ {
-				if svcs[i].Order > svcs[j].Order {
-					svcs[i], svcs[j] = svcs[j], svcs[i]
-				}
-			}
-		}
+	result := make([]GroupedServices, 0, len(order))
+	for _, cat := range order {
 		result = append(result, GroupedServices{
-			Category: info.name,
-			Services: svcs,
+			Category: cat,
+			Services: groups[cat],
 		})
 	}
 	return result

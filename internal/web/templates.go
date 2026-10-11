@@ -29,6 +29,9 @@ var twofaTpl string
 //go:embed templates/twofa_setup.html
 var twofaSetupTpl string
 
+//go:embed templates/util.js
+var dashboardUtilScript string
+
 //go:embed templates/script.js
 var dashboardScript string
 
@@ -60,7 +63,11 @@ const themeScript = `
   function apply(t) {
     document.documentElement.classList.toggle('dark', t === 'dark');
     var btn = document.getElementById('theme-toggle');
-    if (btn) btn.textContent = t === 'dark' ? '☀️' : '🌙';
+    if (!btn) return;
+    var mark = t === 'dark' ? '☀️' : '🌙';
+    var ico = btn.querySelector('.theme-ico');
+    if (ico) ico.textContent = mark;
+    else btn.textContent = mark;
   }
   var saved = localStorage.getItem(key);
   if (saved === 'dark' || saved === 'light') apply(saved);
@@ -88,39 +95,53 @@ func LoginPage(siteTitle, errorMsg, next string) string {
 func DashboardPage(siteTitle, username string, services []config.ServiceConfig, writable, twoFAEnabled bool) string {
 	grouped := config.GroupServicesByCategory(services)
 	bootJSON := marshalScriptJSON(dashboardBoot{
-		Username: username,
-		Services: services,
-		Writable: writable,
+		Username:        username,
+		Services:        services,
+		Writable:        writable,
+		DefaultCategory: config.DefaultCategory,
 	})
 
 	categoriesHTML := renderCategories(grouped, username, writable)
 	if categoriesHTML == "" {
-		categoriesHTML = `<p class="empty">暂无服务。点击顶部 + 添加转发。</p>`
+		if writable {
+			categoriesHTML = `<p class="empty">暂无服务。点击右上角 + 添加，点卡片即可访问。</p>`
+		} else {
+			categoriesHTML = `<p class="empty">暂无服务。</p>`
+		}
 	}
 
-	hintText := ""
+	// The how-to line used to sit under the header forever. Keep a hint only
+	// for the read-only failure; everyday instructions live in the empty state.
+	hintHTML := ""
 	readOnlyClass := ""
-	if writable {
-		hintText = "点击卡片访问服务；拖动卡片调整顺序与分类，点击顶部 + 添加。"
-	} else {
-		hintText = "当前配置不可由网关写入。请执行 <code>goprox passwd</code> 修复权限。"
+	searchHidden := ""
+	if !writable {
+		hintHTML = `<p class="hint" id="dashboard-hint">当前配置不可由网关写入。请执行 <code>goprox passwd</code> 修复权限。</p>`
 		readOnlyClass = " read-only"
 	}
+	if len(services) == 0 {
+		searchHidden = " hidden"
+	}
 
-	// Two-factor status + management link (hint text is rendered as HTML).
+	accountLabel := username
+	if accountLabel == "" {
+		accountLabel = "账号"
+	}
+	twoFALabel := "开启两步验证"
 	if twoFAEnabled {
-		hintText += ` 两步验证已开启 · <a href="/2fa/setup">管理</a>`
-	} else {
-		hintText += ` 两步验证未开启 · <a href="/2fa/setup">开启</a>`
+		twoFALabel = "两步验证已开启"
 	}
 
 	body := fmt.Sprintf(dashboardTpl,
 		esc(siteTitle),
+		esc(accountLabel),
+		esc(twoFALabel),
 		readOnlyClass,
-		hintText,
+		hintHTML,
+		searchHidden,
 		categoriesHTML,
 		bootJSON,
-		dashboardScript,
+		dashboardUtilScript+"\n"+dashboardScript,
 	)
 	return PageShell(siteTitle, "仪表盘", body)
 }
@@ -164,6 +185,9 @@ type dashboardBoot struct {
 	Username string                 `json:"username"`
 	Services []config.ServiceConfig `json:"services"`
 	Writable bool                   `json:"writable"`
+	// DefaultCategory mirrors config.DefaultCategory so the client groups
+	// uncategorized services under the same label the server renders.
+	DefaultCategory string `json:"defaultCategory"`
 }
 
 // marshalScriptJSON serializes v as JSON that is safe to inline inside a
@@ -192,8 +216,8 @@ func renderCategories(groups []config.GroupedServices, username string, writable
 	blocks := make([]string, 0, len(groups))
 	for _, g := range groups {
 		cards := make([]string, 0, len(g.Services))
-		for _, s := range g.Services {
-			cards = append(cards, renderCard(s, username, writable))
+		for i, s := range g.Services {
+			cards = append(cards, renderCard(s, username, writable, i, len(g.Services)))
 		}
 		blocks = append(blocks, fmt.Sprintf(`
     <section class="category-block" data-category="%s">
@@ -201,33 +225,50 @@ func renderCategories(groups []config.GroupedServices, username string, writable
       <div class="card-grid" data-drop-zone>%s</div>
     </section>`, esc(g.Category), esc(g.Category), strings.Join(cards, "")))
 	}
-	return strings.Join(blocks, "")
+	return renderCategoryNav(groups) + strings.Join(blocks, "")
 }
 
-func renderCard(s config.ServiceConfig, username string, writable bool) string {
+func renderCategoryNav(groups []config.GroupedServices) string {
+	if len(groups) < 2 {
+		return ""
+	}
+	chips := make([]string, 0, len(groups))
+	for _, g := range groups {
+		chips = append(chips, fmt.Sprintf(`<button type="button" class="category-chip" data-jump="%s">%s</button>`, esc(g.Category), esc(g.Category)))
+	}
+	return `<div class="category-nav">` + strings.Join(chips, "") + `</div>`
+}
+
+func renderCard(s config.ServiceConfig, username string, writable bool, index, total int) string {
 	proxyURL := fmt.Sprintf("/proxy/%s%s/", username, s.Path)
 	desc := ""
 	if s.Description != "" {
 		desc = fmt.Sprintf(`<p class="card-desc">%s</p>`, esc(s.Description))
 	}
-	wsBadge := ""
+	meta := ""
 	if s.WebSocket {
-		wsBadge = `<span class="badge ws">WebSocket</span>`
-	}
-	rateBadge := ""
-	if s.BWLimit > 0 {
-		rateBadge = fmt.Sprintf(`<span class="badge rate">限速 %s</span>`, fmtRate(s.BWLimit))
+		meta = `<div class="card-meta"><span class="badge ws">WebSocket</span></div>`
 	}
 
 	toolbar := ""
 	if writable {
+		upDis := ""
+		downDis := ""
+		if index == 0 {
+			upDis = " disabled"
+		}
+		if index >= total-1 {
+			downDis = " disabled"
+		}
 		toolbar = fmt.Sprintf(`<div class="card-toolbar">
         <span class="drag-handle" draggable="true" data-drag-handle="1" title="拖动排序">⋮⋮</span>
         <div class="card-actions">
-          <button type="button" class="card-edit" data-edit-id="%s" title="编辑">✎</button>
-          <button type="button" class="card-delete" data-delete-id="%s" title="删除">×</button>
+          <button type="button" class="card-move" data-move="up" data-move-id="%s" title="上移" aria-label="上移"%s>↑</button>
+          <button type="button" class="card-move" data-move="down" data-move-id="%s" title="下移" aria-label="下移"%s>↓</button>
+          <button type="button" class="card-edit" data-edit-id="%s" title="编辑" aria-label="编辑">✎</button>
+          <button type="button" class="card-delete" data-delete-id="%s" title="删除" aria-label="删除">×</button>
         </div>
-      </div>`, esc(s.ID), esc(s.ID))
+      </div>`, esc(s.ID), upDis, esc(s.ID), downDis, esc(s.ID), esc(s.ID))
 	}
 
 	firstChar := "?"
@@ -247,44 +288,19 @@ func renderCard(s config.ServiceConfig, username string, writable bool) string {
       <div class="card-body">
         <h2>%s</h2>
         %s
-        <div class="card-meta">
-          <span class="endpoint">%s:%d</span>
-          %s
-          %s
-        </div>
+        %s
       </div>
     </a>
   </div>`,
 		esc(s.ID),
-		esc(ternary(s.Category != "", s.Category, "未分类")),
+		esc(ternary(s.Category != "", s.Category, config.DefaultCategory)),
 		toolbar,
 		esc(proxyURL),
 		faviconHTML,
 		esc(s.Name),
 		desc,
-		esc(s.Host), s.Port,
-		wsBadge,
-		rateBadge,
+		meta,
 	)
-}
-
-// fmtRate renders a bytes-per-second cap in human-readable units.
-func fmtRate(b int64) string {
-	const (
-		gb = int64(1) << 30
-		mb = int64(1) << 20
-		kb = int64(1) << 10
-	)
-	switch {
-	case b >= gb:
-		return fmt.Sprintf("%.1f GB/s", float64(b)/float64(gb))
-	case b >= mb:
-		return fmt.Sprintf("%.1f MB/s", float64(b)/float64(mb))
-	case b >= kb:
-		return fmt.Sprintf("%d KB/s", b/kb)
-	default:
-		return fmt.Sprintf("%d B/s", b)
-	}
 }
 
 // faviconOnError advances through the candidate favicon URLs (data-favs,

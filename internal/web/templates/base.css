@@ -31,7 +31,9 @@
   --sh-lift: 0 12px 32px rgba(0,0,0,0.1);
   --sh-overlay: 0 2px 8px rgba(0,0,0,0.10), 0 30px 80px rgba(0,0,0,0.24);
   /* layout */
-  --max-grid: 1080px;
+  /* 1680px caps a wide screen at 5 cards. The grid is auto-fill, so narrower
+     windows drop to 4, 3, 2, then 1. Order is a list, not a column index. */
+  --max-grid: 1680px;
   --pad-x: 22px;
   /* motion easing */
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);

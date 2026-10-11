@@ -28,21 +28,50 @@
     min-width: 0;
   }
   .header-actions { display: flex; gap: 8px; align-items: center; }
-  .logout-btn {
-    background: transparent;
-    border: 1px solid var(--border);
+  .account { position: relative; }
+  .account-btn {
+    background: rgba(0,0,0,0.05);
     color: var(--text);
-    text-decoration: none;
     height: 40px;
-    padding: 0 16px;
+    max-width: 160px;
+    padding: 0 14px;
     border-radius: var(--r-pill);
     font-size: 13px;
     font-weight: 550;
-    display: inline-flex;
-    align-items: center;
-    transition: background 0.15s var(--ease-out-quart);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .logout-btn:hover { background: var(--hover); text-decoration: none; }
+  .dark .account-btn { background: rgba(255,255,255,0.1); }
+  .account-btn:hover { background: rgba(0,0,0,0.09); }
+  .dark .account-btn:hover { background: rgba(255,255,255,0.16); }
+  .account-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100%% + 8px);
+    min-width: 196px;
+    padding: 6px;
+    background: var(--bg-panel);
+    border-radius: 14px;
+    box-shadow: var(--sh-panel);
+    z-index: 60;
+  }
+  .account-menu[hidden] { display: none; }
+  .account-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%%;
+    text-align: left;
+    background: transparent;
+    color: var(--text);
+    text-decoration: none;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .account-item:hover { background: var(--hover); text-decoration: none; }
   .add-btn {
     background: var(--accent);
     color: #fff;
@@ -68,13 +97,43 @@
   }
   .hint { color: var(--text-muted); font-size: 13px; margin-bottom: 28px; }
   .hint code { font-family: var(--mono); font-size: 12px; }
+  .service-search {
+    display: block;
+    width: 100%%;
+    max-width: 360px;
+    margin-bottom: 18px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--bg-panel);
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--font);
+  }
+  .service-search:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
+  }
+  .service-search[hidden] { display: none; }
+  .category-nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+  .category-chip {
+    background: var(--bg-panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 550;
+    box-shadow: var(--sh-card);
+  }
+  .category-chip:hover { background: var(--hover); }
 
   /* ── Category blocks ── */
-  .category-block { margin-bottom: clamp(28px, 4vw, 40px); }
+  .category-block { margin-bottom: clamp(28px, 4vw, 40px); scroll-margin-top: 70px; }
   .category-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    letter-spacing: 0.08em;
     color: var(--text-muted);
     margin-bottom: 12px;
     padding-left: 4px;
@@ -103,6 +162,33 @@
     align-items: center;
     padding: 10px 12px 0;
   }
+  /* Fine pointers: keep the open-service hit target clear until hover or focus. */
+  @media (hover: hover) and (pointer: fine) {
+    .card-toolbar {
+      position: absolute;
+      z-index: 2;
+      top: 8px;
+      right: 8px;
+      left: auto;
+      width: auto;
+      padding: 2px;
+      border-radius: 12px;
+      background: var(--bg-panel);
+      box-shadow: var(--sh-card);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .card-toolbar button,
+    .card-toolbar .drag-handle { pointer-events: none; }
+    .service-card:hover .card-toolbar,
+    .service-card:focus-within .card-toolbar { opacity: 1; pointer-events: auto; }
+    .service-card:hover .card-toolbar button,
+    .service-card:hover .card-toolbar .drag-handle,
+    .service-card:focus-within .card-toolbar button,
+    .service-card:focus-within .card-toolbar .drag-handle { pointer-events: auto; }
+  }
+  .is-filtering .drag-handle,
+  .is-filtering .card-move { display: none; }
   .drag-handle {
     cursor: grab;
     color: var(--text-muted);
@@ -113,7 +199,7 @@
   }
   .drag-handle:active { cursor: grabbing; }
   .card-actions { display: flex; gap: 2px; }
-  .card-edit, .card-delete {
+  .card-edit, .card-delete, .card-move {
     background: transparent;
     border: none;
     font-size: 15px;
@@ -124,8 +210,9 @@
     color: var(--text-muted);
     transition: background 0.15s, color 0.15s;
   }
-  .card-edit:hover { color: var(--text); background: var(--hover); }
+  .card-edit:hover, .card-move:hover { color: var(--text); background: var(--hover); }
   .card-delete:hover { color: var(--danger); background: var(--danger-bg); }
+  .card-move:disabled { opacity: 0.35; cursor: default; background: transparent; }
   .card-link {
     display: flex;
     gap: 14px;
@@ -163,12 +250,6 @@
   .card-body h2 { font-size: 16.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 4px; }
   .card-desc { color: var(--text-muted); font-size: 13px; line-height: 1.5; margin-bottom: 10px; }
   .card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
-  .endpoint {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 11.5px;
-  }
   .badge {
     padding: 2px 10px;
     border-radius: var(--r-pill);
@@ -177,8 +258,6 @@
     letter-spacing: 0.02em;
   }
   .badge.ws { color: var(--accent); background: var(--accent-bg); }
-  .badge.rate { color: var(--text-muted); background: rgba(0,0,0,0.05); }
-  .dark .badge.rate { background: rgba(255,255,255,0.1); }
   .empty { text-align: center; color: var(--text-muted); padding: 3.5rem 1rem; }
 
   /* ── Modal sheet (glass materializes over the dimmed page) ── */
@@ -280,6 +359,28 @@
     font-weight: 600;
   }
   .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.6; cursor: progress; }
+  .advanced {
+    margin-top: 18px;
+    border-top: 1px solid var(--border);
+    padding-top: 4px;
+  }
+  .advanced summary {
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 8px 0 4px;
+  }
+  .field-help, .path-preview {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    margin-top: 6px;
+  }
+  .path-preview:empty { display: none; }
+  .form-error { color: var(--danger); font-size: 13px; margin-top: 12px; }
+  .form-error[hidden] { display: none; }
 
   /* ── Toast ── */
   .toast {
@@ -292,12 +393,15 @@
     padding: 10px 18px;
     border-radius: var(--r-pill);
     display: none;
+    /* Below the modal backdrop (30): a toast must never sit on top of an
+       open sheet, and form errors are reported inline instead. */
     z-index: 25;
     font-size: 14px;
   }
   .toast.show { display: block; }
 
   .read-only .drag-handle,
+  .read-only .card-move,
   .read-only .card-edit,
   .read-only .card-delete,
   .read-only .add-btn { display: none; }
@@ -305,18 +409,26 @@
 <header class="header">
   <h1>%s</h1>
   <div class="header-actions">
-    <button type="button" class="add-btn" id="fab-add" title="添加服务">+</button>
-    <button type="button" class="theme-btn" id="theme-toggle" onclick="toggleTheme()">🌙</button>
-    <a href="/logout" class="logout-btn">退出</a>
+    <button type="button" class="add-btn" id="fab-add" title="添加服务" aria-label="添加服务">+</button>
+    <div class="account">
+      <button type="button" class="account-btn" id="account-toggle" aria-expanded="false" aria-controls="account-menu">%s</button>
+      <div class="account-menu" id="account-menu" hidden>
+        <a class="account-item" href="/2fa/setup">%s</a>
+        <button type="button" class="account-item" id="theme-toggle"><span class="theme-ico">🌙</span> 外观</button>
+        <a class="account-item" href="/logout">退出</a>
+      </div>
+    </div>
   </div>
 </header>
 <main class="main%s">
-  <p class="hint" id="dashboard-hint">%s</p>
+  %s
+  <input id="service-search" class="service-search" type="search" placeholder="搜索名称或说明" autocomplete="off" aria-label="搜索服务"%s>
   <div id="dashboard">%s</div>
 </main>
+<datalist id="category-options"></datalist>
 <div class="modal-backdrop" id="add-modal">
-  <form class="modal" id="add-form">
-    <h2>添加端口转发</h2>
+  <form class="modal" id="add-form" data-busy-label="正在添加">
+    <h2>添加服务</h2>
     <label for="add-name">显示名称</label>
     <input id="add-name" name="name" type="text" required>
     <label for="add-description">说明</label>
@@ -325,19 +437,24 @@
     <input id="add-host" name="host" type="text" value="127.0.0.1" required>
     <label for="add-port">端口</label>
     <input id="add-port" name="port" type="number" min="1" max="65535" required>
-    <label for="add-path">前端路径</label>
-    <input id="add-path" name="path" type="text" placeholder="根据名称自动生成">
-    <label for="add-backend-path">后端路径 <small style="color:var(--text-muted)">(可选，例如 /app/index.html)</small></label>
-    <input id="add-backend-path" name="backend_path" type="text" placeholder="留空则直接转发到根路径">
-    <label for="add-bwlimit">带宽上限 <small style="color:var(--text-muted)">(可选，字节/秒，留空不限速)</small></label>
-    <input id="add-bwlimit" name="bwlimit" type="number" min="0" step="1" placeholder="例如 10485760 = 10 MB/s">
     <label for="add-category">分类</label>
-    <input id="add-category" name="category" type="text">
-    <label class="checkbox-row">
-      <input id="add-ws" name="websocket" type="checkbox" checked>
-      <span>WebSocket 代理</span>
-      <small style="color:var(--text-muted);font-size:0.75rem;display:block;margin-top:2px">默认开启，关闭后将拒绝 WebSocket 连接。Jupyter、RStudio 等需保持开启</small>
-    </label>
+    <input id="add-category" name="category" type="text" list="category-options" autocomplete="off" placeholder="选择已有分类，或输入新分类">
+    <details class="advanced" id="add-advanced">
+      <summary>高级</summary>
+      <label for="add-path">前端路径</label>
+      <input id="add-path" name="path" type="text" placeholder="留空则自动生成">
+      <p class="path-preview" id="add-path-preview"></p>
+      <label for="add-backend-path">后端路径</label>
+      <input id="add-backend-path" name="backend_path" type="text" placeholder="留空则转发到根路径，例如 /app/index.html">
+      <label class="checkbox-row">
+        <input id="add-ws" name="websocket" type="checkbox" checked>
+        <span>WebSocket 代理</span>
+      </label>
+      <p class="field-help">Jupyter、RStudio 等需要保持开启。关闭后将拒绝 WebSocket 连接。</p>
+      <label for="add-bwlimit">带宽上限 <small style="color:var(--text-muted)">MB/s，留空不限速</small></label>
+      <input id="add-bwlimit" name="bwlimit" type="number" min="0" step="any" placeholder="例如 10">
+    </details>
+    <p class="form-error" id="add-error" hidden></p>
     <div class="modal-actions">
       <button type="button" class="btn-secondary" id="add-cancel">取消</button>
       <button type="submit" class="btn-primary">添加</button>
@@ -346,7 +463,7 @@
 </div>
 <div class="modal-backdrop" id="edit-modal">
   <form class="modal" id="edit-form">
-    <h2>编辑端口转发</h2>
+    <h2>编辑服务</h2>
     <input type="hidden" id="edit-id" value="">
     <label for="edit-name">显示名称</label>
     <input id="edit-name" name="name" type="text" required>
@@ -356,19 +473,24 @@
     <input id="edit-host" name="host" type="text" required>
     <label for="edit-port">端口</label>
     <input id="edit-port" name="port" type="number" min="1" max="65535" required>
-    <label for="edit-path">前端路径</label>
-    <input id="edit-path" name="path" type="text">
-    <label for="edit-backend-path">后端路径 <small style="color:var(--text-muted)">(可选，例如 /app/index.html)</small></label>
-    <input id="edit-backend-path" name="backend_path" type="text" placeholder="留空则直接转发到根路径">
-    <label for="edit-bwlimit">带宽上限 <small style="color:var(--text-muted)">(可选，字节/秒，留空不限速)</small></label>
-    <input id="edit-bwlimit" name="bwlimit" type="number" min="0" step="1" placeholder="例如 10485760 = 10 MB/s">
     <label for="edit-category">分类</label>
-    <input id="edit-category" name="category" type="text">
-    <label class="checkbox-row">
-      <input id="edit-ws" name="websocket" type="checkbox">
-      <span>WebSocket 代理</span>
-      <small style="color:var(--text-muted);font-size:0.75rem;display:block;margin-top:2px">默认开启，关闭后将拒绝 WebSocket 连接。Jupyter、RStudio 等需保持开启</small>
-    </label>
+    <input id="edit-category" name="category" type="text" list="category-options" autocomplete="off" placeholder="选择已有分类，或输入新分类">
+    <details class="advanced" id="edit-advanced">
+      <summary>高级</summary>
+      <label for="edit-path">前端路径</label>
+      <input id="edit-path" name="path" type="text">
+      <p class="path-preview" id="edit-path-preview"></p>
+      <label for="edit-backend-path">后端路径</label>
+      <input id="edit-backend-path" name="backend_path" type="text" placeholder="留空则转发到根路径，例如 /app/index.html">
+      <label class="checkbox-row">
+        <input id="edit-ws" name="websocket" type="checkbox">
+        <span>WebSocket 代理</span>
+      </label>
+      <p class="field-help">Jupyter、RStudio 等需要保持开启。关闭后将拒绝 WebSocket 连接。</p>
+      <label for="edit-bwlimit">带宽上限 <small style="color:var(--text-muted)">MB/s，留空不限速</small></label>
+      <input id="edit-bwlimit" name="bwlimit" type="number" min="0" step="any" placeholder="例如 10">
+    </details>
+    <p class="form-error" id="edit-error" hidden></p>
     <div class="modal-actions">
       <button type="button" class="btn-secondary" id="edit-cancel">取消</button>
       <button type="submit" class="btn-primary">保存</button>
