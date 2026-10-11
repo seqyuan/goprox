@@ -30,3 +30,6 @@ docs/公众号软文*
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Local planning notes
+.roadmap/
