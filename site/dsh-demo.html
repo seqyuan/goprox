@@ -65,6 +65,11 @@ services:
     port: 3080
     path: "/dsh"             # 前端访问路径
     websocket: true          # 事件流走 WebSocket/SSE，必须开启
+    # dsh 首次访问返回 401，网关据启动日志里的 token 完成它自己的会话握手
+    auth_bootstrap:
+      mode: log
+      token_log: "/path/to/dsh-web.log"   # dsh web 的启动日志（含 http://127.0.0.1:3080/?token=...）
+      token_regex: '\?token=([A-Za-z0-9_.-]+)'
     category: "AI"
     order: 0
     bwlimit: 10000000        # 可选：10 MB/s 带宽上限（上行/下行各限）</pre>
@@ -83,6 +88,11 @@ services:
         <td>只监听 <code>127.0.0.1</code></td>
         <td>局域网其他机器无法访问</td>
         <td>网关在本机转发，浏览器只与网关通信</td>
+      </tr>
+      <tr>
+        <td>首次访问返回 <code>401 dsh web authentication required</code></td>
+        <td>页面只有一行错误文本，进不去（令牌地址是 loopback）</td>
+        <td><strong>会话令牌握手</strong>：<code>auth_bootstrap</code> 取启动令牌，把这次 401 改写成 302 到 <code>?token=</code>，由 dsh 下发会话 Cookie</td>
       </tr>
       <tr>
         <td>/api 信任栅栏（Host/Origin 必须一致）</td>
@@ -105,14 +115,16 @@ services:
         <td>「最近访问的服务」cookie 兜底转发到对应后端</td>
       </tr>
     </table>
-    <div class="note">以上全部自动生效，无需在 dsh 侧做任何配置（如 <code>base_url</code>、
-      <code>--trusted-host</code> 等）。dsh 源码零改动。</div>
+    <div class="note">除 <code>auth_bootstrap</code>（告诉网关去哪读 dsh 的启动令牌）外，
+      其余兼容机制全部自动生效。dsh 侧 <code>base_url</code>、<code>--trusted-host</code> 等一律不需要，
+      <strong>dsh 源码零改动</strong>。</div>
   </div>
 
   <div class="card">
     <h2>常见问题排查</h2>
     <table>
       <tr><th>症状</th><th>原因</th><th>处理</th></tr>
+      <tr><td>页面只有一行 <code>dsh web authentication required</code></td><td>首次访问未完成 dsh 的会话握手</td><td>配置 <code>auth_bootstrap</code>（<code>mode: log</code> 指向 <code>dsh web</code> 日志）；确认走的是 <code>/proxy/&lt;用户&gt;/dsh/</code> 且浏览器请求 <code>Accept</code> 含 <code>text/html</code></td></tr>
       <tr><td><code>crypto.randomUUID is not a function</code></td><td>纯 HTTP 非安全上下文缺少该 API</td><td>确认走的是 <code>/proxy/&lt;用户&gt;/dsh/</code> 代理路径（polyfill 只注入到代理的 HTML）</td></tr>
       <tr><td><code>/api/*</code> 返回 <code>403 forbidden</code></td><td>dsh 信任栅栏判定 Origin/Host 不一致</td><td>升级到含 Origin 改写的 goprox 版本；确认不是直连后端</td></tr>
       <tr><td>WebSocket 连接报 <code>502</code></td><td>带宽限速包装了 101 升级响应</td><td>升级到含 101 修复的 goprox 版本；<code>bwlimit</code> 可正常保留</td></tr>

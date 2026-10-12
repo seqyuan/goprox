@@ -51,6 +51,14 @@ type ProxyForwardContext struct {
 	Host     string
 	Username string          // authenticated session user (lightweight SSO identity)
 	SSO      config.SSOState // lightweight SSO: identity header name + optional HMAC key
+	// Bootstrap enables the upstream session handshake for backends that gate
+	// their UI behind a startup token (e.g. dsh). Populated from the service in
+	// NewReverseProxy; nil disables it.
+	Bootstrap *config.AuthBootstrapConfig
+	// OriginalPath is the browser-visible request URI (path?query) before the
+	// backend path rewrite, used to build the bootstrap redirect back to the
+	// gateway origin (never the loopback backend address).
+	OriginalPath string
 }
 
 // BuildProxyForwardContext creates forwarding context from a request and match.
@@ -60,12 +68,13 @@ func BuildProxyForwardContext(r *http.Request, username, servicePath string, leg
 		prefix = "/proxy" + servicePath
 	}
 	return ProxyForwardContext{
-		Prefix:   prefix,
-		Base:     prefix + "/",
-		ClientIP: auth.ClientIP(r),
-		Proto:    proto(r),
-		Host:     r.Host,
-		Username: username,
+		Prefix:       prefix,
+		Base:         prefix + "/",
+		ClientIP:     auth.ClientIP(r),
+		Proto:        proto(r),
+		Host:         r.Host,
+		Username:     username,
+		OriginalPath: r.URL.RequestURI(),
 	}
 }
 
@@ -171,6 +180,9 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 		Host:   svc.Host + ":" + strconv.Itoa(svc.Port),
 	}
 
+	// Carry the service's session-bootstrap config into the response hook.
+	fc.Bootstrap = svc.AuthBootstrap
+
 	backendPath := svc.BackendPath
 
 	return &httputil.ReverseProxy{
@@ -248,6 +260,44 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return nil
 			}
+
+			// Upstream session bootstrap (e.g. dsh): a local-first backend may
+			// answer an unauthenticated page request with 401 instead of a
+			// redirect, keeping its per-process startup token unreachable from a
+			// LAN browser. Turn that one response into a browser-visible 302 to
+			// the same gateway path with the token appended; the backend then
+			// runs its own handshake (303 + Set-Cookie) and normal proxying
+			// resumes. shouldBootstrap guards against loops and API false hits.
+			if shouldBootstrap(resp, fc) {
+				if tok, ok := bootstrapToken(fc.Bootstrap); ok {
+					resp.Body.Close()
+					resp.Body = http.NoBody
+					resp.StatusCode = http.StatusFound
+					resp.Header.Set("Location", addBootstrapParam(fc.OriginalPath, bootstrapParam(fc.Bootstrap), tok))
+					resp.Header.Set("Content-Length", "0")
+					resp.Header.Del("Set-Cookie")
+					resp.Header.Set("Cache-Control", "no-store")
+					return nil
+				}
+			}
+
+			// Rewrite backend cookies for the gateway origin/prefix (drop
+			// Domain, re-root Path, clear Secure over plain HTTP). Path is only
+			// re-rooted for canonical /proxy/ access: a bare/root path (referer
+			// or default_service routing) lives at the gateway root, so narrowing
+			// Path to the proxy prefix would stop the browser sending the cookie.
+			if cookies := resp.Header.Values("Set-Cookie"); len(cookies) > 0 {
+				resp.Header.Del("Set-Cookie")
+				proxyPath := ""
+				if strings.HasPrefix(fc.OriginalPath, "/proxy/") {
+					proxyPath = fc.Prefix + "/"
+				}
+				secure := fc.Proto == "https"
+				for _, c := range cookies {
+					resp.Header.Add("Set-Cookie", RewriteSetCookie(c, proxyPath, secure))
+				}
+			}
+
 			// Throttle the response body (download) to the per-service cap.
 			// The defer runs after every other body rewrite below, so whatever
 			// body this function ends with (streamed, buffered, injected) is

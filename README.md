@@ -481,12 +481,40 @@ services:
     path: "/dsh"
     websocket: true      # 事件流走 WebSocket/SSE，必须开启
     bwlimit: 10000000    # 可选：带宽上限
+    # 关键：dsh 首次访问返回 401，网关据启动日志里的 token 完成它自己的会话握手
+    auth_bootstrap:
+      mode: log
+      token_log: "/path/to/dsh-web.log"   # dsh web 的启动日志（含 http://127.0.0.1:3080/?token=...）
+      token_regex: '\?token=([A-Za-z0-9_.-]+)'
 ```
 
 GoProx 自动处理：① 同源 Origin 改写（通过 dsh 的 Host/Origin 信任栅栏）；② 向代理的 HTML
 注入 `crypto.randomUUID` polyfill（纯 HTTP 下用 `getRandomValues` 重建，HTTPS 下自动失效）；
-③ WebSocket 101 升级不受 `bwlimit` 影响。完整配置与排查见
-[「dsh 配置示例」](https://seqyuan.github.io/goprox/dsh-demo.html)。
+③ WebSocket 101 升级不受 `bwlimit` 影响；④ **会话令牌握手**——dsh 首次访问返回
+`401 dsh web authentication required`，网关据 `auth_bootstrap` 取到启动令牌，把这一次响应改写成
+`302 ...?token=...`，由 dsh 自己下发会话 Cookie，之后即正常访问（详见下方 `auth_bootstrap`）。
+完整配置与排查见 [「dsh 配置示例」](https://seqyuan.github.io/goprox/dsh-demo.html)。
+
+#### auth_bootstrap（后端会话令牌握手）
+
+部分本地优先应用（dsh、Jupyter、code-server 等）在未认证时返回 401，而它们的会话令牌只有一个
+写在 loopback 地址上的入口（如 `http://127.0.0.1:3080/?token=...`），局域网浏览器取不到。为某张
+服务卡片配置 `auth_bootstrap` 后，网关会把**首次未认证的 HTML 页面请求**改写成一次
+`302 当前网关路径?token=<令牌>`，让后端完成自己的握手；令牌被拒时原样透传（不会死循环），
+API/静态资源请求与已带令牌的请求都不受影响。
+
+```yaml
+    auth_bootstrap:
+      mode: log            # static | file | log
+      param: token         # 可选，令牌查询参数名，默认 token
+      token_log: "/var/log/dsh-web.log"
+      token_regex: '\?token=([A-Za-z0-9_.-]+)'
+      # mode: file  —— token_file: /run/dsh/token（可选 token_regex 从文件内容里抽取）
+      # mode: static—— token_value: "手工粘贴的令牌"
+```
+
+`mode: log` 每次遇到 401 时重读日志尾部，因此后端重启换了令牌也能自动跟上。读取失败或配置
+无效时静默跳过（退回后端原始 401），不影响其他请求。
 
 > **注意**：将 `<用户>` 替换为 Linux 用户名，`<服务路径>` 替换为卡片中设置的 path 值。
 

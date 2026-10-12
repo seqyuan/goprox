@@ -54,3 +54,22 @@ services:
     category: "未分类"
     order: 2
     backend_path: "/report.html"    # 后端入口文件（含扩展名时子资源解析到其目录）
+
+  # ④ 本地优先应用（如 DeepSeek Harness / dsh）：只监听回环、首次访问返回 401，
+  #    会话令牌入口是 loopback 地址。auth_bootstrap 让网关代为完成这次握手。
+  - id: dsh
+    name: "dsh"
+    description: "DeepSeek Harness Web GUI"
+    host: "127.0.0.1"
+    port: 3080
+    path: "/dsh"
+    websocket: true
+    category: "AI"
+    order: 3
+    auth_bootstrap:
+      mode: log                                   # static | file | log
+      # param: token                              # 可选，令牌查询参数名（默认 token）
+      token_log: "/var/log/dsh-web.log"           # dsh web 的启动日志
+      token_regex: '\?token=([A-Za-z0-9_.-]+)'     # 从日志里抽取令牌
+      # mode: file   -> token_file: /run/dsh/token
+      # mode: static -> token_value: "手工粘贴的令牌"

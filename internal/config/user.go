@@ -29,6 +29,37 @@ type ServiceConfig struct {
 	Category    string `yaml:"category,omitempty" json:"category,omitempty"`
 	Order       int    `yaml:"order,omitempty" json:"order,omitempty"`
 	BWLimit     int64  `yaml:"bwlimit,omitempty" json:"bwlimit,omitempty"` // Per-service bandwidth cap in bytes/sec; 0 = unlimited
+	// AuthBootstrap, when set, lets the gateway complete the backend's own
+	// browser session handshake (see AuthBootstrapConfig).
+	AuthBootstrap *AuthBootstrapConfig `yaml:"auth_bootstrap,omitempty" json:"auth_bootstrap,omitempty"`
+}
+
+// Bootstrap modes for AuthBootstrapConfig.Mode.
+const (
+	BootstrapModeStatic = "static" // literal TokenValue
+	BootstrapModeFile   = "file"   // read TokenFile (optionally via TokenRegex)
+	BootstrapModeLog    = "log"    // tail TokenLog, extract TokenRegex (last match)
+)
+
+// AuthBootstrapConfig lets the gateway finish a backend's own browser session
+// handshake. Some local-first apps (e.g. DeepSeek Harness / dsh) mint a
+// per-process startup token and answer an unauthenticated page request with
+// 401 "authentication required" instead of a redirect, so a LAN browser can
+// never reach the ?token= URL the app printed on loopback. When configured,
+// the gateway converts that one response into a browser-visible 302 to the same
+// path with ?<Param>=<token>, and the backend then issues its session cookie
+// exactly as if the user had opened that URL directly.
+//
+// The exchange is generic (Jupyter, code-server, … use the same ?token=
+// pattern); only where the token comes from is per-backend, which is what Mode
+// selects.
+type AuthBootstrapConfig struct {
+	Mode       string `yaml:"mode" json:"mode"`                       // static | file | log
+	Param      string `yaml:"param,omitempty" json:"param,omitempty"` // query param name, default "token"
+	TokenValue string `yaml:"token_value,omitempty" json:"token_value,omitempty"`
+	TokenFile  string `yaml:"token_file,omitempty" json:"token_file,omitempty"`
+	TokenLog   string `yaml:"token_log,omitempty" json:"token_log,omitempty"`
+	TokenRegex string `yaml:"token_regex,omitempty" json:"token_regex,omitempty"`
 }
 
 // UserConfig represents a user's configuration file.
@@ -144,6 +175,40 @@ func normalizePath(p string) string {
 	return NormalizePath(p)
 }
 
+// validateAuthBootstrap normalizes a service's auth_bootstrap block, returning
+// (nil,false) when the block is nil or unusable (unknown mode, missing token
+// source, or an unparseable TokenRegex).
+func validateAuthBootstrap(b *AuthBootstrapConfig) (*AuthBootstrapConfig, bool) {
+	if b == nil {
+		return nil, false
+	}
+	b.Mode = strings.ToLower(strings.TrimSpace(b.Mode))
+	b.Param = strings.TrimSpace(b.Param)
+	switch b.Mode {
+	case BootstrapModeStatic:
+		if strings.TrimSpace(b.TokenValue) == "" {
+			return nil, false
+		}
+	case BootstrapModeFile:
+		if strings.TrimSpace(b.TokenFile) == "" {
+			return nil, false
+		}
+	case BootstrapModeLog:
+		if strings.TrimSpace(b.TokenLog) == "" {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	if r := strings.TrimSpace(b.TokenRegex); r != "" {
+		if _, err := regexp.Compile(r); err != nil {
+			return nil, false
+		}
+		b.TokenRegex = r
+	}
+	return b, true
+}
+
 // EnsureUserConfig creates a default user config if it doesn't exist.
 func EnsureUserConfig(path string) error {
 	if _, err := os.Stat(path); err == nil {
@@ -223,6 +288,19 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		}
 		if cfg.Services[i].Host == "" {
 			cfg.Services[i].Host = "127.0.0.1"
+		}
+		// Normalize/validate auth_bootstrap. A block that names no usable token
+		// source is dropped (with a one-time warning) rather than half-applied:
+		// with no token the gateway would just leave the backend's 401 in place,
+		// which is the same as not configuring it at all.
+		if b, ok := validateAuthBootstrap(cfg.Services[i].AuthBootstrap); ok {
+			cfg.Services[i].AuthBootstrap = b
+		} else if cfg.Services[i].AuthBootstrap != nil {
+			key := path + "\x00" + cfg.Services[i].ID + "\x00bootstrap"
+			if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+				log.Printf("[goprox] service %q of %s: invalid auth_bootstrap ignored", cfg.Services[i].ID, path)
+			}
+			cfg.Services[i].AuthBootstrap = nil
 		}
 		i++
 	}
@@ -610,6 +688,9 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 		}
 		if s.BWLimit > 0 {
 			m["bwlimit"] = s.BWLimit
+		}
+		if s.AuthBootstrap != nil {
+			m["auth_bootstrap"] = s.AuthBootstrap
 		}
 		m["websocket"] = s.WebSocket
 		m["order"] = s.Order
