@@ -1,9 +1,9 @@
-# 未发布（Unreleased）
+# GoProx v0.6.0 变更日志（2026-10-12）
 
 ## 新功能
 
 - **后端会话令牌握手（`auth_bootstrap`）**：为「本地优先」后端（如 DeepSeek Harness / dsh）补齐它自己的浏览器会话握手。这类后端首次访问返回 `401 dsh web authentication required`（会话令牌入口只在 loopback 地址上），局域网浏览器永远进不去。现在可在服务卡片配置 `auth_bootstrap`，网关把首次未认证的 HTML 页面请求改写成 `302 当前网关路径?token=<令牌>`，由后端下发会话 Cookie；令牌被拒时原样透传（不死循环），API/静态资源/已带令牌的请求不受影响。令牌来源支持 `static` / `file` / `log`（`log` 每次遇 401 重读日志尾部，后端重启换令牌可自动跟上）。机制通用（Jupyter / code-server 同为 `?token=` 握手），dsh 专属信息只落在配置里
-- **后端 Set-Cookie 重写**：代理响应中的后端 `Set-Cookie` 现在会按网关 origin/前缀重写——丢弃 `Domain`（后端常见 `127.0.0.1`/`localhost` 与网关不匹配）、把 `Path` 收到服务前缀下（避免多服务/多用户在同源上互相覆盖）、客户端走 HTTP 时清除 `Secure`（否则浏览器静默丢弃，dsh 的 `303 + Set-Cookie` 会话建立不起来）；无法满足 `__Host-` / `__Secure-` 不变式时剥掉前缀。畸形 Cookie 原样透传
+- **后端 Set-Cookie 重写**：代理响应中的后端 `Set-Cookie` 现在会按网关 origin/前缀重写——丢弃 `Domain`（后端常见 `127.0.0.1`/`localhost` 与网关不匹配）、把 `Path` 收到服务前缀下（仅限 `/proxy/` 规范访问；`default_service` 裸路径保留原 `Path`，否则浏览器不会再回传）、客户端走 HTTP 时清除 `Secure`（否则浏览器静默丢弃，dsh 的 `303 + Set-Cookie` 会话建立不起来）；无法满足 `__Host-` / `__Secure-` 不变式时剥掉前缀。畸形 Cookie 原样透传
 
 ## 修复
 
