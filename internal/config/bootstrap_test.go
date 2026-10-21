@@ -48,3 +48,48 @@ func TestSerializeServicesPreservesAuthBootstrap(t *testing.T) {
 		t.Fatalf("auth_bootstrap not serialized: %#v", out[0]["auth_bootstrap"])
 	}
 }
+
+// root_absolute is also written back by every config write; a card edit or
+// reorder must not silently drop it.
+func TestSerializeServicesPreservesRootAbsolute(t *testing.T) {
+	out := serializeServices([]ServiceConfig{{
+		ID: "hugo", Name: "Hugo", Host: "127.0.0.1", Port: 1313, Path: "/service",
+		RootAbsolute: true,
+	}})
+	if len(out) != 1 {
+		t.Fatalf("len = %d", len(out))
+	}
+	got, ok := out[0]["root_absolute"].(bool)
+	if !ok || !got {
+		t.Fatalf("root_absolute not serialized: %#v", out[0])
+	}
+}
+
+func TestUpdateServicePreservesRootAbsolute(t *testing.T) {
+	path := newTestConfig(t)
+	if _, err := AddService(path, ServiceConfig{
+		ID: "hugo", Name: "Hugo", Host: "127.0.0.1", Port: 1313, Path: "/service",
+		RootAbsolute: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newName := "Hugo docs"
+	if err := UpdateService(path, "hugo", ServiceUpdate{Name: &newName}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := ServiceByID(cfg.Services, "hugo")
+	if svc == nil {
+		t.Fatal("service missing after update")
+	}
+	if !svc.RootAbsolute {
+		t.Fatalf("root_absolute was dropped by UpdateService: %+v", svc)
+	}
+	if svc.Name != newName {
+		t.Fatalf("name = %q, want %q", svc.Name, newName)
+	}
+}

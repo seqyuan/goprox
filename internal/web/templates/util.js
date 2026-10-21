@@ -76,12 +76,40 @@
       .replace(/"/g, "&quot;");
   }
 
+  // jsonRequest performs a same-origin JSON fetch and normalizes error
+  // handling. A 401 means the gateway session is gone (expired, password
+  // reset, secret rotation): call onUnauthorized so the UI can redirect to
+  // the login page instead of surfacing a raw "Unauthorized" in a form.
+  // deps.fetch / deps.onUnauthorized are injectable for Node tests.
+  function jsonRequest(path, opts, deps) {
+    deps = deps || {};
+    var fetchFn = deps.fetch || (typeof fetch === "function" ? fetch : null);
+    if (!fetchFn) return Promise.reject(new Error("fetch is unavailable"));
+    var onUnauthorized = deps.onUnauthorized || function () {
+      if (typeof window !== "undefined" && window.location) {
+        window.location.replace("/login");
+      }
+    };
+    return fetchFn(path, Object.assign({ credentials: "same-origin" }, opts || {}))
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (res.status === 401) {
+            onUnauthorized();
+            throw new Error("登录状态已失效，请重新登录");
+          }
+          if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+          return data;
+        });
+      });
+  }
+
   return {
     slugifyName: slugifyName,
     nextServiceID: nextServiceID,
     autoPathFor: autoPathFor,
     mbToBytes: mbToBytes,
     bytesToMB: bytesToMB,
-    esc: esc
+    esc: esc,
+    jsonRequest: jsonRequest
   };
 });

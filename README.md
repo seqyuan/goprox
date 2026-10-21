@@ -224,6 +224,37 @@ services:
 每个服务的页面资源和 API 仍然各回各家。未配置 `default_service` 的用户行为不变
 （裸路径仍按 Referer → 最近访问路由 cookie 转发）。
 
+### 根绝对路径应用（root_absolute，可选）
+
+有些应用（Hugo、部分静态站点生成器）会在 HTML 中输出**根绝对路径**，例如
+`/docs/`、`/scss/main.css`。当它们被挂在 `/proxy/<用户>/<服务>/` 下时，这些链接会
+跳到网关根路径，默认被 `default_service` 接走或返回 404。
+
+给这类服务开启 `root_absolute`：
+
+```yaml
+- id: hugo
+  name: Hugo 预览
+  host: 127.0.0.1
+  port: 1313
+  path: /service
+  root_absolute: true
+```
+
+开启后，未被某个服务 `path` 认领的裸路径请求，如果 **Referer** 或 **route cookie**
+指向该服务，会优先转发回该服务，而不是交给 `default_service`。默认关闭，按服务生效；
+卡片编辑/拖动排序会保留该字段（当前需在用户 YAML 中填写，网页表单暂不显示）。
+
+限制：
+
+- 只覆盖从已加载页面发起的站内跳转；收藏夹直接访问 `/docs/`、
+  `Referrer-Policy: no-referrer`、外部站点直接链接仍可能落到 `default_service` 或 404。
+- 如果应用支持配置 `baseURL` / `basePath`，优先用应用自身配置，这是更完整的方案。
+- 同一用户有多个 `root_absolute` 服务时，route cookie 只能记住最近访问的一个；
+  多标签页场景建议优先依赖 Referer，或给应用配置正确的 baseURL。
+- 从裸路径页面点击应用内的 `/` 仍会回到 GoProx 仪表盘；如果应用必须拥有根路径
+  `/`，请使用独立域名/端口或应用自身的 baseURL。
+
 #### 卡片（服务）参数一览
 
 **仪表盘上的服务卡片**（点击卡片访问服务；✎ 编辑、× 删除、⋮⋮ 拖动排序）：
@@ -246,6 +277,7 @@ services:
 | `port` | int | ✅ | — | 后端端口（1–65535） |
 | `path` | string | — | 按 `id` 自动生成 | 前端访问路径，如 `/jupyter`；仅允许 `A-Za-z0-9._~-` 与 `/`，同用户内唯一 |
 | `backend_path` | string | — | 空 | 后端实际监听子路径/文件，如 `/app/index.html`（见下方 BackendPath 说明） |
+| `root_absolute` | bool | — | `false` | 可选：应用输出根绝对路径（如 `/docs/`、`/static/...`）时，按 Referer/路由 cookie 把裸路径请求优先交回该服务（见上方「根绝对路径应用」；仅 YAML 配置，卡片编辑会保留） |
 | `websocket` | bool | — | `true` | 是否允许 WebSocket 升级（Jupyter/RStudio 需开启） |
 | `bwlimit` | int | — | `0` | 该服务带宽上限（字节/秒），上行/下行各限 `bwlimit`，`0`/缺省 = 不限速 |
 | `description` | string | — | 空 | 说明文字（≤500 字符） |
@@ -273,6 +305,14 @@ auth:
   session_ttl: 86400
 ```
 
+> `session_ttl` 采用滑动过期：仪表盘页面、代理请求和 `/api/services` 请求都会在
+> 剩余有效期低于 TTL 的 25% 时重新签发 Cookie。标签页完全闲置超过 TTL 后仍需
+> 重新登录；此时 Dashboard 会跳转到登录页，并保留未提交的添加/编辑草稿。
+>
+> **多实例注意**：浏览器 Cookie 不区分端口。同一主机上的多个 goprox 实例会共用
+> `goprox_session`、`goprox_2fa*` 和 `goprox_route*` Cookie，互相覆盖会话/路由。
+> 请为不同实例使用不同主机名，或确保同一主机只运行一个实例。
+>
 > **安全说明**：默认不信任 `X-Forwarded-For` / `X-Forwarded-Proto`（直连客户端可伪造，
 > 会导致登录限流失效与 Secure Cookie 异常）。只有在网关部署于可信反向代理之后时，
 > 才设置 `trusted_proxy`（或用 `goprox serve --trusted-proxy 127.0.0.1/32`）。

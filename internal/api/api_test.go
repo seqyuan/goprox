@@ -12,7 +12,7 @@ import (
 	"github.com/seqyuan/goprox/internal/config"
 )
 
-func newTestHandler(t *testing.T) *Handler {
+func newTestHandler(t *testing.T, ttl ...int) *Handler {
 	t.Helper()
 	configDir := t.TempDir()
 	cfgPath := config.UserConfigPath(configDir, "alice")
@@ -25,7 +25,11 @@ func newTestHandler(t *testing.T) *Handler {
 	}
 	reg := config.NewUserRegistry(configDir)
 	reg.Reload()
-	return NewHandler(reg, "testsecret")
+	sessionTTL := 86400
+	if len(ttl) > 0 {
+		sessionTTL = ttl[0]
+	}
+	return NewHandler(reg, "testsecret", sessionTTL)
 }
 
 func apiPost(t *testing.T, h *Handler, url, body, origin string) *httptest.ResponseRecorder {
@@ -146,5 +150,123 @@ func TestUpdateServiceRejectsOversizedDescriptionWithoutName(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized description, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func apiGetWithToken(t *testing.T, h *Handler, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/services", nil)
+	if token != "" {
+		req.Header.Set("Cookie", auth.SessionCookieName+"="+token)
+	}
+	req.Host = "gw:30152"
+	rr := httptest.NewRecorder()
+	if !h.ServeHTTP(rr, req) {
+		t.Fatalf("ServeHTTP did not claim request %s", req.URL.Path)
+	}
+	return rr
+}
+
+func sessionCookieFromResponse(rr *httptest.ResponseRecorder) *http.Cookie {
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == auth.SessionCookieName {
+			return c
+		}
+	}
+	return nil
+}
+
+// An expired session must be rejected before any refresh is attempted.
+func TestAPIExpiredSessionReturns401WithoutRefresh(t *testing.T) {
+	h := newTestHandler(t)
+	rev := auth.SessionRev(strings.Repeat("1", 64))
+	token := auth.CreateSessionToken("alice", "testsecret", -1, rev)
+
+	rr := apiGetWithToken(t, h, token)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if c := sessionCookieFromResponse(rr); c != nil {
+		t.Fatalf("expired session must not be refreshed, got Set-Cookie %q", c.String())
+	}
+}
+
+// A session in the last 25% of its TTL is renewed by API activity, matching
+// the dashboard/proxy sliding-session policy.
+func TestAPIRefreshesSessionNearExpiry(t *testing.T) {
+	h := newTestHandler(t, 60)
+	rev := auth.SessionRev(strings.Repeat("1", 64))
+	token := auth.CreateSessionToken("alice", "testsecret", 10, rev)
+	_, oldExpiry, _, err := auth.SessionTokenParts(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := apiGetWithToken(t, h, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	cookie := sessionCookieFromResponse(rr)
+	if cookie == nil {
+		t.Fatalf("expected a refreshed session cookie, headers=%v", rr.Result().Header.Values("Set-Cookie"))
+	}
+	refreshed := auth.ValidateSessionToken(cookie.Value, "testsecret", rev)
+	if !refreshed.Valid || refreshed.UserID != "alice" {
+		t.Fatalf("refreshed token is invalid: %+v", refreshed)
+	}
+	if refreshed.ExpiresAt <= oldExpiry {
+		t.Fatalf("refreshed expiry %d is not later than old expiry %d", refreshed.ExpiresAt, oldExpiry)
+	}
+}
+
+// Outside the refresh window the API must not emit a new cookie on every call.
+func TestAPIDoesNotRefreshOutsideWindow(t *testing.T) {
+	h := newTestHandler(t, 60)
+	rev := auth.SessionRev(strings.Repeat("1", 64))
+	token := auth.CreateSessionToken("alice", "testsecret", 30, rev)
+
+	rr := apiGetWithToken(t, h, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if c := sessionCookieFromResponse(rr); c != nil {
+		t.Fatalf("session outside the refresh window must not be refreshed, got %q", c.String())
+	}
+}
+
+// A password change bumps the revision; the old token must stay invalid and
+// must not be rescued by the refresh path.
+func TestAPIStaleRevReturns401WithoutRefresh(t *testing.T) {
+	h := newTestHandler(t, 60)
+	token := auth.CreateSessionToken("alice", "testsecret", 10, "stale-revision")
+
+	rr := apiGetWithToken(t, h, token)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if c := sessionCookieFromResponse(rr); c != nil {
+		t.Fatalf("stale revision must not be refreshed, got %q", c.String())
+	}
+}
+
+// Cross-origin requests are rejected before session handling and therefore do
+// not refresh the session either.
+func TestAPICrossOriginDoesNotRefresh(t *testing.T) {
+	h := newTestHandler(t, 60)
+	rev := auth.SessionRev(strings.Repeat("1", 64))
+	token := auth.CreateSessionToken("alice", "testsecret", 10, rev)
+
+	req := httptest.NewRequest("POST", "/api/services", strings.NewReader(`{"name":"x","port":8080}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", auth.SessionCookieName+"="+token)
+	req.Header.Set("Origin", "http://evil.example")
+	req.Host = "gw:30152"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if c := sessionCookieFromResponse(rr); c != nil {
+		t.Fatalf("cross-origin request must not refresh the session, got %q", c.String())
 	}
 }

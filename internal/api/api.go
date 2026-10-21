@@ -16,13 +16,15 @@ import (
 type Handler struct {
 	Registry      *config.UserRegistry
 	SessionSecret string
+	SessionTTL    int
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(registry *config.UserRegistry, sessionSecret string) *Handler {
+func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int) *Handler {
 	return &Handler{
 		Registry:      registry,
 		SessionSecret: sessionSecret,
+		SessionTTL:    sessionTTL,
 	}
 }
 
@@ -47,10 +49,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	username := h.requireSession(w, r)
-	if username == "" {
+	session := h.requireSession(w, r)
+	if session.UserID == "" {
 		return true
 	}
+	// Keep API activity on the same sliding-session policy as dashboard page
+	// and proxy requests; otherwise a tab left open on the dashboard expires
+	// while normal page/proxy use renews.
+	h.refreshSession(w, r, session)
+	username := session.UserID
 
 	switch {
 	case path == "/api/services" && r.Method == "GET":
@@ -72,13 +79,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) string {
+func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) auth.SessionResult {
 	session := h.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
 		writeJSON(w, 401, map[string]string{"error": "Unauthorized"})
-		return ""
+		return auth.SessionResult{}
 	}
-	return session.UserID
+	return session
+}
+
+// refreshSession renews a valid session when it enters the last 25% of its
+// TTL, matching handleRoot/handleProxy. Expired tokens never reach this point
+// (requireSession rejects them), so an idle session still needs a re-login.
+func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request, session auth.SessionResult) {
+	if h.SessionTTL <= 0 || !auth.ShouldRefreshSession(session, h.SessionTTL) {
+		return
+	}
+	secure := auth.IsSecureRequest(r)
+	w.Header().Add("Set-Cookie", auth.SetSessionCookie(
+		h.SessionSecret,
+		h.SessionTTL,
+		session.UserID,
+		h.currentSessionRev(session.UserID),
+		secure,
+	))
 }
 
 // currentSessionRev returns the per-account session revision derived from the

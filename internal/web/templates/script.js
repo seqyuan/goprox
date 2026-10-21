@@ -40,10 +40,26 @@
     el.hidden = !msg;
   }
 
+  var authRedirecting = false;
+  function onAuthExpired() {
+    if (authRedirecting) return;
+    authRedirecting = true;
+    saveDraftOnAuthFailure();
+    window.location.replace("/login");
+  }
+
   function jsonFetch(path, opts) {
+    if (util.jsonRequest) {
+      return util.jsonRequest(path, opts, { onUnauthorized: onAuthExpired });
+    }
+    // Fallback path if util.js did not load (it is embedded ahead of us).
     return fetch(path, Object.assign({ credentials: "same-origin" }, opts || {}))
       .then(function(res) {
         return res.json().catch(function() { return {}; }).then(function(data) {
+          if (res.status === 401) {
+            onAuthExpired();
+            throw new Error("登录状态已失效，请重新登录");
+          }
           if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
           return data;
         });
@@ -412,17 +428,36 @@
     setBusy(form, false);
     updatePathPreview();
   }
+  function applyAddDraft(d) {
+    if (!d) return;
+    $("#add-name").value = d.name || "";
+    $("#add-description").value = d.description || "";
+    $("#add-host").value = d.host || "127.0.0.1";
+    $("#add-port").value = d.port || "";
+    $("#add-category").value = d.category || "";
+    $("#add-path").value = d.path || "";
+    $("#add-backend-path").value = d.backend_path || "";
+    $("#add-bwlimit").value = d.bwlimit || "";
+    $("#add-ws").checked = d.websocket !== false;
+    var adv = $("#add-advanced");
+    if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.websocket === false);
+    updatePathPreview();
+  }
+  function openAddModal(draft) {
+    closeAccount();
+    fillCategoryList();
+    resetAddForm();
+    applyAddDraft(draft);
+    modal.classList.add("open");
+    $("#add-name").focus();
+  }
   if (fab) {
     fab.addEventListener("click", function() {
-      closeAccount();
-      fillCategoryList();
-      resetAddForm();
-      modal.classList.add("open");
-      $("#add-name").focus();
+      openAddModal();
     });
   }
   var cancel = $("#add-cancel");
-  if (cancel) cancel.addEventListener("click", function() { modal.classList.remove("open"); resetAddForm(); });
+  if (cancel) cancel.addEventListener("click", function() { modal.classList.remove("open"); clearDraft(ADD_DRAFT_KEY); resetAddForm(); });
   if ($("#add-name")) $("#add-name").addEventListener("input", updatePathPreview);
   if ($("#add-path")) $("#add-path").addEventListener("input", updatePathPreview);
   if (form) {
@@ -455,6 +490,7 @@
         body: JSON.stringify(payload)
       }).then(function(data) {
         setBusy(form, false);
+        clearDraft(ADD_DRAFT_KEY);
         if (data.service) state.services.push(data.service);
         modal.classList.remove("open");
         resetAddForm();
@@ -500,7 +536,7 @@
   // lose precision through the MB display round-trip.
   var editBwOriginalBytes = 0;
   var editBwOriginalText = "";
-  if (editCancel) editCancel.addEventListener("click", function() { editModal.classList.remove("open"); });
+  if (editCancel) editCancel.addEventListener("click", function() { editModal.classList.remove("open"); clearDraft(EDIT_DRAFT_KEY); });
   if ($("#edit-path")) $("#edit-path").addEventListener("input", updateEditPathPreview);
   if (editForm) {
     editForm.addEventListener("submit", function(ev) {
@@ -534,6 +570,7 @@
         body: JSON.stringify(payload)
       }).then(function(data) {
         setBusy(editForm, false);
+        clearDraft(EDIT_DRAFT_KEY);
         var idx = state.services.findIndex(function(s) { return s.id === id; });
         if (idx >= 0 && data.service) state.services[idx] = data.service;
         editModal.classList.remove("open");
@@ -545,6 +582,92 @@
         setFormError("#edit-error", err.message);
       });
     });
+  }
+
+  // Session-expiry drafts: if an API call returns 401 while a form is open,
+  // stash its values in sessionStorage before redirecting to /login. The
+  // dashboard restores the draft after login in the same tab.
+  var ADD_DRAFT_KEY = "goprox.addDraft";
+  var EDIT_DRAFT_KEY = "goprox.editDraft";
+
+  function readDraft(key) {
+    try {
+      var raw = window.sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function writeDraft(key, value) {
+    try { window.sessionStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }
+  function clearDraft(key) {
+    try { window.sessionStorage.removeItem(key); } catch (e) {}
+  }
+
+  function addDraftValues() {
+    return {
+      name: $("#add-name").value,
+      description: $("#add-description").value,
+      host: $("#add-host").value,
+      port: $("#add-port").value,
+      category: $("#add-category").value,
+      path: $("#add-path").value,
+      backend_path: $("#add-backend-path").value,
+      bwlimit: $("#add-bwlimit").value,
+      websocket: $("#add-ws").checked
+    };
+  }
+  function editDraftValues() {
+    return {
+      id: $("#edit-id").value,
+      name: $("#edit-name").value,
+      description: $("#edit-description").value,
+      host: $("#edit-host").value,
+      port: $("#edit-port").value,
+      category: $("#edit-category").value,
+      path: $("#edit-path").value,
+      backend_path: $("#edit-backend-path").value,
+      bwlimit: $("#edit-bwlimit").value,
+      websocket: $("#edit-ws").checked
+    };
+  }
+  function saveDraftOnAuthFailure() {
+    if (modal && modal.classList.contains("open") && form) {
+      writeDraft(ADD_DRAFT_KEY, addDraftValues());
+    } else if (editModal && editModal.classList.contains("open") && editForm) {
+      writeDraft(EDIT_DRAFT_KEY, editDraftValues());
+    }
+  }
+  function applyEditDraft(d) {
+    if (!d) return;
+    $("#edit-name").value = d.name || "";
+    $("#edit-description").value = d.description || "";
+    $("#edit-host").value = d.host || "127.0.0.1";
+    $("#edit-port").value = d.port || "";
+    $("#edit-category").value = d.category || "";
+    $("#edit-path").value = d.path || "";
+    $("#edit-backend-path").value = d.backend_path || "";
+    $("#edit-bwlimit").value = d.bwlimit || "";
+    $("#edit-ws").checked = d.websocket !== false;
+    var adv = $("#edit-advanced");
+    if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.websocket === false);
+    updateEditPathPreview();
+  }
+  function restoreDraft() {
+    var addDraft = readDraft(ADD_DRAFT_KEY);
+    if (addDraft) {
+      clearDraft(ADD_DRAFT_KEY);
+      openAddModal(addDraft);
+      return;
+    }
+    var editDraft = readDraft(EDIT_DRAFT_KEY);
+    if (!editDraft) return;
+    clearDraft(EDIT_DRAFT_KEY);
+    var svc = state.services.find(function(s) { return s.id === editDraft.id; });
+    if (!svc) return;
+    openEditModal(svc);
+    applyEditDraft(editDraft);
   }
 
   var accountBtn = $("#account-toggle");
@@ -613,6 +736,7 @@
     });
   }
 
+  restoreDraft();
   jsonFetch("/api/services").then(function(data) {
     state.services = data.services || state.services;
     state.writable = !!data.writable;

@@ -26,9 +26,14 @@ type ServiceConfig struct {
 	Path        string `yaml:"path" json:"path"`                                     // Frontend path (e.g., /jupyter)
 	BackendPath string `yaml:"backend_path,omitempty" json:"backend_path,omitempty"` // Backend path prefix (e.g., /app/index.html)
 	WebSocket   bool   `yaml:"websocket" json:"websocket"`
-	Category    string `yaml:"category,omitempty" json:"category,omitempty"`
-	Order       int    `yaml:"order,omitempty" json:"order,omitempty"`
-	BWLimit     int64  `yaml:"bwlimit,omitempty" json:"bwlimit,omitempty"` // Per-service bandwidth cap in bytes/sec; 0 = unlimited
+	// RootAbsolute routes bare (non-/proxy/) requests back to this service when
+	// the Referer or route cookie points at it. Opt-in for apps that emit
+	// root-absolute URLs (/docs/, /static/...); default_service remains the
+	// fallback for requests without this context.
+	RootAbsolute bool   `yaml:"root_absolute,omitempty" json:"root_absolute,omitempty"`
+	Category     string `yaml:"category,omitempty" json:"category,omitempty"`
+	Order        int    `yaml:"order,omitempty" json:"order,omitempty"`
+	BWLimit      int64  `yaml:"bwlimit,omitempty" json:"bwlimit,omitempty"` // Per-service bandwidth cap in bytes/sec; 0 = unlimited
 	// AuthBootstrap, when set, lets the gateway complete the backend's own
 	// browser session handshake (see AuthBootstrapConfig).
 	AuthBootstrap *AuthBootstrapConfig `yaml:"auth_bootstrap,omitempty" json:"auth_bootstrap,omitempty"`
@@ -691,6 +696,9 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 		}
 		if s.AuthBootstrap != nil {
 			m["auth_bootstrap"] = s.AuthBootstrap
+		}
+		if s.RootAbsolute {
+			m["root_absolute"] = true
 		}
 		m["websocket"] = s.WebSocket
 		m["order"] = s.Order

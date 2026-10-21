@@ -73,3 +73,16 @@ services:
       token_regex: '\?token=([A-Za-z0-9_.-]+)'     # 从日志里抽取令牌
       # mode: file   -> token_file: /run/dsh/token
       # mode: static -> token_value: "手工粘贴的令牌"
+
+  # ⑤ 输出根绝对路径的应用（如 Hugo /docs/、/static/...）：开启 root_absolute
+  #    后，带本站 Referer 或 route cookie 的裸路径请求会优先回到该服务，
+  #    而不是交给 default_service。默认关闭，按服务生效。
+  - id: hugo
+    name: "Hugo 预览"
+    host: "127.0.0.1"
+    port: 1313
+    path: "/hugo"
+    websocket: true
+    category: "文档"
+    order: 4
+    root_absolute: true

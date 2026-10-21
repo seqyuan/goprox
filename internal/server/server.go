@@ -65,7 +65,7 @@ func New(state *config.StateConfig, configDir string) *Server {
 		siteTitle:     siteTitle,
 		loginLimiter:  rate.NewLimiter(10, 15*time.Minute),
 		totpLimiter:   rate.NewLimiter(10, 15*time.Minute),
-		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret),
+		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret, state.Auth.SessionTTL),
 		// A shared transport lets connection pools be reused across requests
 		// instead of creating a fresh one per proxy request. SafeDialContext
 		// re-validates backend addresses (and pins the validated IP) at dial
@@ -251,6 +251,14 @@ func (s *Server) Handler() http.Handler {
 			session := s.sessionFromCookies(r.Header.Get("Cookie"))
 			if session.Valid && session.UserID != "" && r.Method == "GET" {
 				if s.redirectBareService(w, r, session.UserID) {
+					return
+				}
+			}
+			// Opt-in root-absolute routing: an app that emits /docs/... can
+			// claim its own bare paths via the current page's Referer (or the
+			// route cookie on reload), before default_service page routing.
+			if session.Valid && session.UserID != "" {
+				if s.handleRootAbsoluteService(w, r, session) {
 					return
 				}
 			}
@@ -775,6 +783,16 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 
 	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
 	forwardCtx.SSO = s.state.SSO
+	// As-is forwarding (default_service, Referer, route cookie) keeps the
+	// browser path unchanged, so relative links must resolve against that
+	// path, not the canonical /proxy/... prefix. Otherwise a page such as
+	// /vault/project-db that uses ../_app/... would request
+	// /proxy/<user>/_app/... and miss the service. Canonical /proxy/...
+	// requests never reach forwardAsIs; proxyRequest computes their base
+	// from the service prefix.
+	if !strings.HasPrefix(r.URL.Path, "/proxy/") {
+		forwardCtx.Base = proxy.BaseForPath("", r.URL.Path)
+	}
 	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
 		w.Header().Add("Set-Cookie", c)
 	}
@@ -968,13 +986,14 @@ func barePathIsPage(p string) bool {
 	return true
 }
 
-func (s *Server) redirectBareService(w http.ResponseWriter, r *http.Request, username string) bool {
+// bestBareService returns the user's service whose frontend path is the
+// longest prefix of path, or nil when path does not belong to a service path.
+func (s *Server) bestBareService(username, path string) *config.ServiceConfig {
 	user := s.registry.GetUser(username)
 	if user == nil {
-		return false
+		return nil
 	}
 
-	path := r.URL.Path
 	var bestSvc *config.ServiceConfig
 	bestLen := -1
 	for i := range user.Config.Services {
@@ -986,17 +1005,93 @@ func (s *Server) redirectBareService(w http.ResponseWriter, r *http.Request, use
 			}
 		}
 	}
+	return bestSvc
+}
+
+func (s *Server) redirectBareService(w http.ResponseWriter, r *http.Request, username string) bool {
+	bestSvc := s.bestBareService(username, r.URL.Path)
 	if bestSvc == nil {
 		return false
 	}
 
-	rest := path[len(bestSvc.Path):]
+	rest := r.URL.Path[len(bestSvc.Path):]
 	query := ""
 	if r.URL.RawQuery != "" {
 		query = "?" + r.URL.RawQuery
 	}
 	http.Redirect(w, r, "/proxy/"+username+bestSvc.Path+rest+query, http.StatusFound)
 	return true
+}
+
+// handleRootAbsoluteService routes a bare request back to a service that opted
+// into root_absolute. Such apps emit root-absolute URLs (/docs/, /static/...)
+// while being hosted under /proxy/<user>/<service>/; the current page
+// (Referer) is the most precise owner, with the route cookie as a fallback for
+// reloads/bookmarks after a previous visit.
+//
+// It runs before default_service page routing so an explicit opt-in can
+// override default_service. Requests that match a service path are left alone;
+// redirectBareService/default routing keeps their existing semantics.
+func (s *Server) handleRootAbsoluteService(w http.ResponseWriter, r *http.Request, session auth.SessionResult) bool {
+	if s.bestBareService(session.UserID, r.URL.Path) != nil {
+		return false
+	}
+
+	match, canonicalReferer := s.matchRootAbsoluteReferer(r, session.UserID)
+	if match == nil && !canonicalReferer {
+		// No canonical /proxy/... page identified by Referer: a reload or
+		// bookmark can still use the most recent route cookie.
+		route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
+		if route != "" {
+			match = s.matchRouteForUser(route, session.UserID)
+		}
+	}
+	if match == nil || !match.Service.RootAbsolute {
+		return false
+	}
+
+	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		secure := auth.IsSecureRequest(r)
+		w.Header().Add("Set-Cookie", s.issueSessionCookie(session.UserID, secure))
+	}
+	s.forwardAsIs(w, r, match)
+	return true
+}
+
+// matchRootAbsoluteReferer resolves the current page's service from the
+// Referer. The bool reports whether the Referer is a canonical /proxy/...
+// path (whether or not it points at a root_absolute service): a canonical
+// referer is authoritative, so a stale route cookie must not override it.
+func (s *Server) matchRootAbsoluteReferer(r *http.Request, username string) (*config.ServiceMatch, bool) {
+	referer := r.Header.Get("Referer")
+	if referer == "" {
+		return nil, false
+	}
+	u, err := url.Parse(referer)
+	if err != nil || u.Path == "" {
+		return nil, false
+	}
+	if !strings.HasPrefix(u.Path, "/proxy/") {
+		// Bare/external referer: no canonical page identity, so the caller
+		// may fall back to the route cookie.
+		return nil, false
+	}
+	match := s.registry.FindServiceForUser(u.Path, username)
+	if match == nil {
+		// Canonical proxy path with no matching service (deleted/unknown):
+		// authoritative, but not ours.
+		return nil, true
+	}
+	if match.Username != username {
+		// Another user's canonical page: authoritative, but not ours.
+		return nil, true
+	}
+	if match.Service.RootAbsolute {
+		return match, true
+	}
+	// Canonical page of a non-flagged service: do not let a stale route
+	// cookie for a different service steal its bare paths.
+	return nil, true
 }
 
 // ScanLoop periodically reloads the user registry.

@@ -81,3 +81,62 @@ test("esc escapes HTML attribute and text contexts", () => {
     "&lt;a href=&quot;x&quot;&gt;&amp;"
   );
 });
+
+function mockResponse(status, body) {
+  return {
+    status: status,
+    ok: status >= 200 && status < 300,
+    json: function () { return Promise.resolve(body); }
+  };
+}
+
+test("jsonRequest invokes onUnauthorized on 401", async () => {
+  let redirected = 0;
+  const fetch = async () => mockResponse(401, { error: "Unauthorized" });
+  await assert.rejects(
+    util.jsonRequest("/api/services", {}, {
+      fetch: fetch,
+      onUnauthorized: function () { redirected++; }
+    }),
+    /登录状态已失效/
+  );
+  assert.strictEqual(redirected, 1);
+});
+
+test("jsonRequest keeps business errors inline", async () => {
+  let redirected = 0;
+  const fetch = async () => mockResponse(400, { error: "name is required" });
+  await assert.rejects(
+    util.jsonRequest("/api/services", {}, {
+      fetch: fetch,
+      onUnauthorized: function () { redirected++; }
+    }),
+    /name is required/
+  );
+  assert.strictEqual(redirected, 0);
+});
+
+test("jsonRequest returns parsed data", async () => {
+  const fetch = async () => mockResponse(200, { services: [1, 2] });
+  const data = await util.jsonRequest("/api/services", {}, {
+    fetch: fetch,
+    onUnauthorized: function () {}
+  });
+  assert.deepStrictEqual(data, { services: [1, 2] });
+});
+
+test("jsonRequest still redirects when a 401 body is not JSON", async () => {
+  let redirected = 0;
+  const fetch = async () => ({
+    status: 401,
+    ok: false,
+    json: function () { return Promise.reject(new Error("not json")); }
+  });
+  await assert.rejects(
+    util.jsonRequest("/api/services", {}, {
+      fetch: fetch,
+      onUnauthorized: function () { redirected++; }
+    })
+  );
+  assert.strictEqual(redirected, 1);
+});

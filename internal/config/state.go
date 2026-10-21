@@ -144,26 +144,12 @@ func LoadState(path string) (*StateConfig, error) {
 		}
 		s.Auth.SessionSecret = hex.EncodeToString(secret)
 
-		// Persist it
-		raw := make(map[string]interface{})
-		raw["server"] = map[string]interface{}{
-			"host":          s.Server.Host,
-			"port":          s.Server.Port,
-			"trusted_proxy": s.Server.TrustedProxy,
-			"title":         s.Server.Title,
-			"tls_cert":      s.Server.TLSCert,
-			"tls_key":       s.Server.TLSKey,
+		// Persist it. If this fails, silently continuing would generate a new
+		// secret on every restart and invalidate every session, so surface the
+		// error and refuse to start with an ephemeral secret.
+		if err := writeStateFile(path, &s); err != nil {
+			return nil, fmt.Errorf("persist generated session_secret to %s: %w", path, err)
 		}
-		raw["auth"] = map[string]interface{}{
-			"session_secret": s.Auth.SessionSecret,
-			"session_ttl":    s.Auth.SessionTTL,
-		}
-		raw["sso"] = map[string]interface{}{
-			"user_header": s.SSO.UserHeader,
-			"hmac_secret": s.SSO.HMACSecret,
-		}
-		out, _ := yaml.Marshal(raw)
-		os.WriteFile(path, out, 0600)
 		fmt.Printf("[goprox] persisted generated session_secret to %s\n", path)
 	}
 
