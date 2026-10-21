@@ -297,7 +297,8 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 - vhost 模式不设置 route cookie；后端 Cookie 保持原 Path；后端设置的、与 GoProx 同名的
   Cookie（session / 2fa / route）会被丢弃，防止 Cookie tossing。
 - 主 Host 的 `/hugo/...` 仍按原路径模式 302 到 `/proxy/<用户>/hugo/...`；两种入口并存。
-- `hostnames` 当前仅支持用户 YAML 配置；卡片编辑/拖动排序会保留该字段。
+- `hostnames` 可在仪表盘「编辑 → 高级」、用户 YAML 或 `/api/services` 配置；
+  第一个域名作为卡片上的「独立域名」入口，顺序会被保留。
 
 部署要求：
 
@@ -305,6 +306,8 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 - 推荐由 Caddy/nginx 终止 TLS 并反代到 GoProx，设置
   `server.trusted_proxy` 为反代地址，`public_scheme: https`；
 - 也可以让 GoProx 直接使用一张 `*.gw.example.com` 通配证书（现有 `tls_cert`/`tls_key`）。
+- 也可用 `goprox serve --public-host ... --public-scheme ... --cookie-domain ...` 写入 state.yaml。
+- 配置检查：`goprox check -d <config-dir>` 会校验 Host 冲突、`cookie_domain` 覆盖，并列出 Host → user/service。
 - 启用 vhost 后请通过 `public_host` 访问主网关；旧的 host-only 会话需要重新登录一次，
   浏览器才会拿到带父域 `Domain` 的新 Cookie。
 - 本地测试建议使用 `.test` 域名 + hosts/DNS（例如 `gw.example.test`、
@@ -356,8 +359,8 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 | `port` | int | ✅ | — | 后端端口（1–65535） |
 | `path` | string | — | 按 `id` 自动生成 | 前端访问路径，如 `/jupyter`；仅允许 `A-Za-z0-9._~-` 与 `/`，同用户内唯一 |
 | `backend_path` | string | — | 空 | 后端实际监听子路径/文件，如 `/app/index.html`（见下方 BackendPath 说明） |
-| `root_absolute` | bool | — | `false` | 可选：应用输出根绝对路径（如 `/docs/`、`/static/...`）时，按 Referer/路由 cookie 把裸路径请求优先交回该服务（见上方「根绝对路径应用」；仅 YAML 配置，卡片编辑会保留） |
-| `hostnames` | list | — | 空 | 虚拟主机名列表（如 `hugo.gw.example.com`）；需配合 `state.yaml` 的 `public_host` / `cookie_domain`，见上方「独立域名」；仅 YAML 配置，卡片编辑会保留 |
+| `root_absolute` | bool | — | `false` | 可选：应用输出根绝对路径（如 `/docs/`、`/static/...`）时，按 Referer/路由 cookie 把裸路径请求优先交回该服务（见上方「根绝对路径应用」；网页高级区/API/YAML 可配置） |
+| `hostnames` | list | — | 空 | 虚拟主机名列表（如 `hugo.gw.example.com`）；需配合 `state.yaml` 的 `public_host` / `cookie_domain`，见上方「独立域名」；网页高级区/API/YAML 可配置 |
 | `websocket` | bool | — | `true` | 是否允许 WebSocket 升级（Jupyter/RStudio 需开启） |
 | `bwlimit` | int | — | `0` | 该服务带宽上限（字节/秒），上行/下行各限 `bwlimit`，`0`/缺省 = 不限速 |
 | `description` | string | — | 空 | 说明文字（≤500 字符） |

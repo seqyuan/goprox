@@ -176,7 +176,7 @@ func LoadState(path string) (*StateConfig, error) {
 	return &s, nil
 }
 
-func PersistServerConfig(path, host string, port int, trustedProxy, title, tlsCert, tlsKey string) error {
+func PersistServerConfig(path, host string, port int, trustedProxy, title, tlsCert, tlsKey, publicHost, publicScheme, cookieDomain string) error {
 	// Load existing or create default
 	var raw map[string]interface{}
 	data, err := os.ReadFile(path)
@@ -208,6 +208,15 @@ func PersistServerConfig(path, host string, port int, trustedProxy, title, tlsCe
 	}
 	if tlsKey != "" {
 		server["tls_key"] = tlsKey
+	}
+	if publicHost != "" {
+		server["public_host"] = publicHost
+	}
+	if publicScheme != "" {
+		server["public_scheme"] = publicScheme
+	}
+	if cookieDomain != "" {
+		server["cookie_domain"] = cookieDomain
 	}
 	raw["server"] = server
 

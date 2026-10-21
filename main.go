@@ -35,6 +35,7 @@ const usage = `Usage:
   goprox 2fa-reset <name>       Disable a user's two-factor authentication
   goprox sso [options]          Show or configure lightweight SSO (identity
                                 header forwarded to backends; see below)
+  goprox check [options]        Validate state/users/virtual hosts, don't start
 
 Options:
   -d, --config-dir <dir>  Config directory (default: <program dir>/config)
@@ -49,6 +50,9 @@ Options:
                           show a one-time warning you must accept)
   --title <text>          Site title shown in the top-left corner of the
                           dashboard and login page (default: GoProx)
+  --public-host <host[:port]>  Public gateway authority for vhost login redirects
+  --public-scheme <http|https> Public scheme for vhost login redirects
+  --cookie-domain <.domain>    Parent cookie domain for vhost sessions
   -V, --version           Show version
   -h, --help              Show this help
 
@@ -152,6 +156,8 @@ func main() {
 		runUserDel(opts, username)
 	case "2fa-reset":
 		runTOTPReset(opts, username)
+	case "check":
+		runConfigCheck(opts)
 	default:
 		if cmd == "start" || cmd == "stop" || cmd == "status" {
 			fmt.Fprintf(os.Stderr, "error: goprox %s 已移除；goprox 现为前台运行（goprox serve），停止用 Ctrl+C，后台可用 tmux/nohup\n", cmd)
@@ -172,6 +178,9 @@ type options struct {
 	tlsCert       string
 	tlsKey        string
 	tlsSelfSigned bool
+	publicHost    string
+	publicScheme  string
+	cookieDomain  string
 }
 
 func parseOptions(args []string) (options, error) {
@@ -238,6 +247,24 @@ func parseOptions(args []string) (options, error) {
 				return opts, fmt.Errorf("option %s requires a value", a)
 			}
 			opts.title = v
+		case "--public-host":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.publicHost = v
+		case "--public-scheme":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.publicScheme = v
+		case "--cookie-domain":
+			v, ok := next()
+			if !ok {
+				return opts, fmt.Errorf("option %s requires a value", a)
+			}
+			opts.cookieDomain = v
 		default:
 			return opts, fmt.Errorf("unknown option: %s", a)
 		}
@@ -441,6 +468,41 @@ func maskSecret(s string) string {
 
 // ---- server ----
 
+// runConfigCheck validates state, users, host index and virtual-host
+// requirements without binding a port or starting the server.
+func runConfigCheck(opts options) {
+	configDir := opts.configDir
+	if _, err := os.Stat(configDir); err != nil {
+		log.Fatalf("config dir %s: %v", configDir, err)
+	}
+	statePath := config.StatePath(configDir)
+	if _, err := os.Stat(statePath); err != nil {
+		log.Fatalf("state.yaml not found in %s; run goprox serve once first", configDir)
+	}
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		log.Fatalf("load state: %v", err)
+	}
+	srv := server.New(state, configDir)
+	if err := srv.ValidateVHosts(); err != nil {
+		log.Fatalf("config check failed: %v", err)
+	}
+
+	fmt.Printf("[goprox] config: %s\n", configDir)
+	fmt.Printf("[goprox] public_host: %q\n", state.Server.PublicHost)
+	fmt.Printf("[goprox] public_scheme: %q\n", state.Server.PublicScheme)
+	fmt.Printf("[goprox] cookie_domain: %q\n", state.Server.CookieDomain)
+	hosts := srv.HostEntries()
+	fmt.Printf("[goprox] users: %d, services: %d, virtual hosts: %d\n", srv.UserCount(), srv.ServiceCount(), len(hosts))
+	if len(hosts) == 0 {
+		fmt.Println("[goprox] no virtual hosts configured")
+	}
+	for _, h := range hosts {
+		fmt.Printf("  %s -> %s/%s\n", h.Host, h.Username, h.ServiceID)
+	}
+	fmt.Println("[goprox] config check OK")
+}
+
 func runServer(opts options) {
 	configDir := opts.configDir
 
@@ -484,6 +546,27 @@ func runServer(opts options) {
 		state.Server.TLSCert = cert
 		state.Server.TLSKey = key
 	}
+	if opts.publicHost != "" {
+		v, err := config.NormalizePublicHost(opts.publicHost)
+		if err != nil {
+			log.Fatalf("invalid --public-host: %v", err)
+		}
+		state.Server.PublicHost = v
+	}
+	if opts.publicScheme != "" {
+		v, err := config.NormalizePublicScheme(opts.publicScheme)
+		if err != nil {
+			log.Fatalf("invalid --public-scheme: %v", err)
+		}
+		state.Server.PublicScheme = v
+	}
+	if opts.cookieDomain != "" {
+		v, err := config.NormalizeCookieDomain(opts.cookieDomain)
+		if err != nil {
+			log.Fatalf("invalid --cookie-domain: %v", err)
+		}
+		state.Server.CookieDomain = v
+	}
 	tlsEnabled := state.Server.TLSCert != "" && state.Server.TLSKey != ""
 	if tlsEnabled {
 		if _, err := os.Stat(state.Server.TLSCert); err != nil {
@@ -523,7 +606,8 @@ func runServer(opts options) {
 	// state.yaml with a port we never bound, corrupting the running gateway's
 	// recorded port for `status` and future default starts.
 	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy, opts.title,
-		state.Server.TLSCert, state.Server.TLSKey)
+		state.Server.TLSCert, state.Server.TLSKey,
+		state.Server.PublicHost, state.Server.PublicScheme, state.Server.CookieDomain)
 
 	// Start config scanner
 	stopScan := make(chan struct{})

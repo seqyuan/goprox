@@ -32,6 +32,12 @@ auth:
   session_ttl: 86400
 ```
 
+也可以启动时写入：
+
+```bash
+./goprox serve --public-host gw.example.com --public-scheme https --cookie-domain .example.com
+```
+
 ### 2.2 服务配置
 
 编辑 `config/users/<用户名>.yaml`：
@@ -48,7 +54,11 @@ services:
     websocket: true
 ```
 
-重启网关。`goprox` 会：
+重启网关。也可以直接在仪表盘「编辑 → 高级」中填写 `hostnames` / `root_absolute`；
+`/api/services` 同样支持这两个字段。`hostnames` 的第一个域名会作为卡片上的
+「独立域名」入口（顺序会被保留）。
+
+`goprox` 会：
 
 - 校验 Host 语法、跨用户冲突、`public_host`/`hostnames` 是否被 `cookie_domain` 覆盖；
 - 校验 `public_host` 不能同时是某个服务的 Host；
@@ -70,7 +80,28 @@ https://hugo.gw.example.com/docs/
 > 启用 vhost 后，旧的 host-only 会话需要重新登录一次；登录时会自动清除旧的
 > host-only 同名 Cookie。
 
-### 2.4 本地测试
+### 2.4 配置预检
+
+不启动服务，直接检查 state/users/虚拟主机：
+
+```bash
+./goprox check -d /path/to/config
+```
+
+输出示例：
+
+```text
+[goprox] public_host: "gw.example.com"
+[goprox] cookie_domain: ".example.com"
+[goprox] users: 2, services: 5, virtual hosts: 3
+  hugo.gw.example.com -> alice/hugo
+  ...
+[goprox] config check OK
+```
+
+冲突或 `cookie_domain` 覆盖错误会让命令以非零状态退出。
+
+### 2.5 本地测试
 
 建议使用 `.test` 域名 + hosts/DNS，不要使用 `*.localhost`：Chrome 会拒绝
 `Domain=.localhost`，父域会话 Cookie 无法建立。

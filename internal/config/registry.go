@@ -27,6 +27,13 @@ type HostTarget struct {
 	Service  *ServiceConfig
 }
 
+// HostEntry is a read-only summary used by `goprox check`.
+type HostEntry struct {
+	Host      string
+	Username  string
+	ServiceID string
+}
+
 // NewUserRegistry creates a new registry scanning configDir/users/*.yaml.
 func NewUserRegistry(configDir string) *UserRegistry {
 	return &UserRegistry{
@@ -147,6 +154,50 @@ func (r *UserRegistry) FindByHost(host string) *HostTarget {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.hosts[host]
+}
+
+// HostEntries returns the routable host index sorted by hostname.
+func (r *UserRegistry) HostEntries() []HostEntry {
+	r.EnsureFresh()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]HostEntry, 0, len(r.hosts))
+	for host, target := range r.hosts {
+		out = append(out, HostEntry{
+			Host:      host,
+			Username:  target.Username,
+			ServiceID: target.Service.ID,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
+	return out
+}
+
+// HostOwners returns the "username/serviceID" owners of host, excluding one
+// service (used when validating an update). It scans all users, including
+// hosts currently disabled by a conflict, so a bad edit cannot hide behind
+// the routable index.
+func (r *UserRegistry) HostOwners(host, excludeUser, excludeServiceID string) []string {
+	r.EnsureFresh()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var owners []string
+	for username, record := range r.users {
+		for i := range record.Config.Services {
+			svc := &record.Config.Services[i]
+			if username == excludeUser && svc.ID == excludeServiceID {
+				continue
+			}
+			for _, h := range svc.Hostnames {
+				if h == host {
+					owners = append(owners, username+"/"+svc.ID)
+					break
+				}
+			}
+		}
+	}
+	sort.Strings(owners)
+	return owners
 }
 
 // HasHosts reports whether any virtual hostname is currently routable.

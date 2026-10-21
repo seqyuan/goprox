@@ -84,3 +84,33 @@ func TestIsValidHeaderName(t *testing.T) {
 		}
 	}
 }
+
+func TestPersistServerConfigVHostFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFile)
+	if err := EnsureState(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := PersistServerConfig(path, "127.0.0.1", 30152, "", "", "", "",
+		"GW.Example.Test:30152", "HTTPS", ".Example.Test"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Server.PublicHost != "gw.example.test:30152" || st.Server.PublicScheme != "https" || st.Server.CookieDomain != ".example.test" {
+		t.Fatalf("vhost fields = %+v", st.Server)
+	}
+
+	// Empty values preserve the existing fields.
+	if err := PersistServerConfig(path, "127.0.0.1", 30152, "", "", "", "", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	st, err = LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Server.PublicHost != "gw.example.test:30152" || st.Server.CookieDomain != ".example.test" {
+		t.Fatalf("vhost fields were lost: %+v", st.Server)
+	}
+}

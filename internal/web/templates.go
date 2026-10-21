@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net"
 	"strings"
 	"unicode/utf8"
 
@@ -92,16 +93,18 @@ func LoginPage(siteTitle, errorMsg, next string) string {
 	return PageShell(siteTitle, "登录", body)
 }
 
-func DashboardPage(siteTitle, username string, services []config.ServiceConfig, writable, twoFAEnabled bool) string {
+func DashboardPage(siteTitle, username string, services []config.ServiceConfig, writable, twoFAEnabled bool, publicScheme, publicHost string) string {
 	grouped := config.GroupServicesByCategory(services)
 	bootJSON := marshalScriptJSON(dashboardBoot{
 		Username:        username,
 		Services:        services,
 		Writable:        writable,
 		DefaultCategory: config.DefaultCategory,
+		PublicScheme:    publicScheme,
+		PublicHost:      publicHost,
 	})
 
-	categoriesHTML := renderCategories(grouped, username, writable)
+	categoriesHTML := renderCategories(grouped, username, writable, publicScheme, publicHost)
 	if categoriesHTML == "" {
 		if writable {
 			categoriesHTML = `<p class="empty">暂无服务。点击右上角 + 添加，点卡片即可访问。</p>`
@@ -188,6 +191,9 @@ type dashboardBoot struct {
 	// DefaultCategory mirrors config.DefaultCategory so the client groups
 	// uncategorized services under the same label the server renders.
 	DefaultCategory string `json:"defaultCategory"`
+	// PublicScheme/PublicHost are used to build "独立域名" links on cards.
+	PublicScheme string `json:"publicScheme,omitempty"`
+	PublicHost   string `json:"publicHost,omitempty"`
 }
 
 // marshalScriptJSON serializes v as JSON that is safe to inline inside a
@@ -209,7 +215,7 @@ func marshalScriptJSON(v interface{}) string {
 	return s
 }
 
-func renderCategories(groups []config.GroupedServices, username string, writable bool) string {
+func renderCategories(groups []config.GroupedServices, username string, writable bool, publicScheme, publicHost string) string {
 	if len(groups) == 0 {
 		return ""
 	}
@@ -217,7 +223,7 @@ func renderCategories(groups []config.GroupedServices, username string, writable
 	for _, g := range groups {
 		cards := make([]string, 0, len(g.Services))
 		for i, s := range g.Services {
-			cards = append(cards, renderCard(s, username, writable, i, len(g.Services)))
+			cards = append(cards, renderCard(s, username, writable, i, len(g.Services), publicScheme, publicHost))
 		}
 		blocks = append(blocks, fmt.Sprintf(`
     <section class="category-block" data-category="%s">
@@ -239,7 +245,21 @@ func renderCategoryNav(groups []config.GroupedServices) string {
 	return `<div class="category-nav">` + strings.Join(chips, "") + `</div>`
 }
 
-func renderCard(s config.ServiceConfig, username string, writable bool, index, total int) string {
+func cardVHostURL(s config.ServiceConfig, publicScheme, publicHost string) string {
+	if len(s.Hostnames) == 0 || publicHost == "" {
+		return ""
+	}
+	if publicScheme == "" {
+		publicScheme = "https"
+	}
+	port := ""
+	if _, p, err := net.SplitHostPort(publicHost); err == nil {
+		port = ":" + p
+	}
+	return publicScheme + "://" + s.Hostnames[0] + port + "/"
+}
+
+func renderCard(s config.ServiceConfig, username string, writable bool, index, total int, publicScheme, publicHost string) string {
 	proxyURL := fmt.Sprintf("/proxy/%s%s/", username, s.Path)
 	desc := ""
 	if s.Description != "" {
@@ -274,6 +294,10 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
 	}
 
 	faviconHTML := renderFavicon(username, s.Path, firstChar)
+	vhostLink := ""
+	if vhost := cardVHostURL(s, publicScheme, publicHost); vhost != "" {
+		vhostLink = fmt.Sprintf(`<a class="card-vhost" href="%s" target="_blank" rel="noopener noreferrer">独立域名 ↗</a>`, esc(vhost))
+	}
 
 	return fmt.Sprintf(`
   <div class="service-card" data-id="%s" data-category="%s">
@@ -285,6 +309,7 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
         %s
       </div>
     </a>
+    %s
   </div>`,
 		esc(s.ID),
 		esc(ternary(s.Category != "", s.Category, config.DefaultCategory)),
@@ -293,6 +318,7 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
 		faviconHTML,
 		esc(s.Name),
 		desc,
+		vhostLink,
 	)
 }
 

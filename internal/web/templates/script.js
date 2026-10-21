@@ -154,12 +154,14 @@
     var cp = (s.name || '?').codePointAt(0);
     var fl = cp ? String.fromCodePoint(cp).toUpperCase() : '?';
     var favIcon = '<img src="' + esc(thumbFavs[0]) + '" data-favs="' + esc(thumbFavs.join(' ')) + '" data-fav-idx="0" onerror="' + FAVICON_ONERR + '" alt=""><span class="card-letter" data-letter="' + esc(fl) + '">' + esc(fl) + '</span>';
+    var vhost = vhostURLFor(s);
+    var vhostLink = vhost ? '<a class="card-vhost" href="' + esc(vhost) + '" target="_blank" rel="noopener noreferrer">独立域名 ↗</a>' : '';
     return '<div class="service-card" data-id="' + esc(s.id) + '" data-category="' + esc(s.category || DEFAULT_CATEGORY) + '">' +
       toolbar +
       '<a class="card-link" href="' + esc(proxyUrl) + '" target="_blank" rel="noopener noreferrer">' +
       '<div class="card-icon">' + favIcon + '</div>' +
       '<div class="card-body"><h2>' + esc(s.name) + '</h2>' +
-      desc + '</div></a></div>';
+      desc + '</div></a>' + vhostLink + '</div>';
   }
 
   // Preview-only path resolver: delegates to the shared helper with the
@@ -414,6 +416,29 @@
     return ($(id).value || "").trim();
   }
 
+  // Build the optional independent-domain URL for a card.
+  function vhostURLFor(s) {
+    if (!s.hostnames || !s.hostnames.length || !boot.publicHost) return "";
+    var host = boot.publicHost;
+    var port = "";
+    var idx = host.lastIndexOf(":");
+    if (idx > -1) port = host.slice(idx);
+    return (boot.publicScheme || "https") + "://" + s.hostnames[0] + port + "/";
+  }
+
+  // Parse hostnames from a textarea: one per line or comma-separated.
+  function parseHostnames(raw) {
+    var seen = {};
+    return String(raw || "")
+      .split(/[\s,]+/)
+      .map(function(s) { return s.trim().toLowerCase(); })
+      .filter(function(s) {
+        if (!s || seen[s]) return false;
+        seen[s] = true;
+        return true;
+      });
+  }
+
   var modal = $("#add-modal");
   var form = $("#add-form");
   var fab = $("#fab-add");
@@ -422,6 +447,8 @@
     form.reset();
     $("#add-host").value = "127.0.0.1";
     $("#add-ws").checked = true;
+    $("#add-root-absolute").checked = false;
+    $("#add-hostnames").value = "";
     var adv = $("#add-advanced");
     if (adv) adv.open = false;
     setFormError("#add-error", "");
@@ -439,8 +466,10 @@
     $("#add-backend-path").value = d.backend_path || "";
     $("#add-bwlimit").value = d.bwlimit || "";
     $("#add-ws").checked = d.websocket !== false;
+    $("#add-root-absolute").checked = !!d.root_absolute;
+    $("#add-hostnames").value = d.hostnames || "";
     var adv = $("#add-advanced");
-    if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.websocket === false);
+    if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.root_absolute || d.hostnames || d.websocket === false);
     updatePathPreview();
   }
   function openAddModal(draft) {
@@ -473,6 +502,7 @@
       if (!setBusy(form, true)) return;
       var path = ($("#add-path").value || "").trim();
       var backendPath = ($("#add-backend-path").value || "").trim();
+      var hostnames = parseHostnames($("#add-hostnames").value);
       var payload = {
         name: $("#add-name").value.trim(),
         description: ($("#add-description").value || "").trim() || undefined,
@@ -482,7 +512,9 @@
         backend_path: backendPath || undefined,
         bwlimit: bw > 0 ? bw : undefined,
         category: categoryValue("#add-category") || undefined,
-        websocket: $("#add-ws").checked
+        websocket: $("#add-ws").checked,
+        root_absolute: $("#add-root-absolute").checked,
+        hostnames: hostnames.length ? hostnames : undefined
       };
       jsonFetch("/api/services", {
         method: "POST",
@@ -520,8 +552,10 @@
     $("#edit-bwlimit").value = editBwOriginalText;
     $("#edit-category").value = svc.category || "";
     $("#edit-ws").checked = !!svc.websocket;
+    $("#edit-root-absolute").checked = !!svc.root_absolute;
+    $("#edit-hostnames").value = (svc.hostnames || []).join("\n");
     var adv = $("#edit-advanced");
-    if (adv) adv.open = !!(svc.backend_path || svc.bwlimit || !svc.websocket);
+    if (adv) adv.open = !!(svc.backend_path || svc.bwlimit || svc.root_absolute || (svc.hostnames && svc.hostnames.length) || !svc.websocket);
     setFormError("#edit-error", "");
     setBusy(editForm, false);
     updateEditPathPreview();
@@ -563,6 +597,9 @@
       payload.bwlimit = bw;
       payload.category = categoryValue("#edit-category");
       payload.websocket = $("#edit-ws").checked;
+      payload.root_absolute = $("#edit-root-absolute").checked;
+      // Always send the array so emptying the textarea clears hostnames.
+      payload.hostnames = parseHostnames($("#edit-hostnames").value);
 
       jsonFetch("/api/services/" + encodeURIComponent(id), {
         method: "PUT",
@@ -615,7 +652,9 @@
       path: $("#add-path").value,
       backend_path: $("#add-backend-path").value,
       bwlimit: $("#add-bwlimit").value,
-      websocket: $("#add-ws").checked
+      websocket: $("#add-ws").checked,
+      root_absolute: $("#add-root-absolute").checked,
+      hostnames: $("#add-hostnames").value
     };
   }
   function editDraftValues() {
@@ -629,7 +668,9 @@
       path: $("#edit-path").value,
       backend_path: $("#edit-backend-path").value,
       bwlimit: $("#edit-bwlimit").value,
-      websocket: $("#edit-ws").checked
+      websocket: $("#edit-ws").checked,
+      root_absolute: $("#edit-root-absolute").checked,
+      hostnames: $("#edit-hostnames").value
     };
   }
   function saveDraftOnAuthFailure() {
@@ -650,8 +691,10 @@
     $("#edit-backend-path").value = d.backend_path || "";
     $("#edit-bwlimit").value = d.bwlimit || "";
     $("#edit-ws").checked = d.websocket !== false;
+    $("#edit-root-absolute").checked = !!d.root_absolute;
+    $("#edit-hostnames").value = d.hostnames || "";
     var adv = $("#edit-advanced");
-    if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.websocket === false);
+    if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.root_absolute || d.hostnames || d.websocket === false);
     updateEditPathPreview();
   }
   function restoreDraft() {

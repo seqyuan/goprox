@@ -62,7 +62,7 @@ func TestDashboardCardLetterUsesFirstRune(t *testing.T) {
 		{ID: "s1", Name: "阿凡达", Host: "127.0.0.1", Port: 1, Path: "/s1"},
 		{ID: "s2", Name: "Jupyter", Host: "127.0.0.1", Port: 1, Path: "/s2"},
 	}
-	page := DashboardPage("GoProx", "alice", svcs, true, false)
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "", "")
 
 	if !utf8.ValidString(page) {
 		t.Fatal("dashboard page contains invalid UTF-8")
@@ -82,7 +82,7 @@ func TestDashboardCardLetterUsesFirstRune(t *testing.T) {
 // browser tab title, and must be HTML-escaped against injection.
 func TestDashboardPageCustomTitle(t *testing.T) {
 	svcs := []config.ServiceConfig{{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 1, Path: "/app"}}
-	page := DashboardPage("🧬 生信分析平台", "alice", svcs, true, false)
+	page := DashboardPage("🧬 生信分析平台", "alice", svcs, true, false, "", "")
 
 	if !strings.Contains(page, "<h1>🧬 生信分析平台</h1>") {
 		t.Fatal("custom title missing from dashboard header")
@@ -92,7 +92,7 @@ func TestDashboardPageCustomTitle(t *testing.T) {
 	}
 
 	// Hostile titles must be escaped, not injected into the DOM.
-	page = DashboardPage(`x</h1><script>alert(1)</script>`, "alice", svcs, true, false)
+	page = DashboardPage(`x</h1><script>alert(1)</script>`, "alice", svcs, true, false, "", "")
 	if strings.Contains(page, "</h1><script>") {
 		t.Fatal("title not HTML-escaped")
 	}
@@ -106,7 +106,7 @@ func TestDashboardPageHidesEndpointAndRate(t *testing.T) {
 		{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 18080, Path: "/app", BWLimit: 10 << 20},
 		{ID: "s2", Name: "Tunnel", Host: "10.1.2.3", Port: 9, Path: "/tunnel", WebSocket: true},
 	}
-	page := DashboardPage("GoProx", "alice", svcs, true, false)
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "", "")
 
 	dashStart := strings.Index(page, `<div id="dashboard">`)
 	dashEnd := strings.Index(page, `</main>`)
@@ -157,7 +157,7 @@ func TestDashboardUXChrome(t *testing.T) {
 		{ID: "rstudio", Name: "RStudio", Host: "127.0.0.1", Port: 8787, Path: "/rstudio", Category: "分析", Order: 1, WebSocket: true},
 		{ID: "grafana", Name: "Grafana", Host: "127.0.0.1", Port: 3000, Path: "/grafana", Category: "监控", Order: 2},
 	}
-	page := DashboardPage("GoProx", "alice", svcs, true, false)
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "", "")
 
 	for _, gone := range []string{"点击卡片访问服务", "拖动卡片", "两步验证未开启", "字节/秒", "10485760 = 10", `step="0.1"`} {
 		if strings.Contains(page, gone) {
@@ -212,7 +212,7 @@ func TestDashboardUXChrome(t *testing.T) {
 		t.Fatal("last card in a category should disable 下移")
 	}
 
-	readonly := DashboardPage("GoProx", "alice", svcs, false, true)
+	readonly := DashboardPage("GoProx", "alice", svcs, false, true, "", "")
 	if !strings.Contains(readonly, "goprox passwd") {
 		t.Fatal("read-only hint missing")
 	}
@@ -232,7 +232,7 @@ func TestDashboardUXChrome(t *testing.T) {
 		t.Fatal("2FA status should live in the account menu, not the hint")
 	}
 
-	empty := DashboardPage("GoProx", "alice", nil, true, false)
+	empty := DashboardPage("GoProx", "alice", nil, true, false, "", "")
 	if !strings.Contains(empty, "点击右上角 + 添加") {
 		t.Fatal("empty writable dashboard should explain how to add a service")
 	}
@@ -244,7 +244,7 @@ func TestDashboardUXChrome(t *testing.T) {
 // Wide windows get more card columns. The cap is the content width; the grid
 // itself stays auto-fill, so the saved order does not depend on column count.
 func TestDashboardGridWidensOnLargeScreens(t *testing.T) {
-	page := DashboardPage("GoProx", "alice", nil, true, false)
+	page := DashboardPage("GoProx", "alice", nil, true, false, "", "")
 	if !strings.Contains(page, "--max-grid: 1680px") {
 		t.Fatal("dashboard content width is not wide enough for 5 columns")
 	}
@@ -302,7 +302,7 @@ func TestDashboardCardFaviconCandidates(t *testing.T) {
 	svcs := []config.ServiceConfig{
 		{ID: "s1", Name: "App", Host: "127.0.0.1", Port: 1, Path: "/app"},
 	}
-	page := DashboardPage("GoProx", "alice", svcs, true, false)
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "", "")
 
 	for _, want := range []string{
 		"/proxy/alice/app/favicon.ico",
@@ -315,5 +315,39 @@ func TestDashboardCardFaviconCandidates(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Fatalf("dashboard card missing %q\n%s", want, page)
 		}
+	}
+}
+
+func TestDashboardVHostLink(t *testing.T) {
+	svcs := []config.ServiceConfig{{
+		ID: "hugo", Name: "Hugo", Host: "127.0.0.1", Port: 1313, Path: "/hugo",
+		Hostnames: []string{"hugo.gw.example.test"},
+	}}
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "https", "gw.example.test:30152")
+	htmlPart := page
+	if i := strings.Index(htmlPart, "<script>window.__GOPROX_BOOT__"); i >= 0 {
+		htmlPart = htmlPart[:i]
+	}
+	for _, want := range []string{
+		`class="card-vhost"`,
+		`href="https://hugo.gw.example.test:30152/"`,
+	} {
+		if !strings.Contains(htmlPart, want) {
+			t.Fatalf("vhost link missing %q", want)
+		}
+	}
+}
+
+func TestDashboardNoVHostLinkWithoutHostnames(t *testing.T) {
+	svcs := []config.ServiceConfig{{
+		ID: "app", Name: "App", Host: "127.0.0.1", Port: 8080, Path: "/app",
+	}}
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "https", "gw.example.test")
+	htmlPart := page
+	if i := strings.Index(htmlPart, "<script>window.__GOPROX_BOOT__"); i >= 0 {
+		htmlPart = htmlPart[:i]
+	}
+	if strings.Contains(htmlPart, `class="card-vhost"`) {
+		t.Fatal("card-vhost must not be rendered without hostnames")
 	}
 }

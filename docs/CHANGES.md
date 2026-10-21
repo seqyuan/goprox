@@ -1,3 +1,22 @@
+# GoProx 未发布
+
+## 用户友好度
+
+- **仪表盘/API 支持虚拟主机配置**：添加/编辑弹窗的「高级」区新增 `root_absolute` 与 `hostnames`；`POST/PUT /api/services` 支持这两个字段。保存时校验 Host 语法、同用户重复、跨用户冲突、`public_host` 冲突与 `cookie_domain` 覆盖，错误直接显示在表单里
+- **`goprox check` 预检命令**：不启动服务即可检查 state/users、跨用户 Host 冲突、`cookie_domain` 覆盖，并列出 Host → user/service
+- **CLI 写入 vhost 状态**：`goprox serve --public-host ... --public-scheme ... --cookie-domain ...`，持久化到 state.yaml
+- **卡片「独立域名」入口**：配置了 `hostnames` 的服务在卡片上显示 vhost 链接，便于发现独立域名入口
+- **配置指南**：更新 README 与 `docs/vhost.md`，补充仪表盘配置、`goprox check`、CLI 参数与常见错误
+
+## 测试
+
+- 新增 API 单测：hostnames/root_absolute 新增/更新/清除、非法 Host、跨用户冲突
+- 新增 config 单测：Host 同用户校验、更新/清除、`PersistServerConfig` vhost 字段
+- 新增 web 单测：卡片 vhost 链接与无 hostnames 时不渲染
+- 浏览器 smoke：通过仪表盘创建 vhost 服务，卡片链接跳转到 Hugo 文档页并保持登录
+
+---
+
 # GoProx v0.8.0 变更日志（2026-10-21）
 
 ## 新功能

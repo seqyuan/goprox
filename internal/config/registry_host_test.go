@@ -124,3 +124,20 @@ func TestRegistryHostLookupKeepsUserConfigSeparate(t *testing.T) {
 		t.Fatalf("unexpected target: %s", got)
 	}
 }
+
+func TestRegistryHostOwners(t *testing.T) {
+	dir := t.TempDir()
+	writeHostUser(t, dir, "alice", "shared.example.test")
+	writeHostUser(t, dir, "bob", "shared.example.test")
+	r := NewUserRegistry(dir)
+	r.Reload()
+
+	owners := r.HostOwners("shared.example.test", "alice", "svc")
+	if !reflect.DeepEqual(owners, []string{"bob/svc"}) {
+		t.Fatalf("owners = %#v", owners)
+	}
+	all := r.HostOwners("shared.example.test", "", "")
+	if !reflect.DeepEqual(all, []string{"alice/svc", "bob/svc"}) {
+		t.Fatalf("all owners = %#v", all)
+	}
+}

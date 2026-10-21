@@ -486,6 +486,12 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 		}
 		svc.Order = maxOrder + 1
 
+		hostnames, err := ValidateHostnamesForUser(cfg.Services, "", svc.Hostnames)
+		if err != nil {
+			return err
+		}
+		svc.Hostnames = hostnames
+
 		cfg.Services = append(cfg.Services, svc)
 
 		raw, _ := loadRawConfig(configPath)
@@ -557,15 +563,40 @@ func RemoveService(configPath, id string) error {
 
 // ServiceUpdate holds optional fields for updating a service.
 type ServiceUpdate struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Host        *string `json:"host,omitempty"`
-	Port        *int    `json:"port,omitempty"`
-	Path        *string `json:"path,omitempty"`
-	BackendPath *string `json:"backend_path,omitempty"`
-	WebSocket   *bool   `json:"websocket,omitempty"`
-	Category    *string `json:"category,omitempty"`
-	BWLimit     *int64  `json:"bwlimit,omitempty"`
+	Name         *string   `json:"name,omitempty"`
+	Description  *string   `json:"description,omitempty"`
+	Host         *string   `json:"host,omitempty"`
+	Port         *int      `json:"port,omitempty"`
+	Path         *string   `json:"path,omitempty"`
+	BackendPath  *string   `json:"backend_path,omitempty"`
+	WebSocket    *bool     `json:"websocket,omitempty"`
+	Category     *string   `json:"category,omitempty"`
+	BWLimit      *int64    `json:"bwlimit,omitempty"`
+	RootAbsolute *bool     `json:"root_absolute,omitempty"`
+	Hostnames    *[]string `json:"hostnames,omitempty"`
+}
+
+// ValidateHostnamesForUser normalizes hostnames and rejects invalid entries or
+// collisions with another service in the same user config. selfID is the
+// service being updated; pass "" when adding a new service.
+func ValidateHostnamesForUser(services []ServiceConfig, selfID string, hostnames []string) ([]string, error) {
+	normalized, dropped := NormalizeHostnames(hostnames)
+	if len(dropped) > 0 {
+		return nil, fmt.Errorf("invalid hostnames: %v", dropped)
+	}
+	for _, other := range services {
+		if other.ID == selfID {
+			continue
+		}
+		for _, existing := range other.Hostnames {
+			for _, host := range normalized {
+				if existing == host {
+					return nil, fmt.Errorf("hostname %q is already used by service %q", host, other.ID)
+				}
+			}
+		}
+	}
+	return normalized, nil
 }
 
 // UpdateService updates an existing service with optional fields.
@@ -624,6 +655,16 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 						return fmt.Errorf("bwlimit must be >= 0 (bytes/sec), got %d", *update.BWLimit)
 					}
 					cfg.Services[i].BWLimit = *update.BWLimit
+				}
+				if update.RootAbsolute != nil {
+					cfg.Services[i].RootAbsolute = *update.RootAbsolute
+				}
+				if update.Hostnames != nil {
+					hostnames, err := ValidateHostnamesForUser(cfg.Services, id, *update.Hostnames)
+					if err != nil {
+						return err
+					}
+					cfg.Services[i].Hostnames = hostnames
 				}
 				// Validate the final host:port pair (both may have changed in
 				// this same update) against routing back into the gateway.

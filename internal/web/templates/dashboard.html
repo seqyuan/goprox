@@ -249,6 +249,15 @@
   .card-body { flex: 1; min-width: 0; }
   .card-body h2 { font-size: 16.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 4px; }
   .card-desc { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+  .card-vhost {
+    display: inline-flex;
+    align-items: center;
+    margin: -8px 18px 14px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .card-vhost:hover { text-decoration: underline; }
   .empty { text-align: center; color: var(--text-muted); padding: 3.5rem 1rem; }
 
   /* ── Modal sheet (glass materializes over the dimmed page) ── */
@@ -297,7 +306,8 @@
     color: var(--text-muted);
   }
   .modal input[type="text"],
-  .modal input[type="number"] {
+  .modal input[type="number"],
+  .modal textarea {
     width: 100%%;
     padding: 10px 14px;
     border: 1px solid var(--border);
@@ -308,12 +318,15 @@
     font-family: var(--font);
     transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .modal input:focus {
+  .modal textarea { resize: vertical; min-height: 58px; line-height: 1.45; }
+  .modal input:focus,
+  .modal textarea:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
   }
-  .dark .modal input:focus { box-shadow: 0 0 0 3px rgba(41,151,255,0.25); }
+  .dark .modal input:focus,
+  .dark .modal textarea:focus { box-shadow: 0 0 0 3px rgba(41,151,255,0.25); }
   .modal .checkbox-row {
     display: flex;
     align-items: center;
@@ -438,6 +451,14 @@
       <label for="add-backend-path">后端路径</label>
       <input id="add-backend-path" name="backend_path" type="text" placeholder="留空则转发到根路径，例如 /app/index.html">
       <label class="checkbox-row">
+        <input id="add-root-absolute" name="root_absolute" type="checkbox">
+        <span>根绝对路径兼容（root_absolute）</span>
+      </label>
+      <p class="field-help">应用输出 /docs/ 等根绝对路径且不能改 baseURL 时开启；能配置独立域名时优先独立域名。</p>
+      <label for="add-hostnames">独立域名（虚拟主机）</label>
+      <textarea id="add-hostnames" name="hostnames" rows="2" placeholder="每行一个，例如 hugo.gw.example.com"></textarea>
+      <p class="field-help">需先在 state.yaml 配置 public_host / public_scheme / cookie_domain；多个域名每行一个，第一个作为卡片入口。</p>
+      <label class="checkbox-row">
         <input id="add-ws" name="websocket" type="checkbox" checked>
         <span>WebSocket 代理</span>
       </label>
@@ -473,6 +494,14 @@
       <p class="path-preview" id="edit-path-preview"></p>
       <label for="edit-backend-path">后端路径</label>
       <input id="edit-backend-path" name="backend_path" type="text" placeholder="留空则转发到根路径，例如 /app/index.html">
+      <label class="checkbox-row">
+        <input id="edit-root-absolute" name="root_absolute" type="checkbox">
+        <span>根绝对路径兼容（root_absolute）</span>
+      </label>
+      <p class="field-help">应用输出 /docs/ 等根绝对路径且不能改 baseURL 时开启；能配置独立域名时优先独立域名。</p>
+      <label for="edit-hostnames">独立域名（虚拟主机）</label>
+      <textarea id="edit-hostnames" name="hostnames" rows="2" placeholder="每行一个，例如 hugo.gw.example.com"></textarea>
+      <p class="field-help">需先在 state.yaml 配置 public_host / public_scheme / cookie_domain；多个域名每行一个，第一个作为卡片入口。</p>
       <label class="checkbox-row">
         <input id="edit-ws" name="websocket" type="checkbox">
         <span>WebSocket 代理</span>

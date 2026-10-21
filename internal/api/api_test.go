@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,7 +31,39 @@ func newTestHandler(t *testing.T, ttl ...int) *Handler {
 	if len(ttl) > 0 {
 		sessionTTL = ttl[0]
 	}
-	return NewHandler(reg, "testsecret", sessionTTL, "")
+	return NewHandler(reg, "testsecret", sessionTTL, "", "")
+}
+
+func newVHostTestHandler(t *testing.T) (*Handler, string) {
+	t.Helper()
+	configDir := t.TempDir()
+	cfgPath := config.UserConfigPath(configDir, "alice")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "auth:\n  password_hash: \"" + strings.Repeat("1", 64) + "\"\nservices: []\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := config.NewUserRegistry(configDir)
+	reg.Reload()
+	return NewHandler(reg, "testsecret", 86400, ".example.test", "gw.example.test"), configDir
+}
+
+func apiPut(t *testing.T, h *Handler, url, body, origin string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("PUT", url, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false))
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	req.Host = "gw:30152"
+	rr := httptest.NewRecorder()
+	if !h.ServeHTTP(rr, req) {
+		t.Fatalf("ServeHTTP did not claim request %s", url)
+	}
+	return rr
 }
 
 func apiPost(t *testing.T, h *Handler, url, body, origin string) *httptest.ResponseRecorder {
@@ -268,5 +302,139 @@ func TestAPICrossOriginDoesNotRefresh(t *testing.T) {
 	}
 	if c := sessionCookieFromResponse(rr); c != nil {
 		t.Fatalf("cross-origin request must not refresh the session, got %q", c.String())
+	}
+}
+
+func TestAddServicePersistsRootAbsoluteAndHostnames(t *testing.T) {
+	h, configDir := newVHostTestHandler(t)
+	rr := apiPost(t, h, "/api/services",
+		`{"name":"Hugo","port":1313,"root_absolute":true,"hostnames":["Hugo.Example.Test."]}`,
+		"http://gw:30152")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Service config.ServiceConfig `json:"service"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Service.RootAbsolute || !reflect.DeepEqual(resp.Service.Hostnames, []string{"hugo.example.test"}) {
+		t.Fatalf("response service = %+v", resp.Service)
+	}
+
+	cfg, err := config.LoadUserConfig(config.UserConfigPath(configDir, "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := config.ServiceByID(cfg.Services, resp.Service.ID)
+	if svc == nil || !svc.RootAbsolute || !reflect.DeepEqual(svc.Hostnames, []string{"hugo.example.test"}) {
+		t.Fatalf("persisted service = %+v", svc)
+	}
+}
+
+func TestAddServiceRejectsBadHostnames(t *testing.T) {
+	h, _ := newVHostTestHandler(t)
+	cases := []string{
+		`{"name":"x","port":8080,"hostnames":["bad"]}`,
+		`{"name":"x","port":8080,"hostnames":["x.other.test"]}`,
+		`{"name":"x","port":8080,"hostnames":["gw.example.test"]}`,
+	}
+	for _, body := range cases {
+		rr := apiPost(t, h, "/api/services", body, "http://gw:30152")
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400 (%s)", body, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestAddServiceRejectsCrossUserHostname(t *testing.T) {
+	h, configDir := newVHostTestHandler(t)
+	bobPath := config.UserConfigPath(configDir, "bob")
+	if err := os.MkdirAll(filepath.Dir(bobPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	bobCfg := "auth:\n  password_hash: \"" + strings.Repeat("1", 64) + "\"\n" +
+		"services:\n  - id: bobsvc\n    name: Bob\n    host: 127.0.0.1\n    port: 1314\n    path: /bob\n    hostnames:\n      - shared.example.test\n"
+	if err := os.WriteFile(bobPath, []byte(bobCfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.Registry.Reload()
+
+	rr := apiPost(t, h, "/api/services",
+		`{"name":"Mine","port":1315,"hostnames":["shared.example.test"]}`,
+		"http://gw:30152")
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "bob/bobsvc") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateServiceSetsAndClearsVHostFields(t *testing.T) {
+	h, where := newVHostTestHandler(t)
+	rr := apiPost(t, h, "/api/services", `{"name":"Hugo","port":1313}`, "http://gw:30152")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add failed: %d %s", rr.Code, rr.Body.String())
+	}
+	var addResp struct {
+		Service config.ServiceConfig `json:"service"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &addResp); err != nil {
+		t.Fatal(err)
+	}
+	id := addResp.Service.ID
+
+	rr = apiPut(t, h, "/api/services/"+id,
+		`{"root_absolute":true,"hostnames":["hugo.example.test"]}`,
+		"http://gw:30152")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update failed: %d %s", rr.Code, rr.Body.String())
+	}
+	cfg, err := config.LoadUserConfig(config.UserConfigPath(where, "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := config.ServiceByID(cfg.Services, id)
+	if svc == nil || !svc.RootAbsolute || !reflect.DeepEqual(svc.Hostnames, []string{"hugo.example.test"}) {
+		t.Fatalf("after update: %+v", svc)
+	}
+
+	rr = apiPut(t, h, "/api/services/"+id, `{"root_absolute":false,"hostnames":[]}`, "http://gw:30152")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear failed: %d %s", rr.Code, rr.Body.String())
+	}
+	cfg, _ = config.LoadUserConfig(config.UserConfigPath(where, "alice"))
+	svc = config.ServiceByID(cfg.Services, id)
+	if svc == nil || svc.RootAbsolute || len(svc.Hostnames) != 0 {
+		t.Fatalf("after clear: %+v", svc)
+	}
+}
+
+func TestUpdateServiceRejectsCrossUserHostname(t *testing.T) {
+	h, configDir := newVHostTestHandler(t)
+	bobPath := config.UserConfigPath(configDir, "bob")
+	if err := os.MkdirAll(filepath.Dir(bobPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	bobCfg := "auth:\n  password_hash: \"" + strings.Repeat("1", 64) + "\"\n" +
+		"services:\n  - id: bobsvc\n    name: Bob\n    host: 127.0.0.1\n    port: 1314\n    path: /bob\n    hostnames:\n      - shared.example.test\n"
+	if err := os.WriteFile(bobPath, []byte(bobCfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.Registry.Reload()
+
+	rr := apiPost(t, h, "/api/services", `{"name":"Mine","port":1315}`, "http://gw:30152")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add failed: %d %s", rr.Code, rr.Body.String())
+	}
+	var addResp struct {
+		Service config.ServiceConfig `json:"service"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &addResp); err != nil {
+		t.Fatal(err)
+	}
+	rr = apiPut(t, h, "/api/services/"+addResp.Service.ID,
+		`{"hostnames":["shared.example.test"]}`, "http://gw:30152")
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "bob/bobsvc") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
 }

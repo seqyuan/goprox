@@ -18,17 +18,51 @@ type Handler struct {
 	SessionSecret string
 	SessionTTL    int
 	CookieDomain  string
+	PublicHost    string
 }
 
-// NewHandler creates a new API handler. cookieDomain is used when refreshing
-// the session cookie in virtual-host mode (empty keeps it host-only).
-func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int, cookieDomain string) *Handler {
+// NewHandler creates a new API handler. cookieDomain/publicHost are used for
+// vhost session refresh and for validating hostnames saved through the API.
+func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int, cookieDomain, publicHost string) *Handler {
 	return &Handler{
 		Registry:      registry,
 		SessionSecret: sessionSecret,
 		SessionTTL:    sessionTTL,
 		CookieDomain:  cookieDomain,
+		PublicHost:    publicHost,
 	}
+}
+
+// validateHostnames normalizes hostnames and rejects invalid values, the
+// gateway's own public host, hosts outside cookie_domain, and hosts already
+// claimed by another user/service.
+func (h *Handler) validateHostnames(username, serviceID string, hostnames []string) ([]string, error) {
+	normalized, dropped := config.NormalizeHostnames(hostnames)
+	if len(dropped) > 0 {
+		return nil, fmt.Errorf("invalid hostnames: %v", dropped)
+	}
+	if len(normalized) == 0 {
+		return normalized, nil
+	}
+	if h.PublicHost == "" {
+		return nil, fmt.Errorf("server.public_host is not configured; set it in state.yaml before assigning hostnames")
+	}
+	if h.CookieDomain == "" {
+		return nil, fmt.Errorf("server.cookie_domain is not configured; set it in state.yaml before assigning hostnames")
+	}
+	publicHost := config.HostFromHostPort(h.PublicHost)
+	for _, host := range normalized {
+		if host == publicHost {
+			return nil, fmt.Errorf("hostname %q is the gateway public host", host)
+		}
+		if !config.HostWithinCookieDomain(host, h.CookieDomain) {
+			return nil, fmt.Errorf("hostname %q is not covered by cookie_domain %q", host, h.CookieDomain)
+		}
+		if owners := h.Registry.HostOwners(host, username, serviceID); len(owners) > 0 {
+			return nil, fmt.Errorf("hostname %q is already used by %s", host, strings.Join(owners, ", "))
+		}
+	}
+	return normalized, nil
 }
 
 // ServeHTTP implements http.Handler. Returns false if the request is not an API route.
@@ -194,16 +228,24 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		ws = *body.WebSocket
 	}
 
+	hostnames, err := h.validateHostnames(username, "", body.Hostnames)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+
 	svc := config.ServiceConfig{
-		ID:          config.SlugifyName(name),
-		Name:        name,
-		Description: body.Description,
-		Host:        body.Host,
-		Port:        body.Port,
-		BackendPath: body.BackendPath,
-		WebSocket:   ws,
-		Category:    body.Category,
-		BWLimit:     body.BWLimit,
+		ID:           config.SlugifyName(name),
+		Name:         name,
+		Description:  body.Description,
+		Host:         body.Host,
+		Port:         body.Port,
+		BackendPath:  body.BackendPath,
+		WebSocket:    ws,
+		Category:     body.Category,
+		BWLimit:      body.BWLimit,
+		RootAbsolute: body.RootAbsolute,
+		Hostnames:    hostnames,
 	}
 	if body.Path != "" {
 		svc.Path = config.NormalizePath(body.Path)
@@ -316,16 +358,28 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 
+	var hostnames *[]string
+	if body.Hostnames != nil {
+		normalized, err := h.validateHostnames(username, id, *body.Hostnames)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		hostnames = &normalized
+	}
+
 	update := config.ServiceUpdate{
-		Name:        body.Name,
-		Description: body.Description,
-		Host:        body.Host,
-		Port:        body.Port,
-		Path:        body.Path,
-		BackendPath: body.BackendPath,
-		WebSocket:   body.WebSocket,
-		Category:    body.Category,
-		BWLimit:     body.BWLimit,
+		Name:         body.Name,
+		Description:  body.Description,
+		Host:         body.Host,
+		Port:         body.Port,
+		Path:         body.Path,
+		BackendPath:  body.BackendPath,
+		WebSocket:    body.WebSocket,
+		Category:     body.Category,
+		BWLimit:      body.BWLimit,
+		RootAbsolute: body.RootAbsolute,
+		Hostnames:    hostnames,
 	}
 
 	if err := config.UpdateService(configPath, id, update); err != nil {
@@ -350,15 +404,17 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 // Request body types
 
 type addServiceBody struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Host        string `json:"host,omitempty"`
-	Port        int    `json:"port"`
-	Path        string `json:"path,omitempty"`
-	BackendPath string `json:"backend_path,omitempty"`
-	WebSocket   *bool  `json:"websocket,omitempty"`
-	Category    string `json:"category,omitempty"`
-	BWLimit     int64  `json:"bwlimit,omitempty"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Host         string   `json:"host,omitempty"`
+	Port         int      `json:"port"`
+	Path         string   `json:"path,omitempty"`
+	BackendPath  string   `json:"backend_path,omitempty"`
+	WebSocket    *bool    `json:"websocket,omitempty"`
+	Category     string   `json:"category,omitempty"`
+	BWLimit      int64    `json:"bwlimit,omitempty"`
+	RootAbsolute bool     `json:"root_absolute,omitempty"`
+	Hostnames    []string `json:"hostnames,omitempty"`
 }
 
 type layoutBody struct {
@@ -372,15 +428,17 @@ type layoutItemBody struct {
 }
 
 type updateBody struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Host        *string `json:"host,omitempty"`
-	Port        *int    `json:"port,omitempty"`
-	Path        *string `json:"path,omitempty"`
-	BackendPath *string `json:"backend_path,omitempty"`
-	WebSocket   *bool   `json:"websocket,omitempty"`
-	Category    *string `json:"category,omitempty"`
-	BWLimit     *int64  `json:"bwlimit,omitempty"`
+	Name         *string   `json:"name,omitempty"`
+	Description  *string   `json:"description,omitempty"`
+	Host         *string   `json:"host,omitempty"`
+	Port         *int      `json:"port,omitempty"`
+	Path         *string   `json:"path,omitempty"`
+	BackendPath  *string   `json:"backend_path,omitempty"`
+	WebSocket    *bool     `json:"websocket,omitempty"`
+	Category     *string   `json:"category,omitempty"`
+	BWLimit      *int64    `json:"bwlimit,omitempty"`
+	RootAbsolute *bool     `json:"root_absolute,omitempty"`
+	Hostnames    *[]string `json:"hostnames,omitempty"`
 }
 
 // Helpers

@@ -184,3 +184,73 @@ func TestHostWithinCookieDomain(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateHostnamesForUser(t *testing.T) {
+	services := []ServiceConfig{{ID: "a", Hostnames: []string{"a.example.test"}}}
+	if _, err := ValidateHostnamesForUser(services, "", []string{"a.example.test"}); err == nil {
+		t.Fatal("duplicate hostname within a user must be rejected")
+	}
+	if got, err := ValidateHostnamesForUser(services, "a", []string{"A.example.test.", "b.example.test"}); err != nil {
+		t.Fatalf("self update failed: %v", err)
+	} else if !reflect.DeepEqual(got, []string{"a.example.test", "b.example.test"}) {
+		t.Fatalf("normalized = %#v", got)
+	}
+	if _, err := ValidateHostnamesForUser(nil, "", []string{"bad"}); err == nil {
+		t.Fatal("invalid hostname must be rejected")
+	}
+}
+
+func TestUpdateServiceSetsRootAbsoluteAndHostnames(t *testing.T) {
+	path := newTestConfig(t)
+	if _, err := AddService(path, ServiceConfig{
+		ID: "hugo", Name: "Hugo", Host: "127.0.0.1", Port: 1313, Path: "/hugo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	root := true
+	hosts := []string{"Hugo.GW.Example.Test."}
+	if err := UpdateService(path, "hugo", ServiceUpdate{RootAbsolute: &root, Hostnames: &hosts}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := ServiceByID(cfg.Services, "hugo")
+	if svc == nil || !svc.RootAbsolute || !reflect.DeepEqual(svc.Hostnames, []string{"hugo.gw.example.test"}) {
+		t.Fatalf("update did not persist vhost fields: %+v", svc)
+	}
+
+	// Explicitly clearing hostnames works.
+	empty := []string{}
+	if err := UpdateService(path, "hugo", ServiceUpdate{Hostnames: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = LoadUserConfig(path)
+	svc = ServiceByID(cfg.Services, "hugo")
+	if len(svc.Hostnames) != 0 {
+		t.Fatalf("hostnames not cleared: %#v", svc.Hostnames)
+	}
+}
+
+func TestAddServiceRejectsInvalidOrDuplicateHostnames(t *testing.T) {
+	path := newTestConfig(t)
+	if _, err := AddService(path, ServiceConfig{
+		ID: "a", Name: "A", Host: "127.0.0.1", Port: 1313, Path: "/a",
+		Hostnames: []string{"a.example.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddService(path, ServiceConfig{
+		ID: "b", Name: "B", Host: "127.0.0.1", Port: 1314, Path: "/b",
+		Hostnames: []string{"a.example.test"},
+	}); err == nil {
+		t.Fatal("duplicate hostname within a user must be rejected")
+	}
+	if _, err := AddService(path, ServiceConfig{
+		ID: "c", Name: "C", Host: "127.0.0.1", Port: 1315, Path: "/c",
+		Hostnames: []string{"bad"},
+	}); err == nil {
+		t.Fatal("invalid hostname must be rejected")
+	}
+}

@@ -73,7 +73,7 @@ func New(state *config.StateConfig, configDir string) *Server {
 		siteTitle:     siteTitle,
 		loginLimiter:  rate.NewLimiter(10, 15*time.Minute),
 		totpLimiter:   rate.NewLimiter(10, 15*time.Minute),
-		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret, state.Auth.SessionTTL, state.Server.CookieDomain),
+		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret, state.Auth.SessionTTL, state.Server.CookieDomain, state.Server.PublicHost),
 		// A shared transport lets connection pools be reused across requests
 		// instead of creating a fresh one per proxy request. SafeDialContext
 		// re-validates backend addresses (and pins the validated IP) at dial
@@ -592,7 +592,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			writable = config.IsWritable(user.ConfigPath)
 			twoFAEnabled = user.Config.Auth.TOTPSecret != ""
 		}
-		sendHTML(w, 200, web.DashboardPage(s.siteTitle, session.UserID, services, writable, twoFAEnabled))
+		sendHTML(w, 200, web.DashboardPage(s.siteTitle, session.UserID, services, writable, twoFAEnabled, s.publicSchemeFor(r), s.publicAuthority(r)))
 	} else {
 		sendHTML(w, 200, web.LoginPage(s.siteTitle, "", ""))
 	}
@@ -1329,6 +1329,20 @@ func (s *Server) ScanLoop(interval time.Duration, stop <-chan struct{}) {
 // UserCount returns the number of loaded users.
 func (s *Server) UserCount() int {
 	return len(s.registry.ListUsers())
+}
+
+// ServiceCount returns the number of loaded services across all users.
+func (s *Server) ServiceCount() int {
+	n := 0
+	for _, user := range s.registry.ListUsers() {
+		n += len(user.Config.Services)
+	}
+	return n
+}
+
+// HostEntries returns the routable virtual-host index for diagnostics.
+func (s *Server) HostEntries() []config.HostEntry {
+	return s.registry.HostEntries()
 }
 
 func sendHTML(w http.ResponseWriter, status int, html string) {
