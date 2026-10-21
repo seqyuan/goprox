@@ -72,23 +72,35 @@ https://hugo.gw.example.com/docs/
 
 ### 2.4 本地测试
 
-浏览器会把 `*.localhost` 解析到本机，可以直接使用：
+建议使用 `.test` 域名 + hosts/DNS，不要使用 `*.localhost`：Chrome 会拒绝
+`Domain=.localhost`，父域会话 Cookie 无法建立。
+
+在 `/etc/hosts` 增加：
+
+```text
+127.0.0.1 gw.example.test hugo.example.test
+```
+
+配置：
 
 ```yaml
 server:
-  public_host: "gw.localhost:30152"
+  public_host: "gw.example.test:30152"
   public_scheme: "http"
-  cookie_domain: ".localhost"
+  cookie_domain: ".example.test"
 services:
   - id: hugo
     host: 127.0.0.1
     port: 1313
     path: /hugo
     hostnames:
-      - hugo.localhost
+      - hugo.example.test
 ```
 
-访问 `http://hugo.localhost:30152/`。注意本地 HTTP 仅用于测试，生产必须 HTTPS。
+访问 `http://hugo.example.test:30152/`。Playwright/Chromium 也可以用
+`--host-resolver-rules=MAP *.example.test 127.0.0.1` 代替 hosts。
+
+注意本地 HTTP 仅用于测试，生产必须 HTTPS。
 
 ## 3. DNS 与 TLS
 

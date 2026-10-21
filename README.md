@@ -307,9 +307,9 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 - 也可以让 GoProx 直接使用一张 `*.gw.example.com` 通配证书（现有 `tls_cert`/`tls_key`）。
 - 启用 vhost 后请通过 `public_host` 访问主网关；旧的 host-only 会话需要重新登录一次，
   浏览器才会拿到带父域 `Domain` 的新 Cookie。
-- 本地测试可直接使用 `*.localhost`（浏览器会解析到本机）：
-  `public_host: gw.localhost:30152`、`cookie_domain: .localhost`、
-  `hostnames: [hugo.localhost]`。
+- 本地测试建议使用 `.test` 域名 + hosts/DNS（例如 `gw.example.test`、
+  `hugo.example.test` → `127.0.0.1`），`cookie_domain: .example.test`。
+  Chrome 会拒绝 `Domain=.localhost`，因此 `*.localhost` 不适合 vhost Cookie 测试。
 
 限制：
 
