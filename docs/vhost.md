@@ -206,6 +206,7 @@ https://hugo.gw.example.com/docs/→ Hugo /docs/
 | WebSocket 403 | 服务的 `websocket: false`，改为 `true` |
 | 主 Host `/hugo/...` 仍跳 `/proxy/...` | 这是保留的路径模式行为；vhost 是独立入口。Phase 2 可评估改为跳 vhost |
 | 浏览器提示证书错误 | 通配证书是否覆盖该级别（`*.example.com` 不含 `a.b.example.com`）；自签证书是否覆盖域名 |
+| `*.localhost` 登录后仍无会话 | Chrome 拒绝 `Domain=.localhost`；改用 `.test` 域名 + hosts/`host-resolver-rules` |
 
 ## 7. 限制与安全
 
