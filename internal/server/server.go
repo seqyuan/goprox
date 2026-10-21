@@ -636,18 +636,24 @@ func (s *Server) validLoginNext(r *http.Request, next, username string) bool {
 	if username != "" && target.Username != username {
 		return false
 	}
-	// Do not allow the login redirect to switch ports: only the gateway's
-	// public port (or the scheme's default port) is acceptable.
+	// Do not allow the login redirect to switch ports. The public authority
+	// is authoritative: when it has a non-default port, next must carry it;
+	// when it has no port, next may only use the scheme's default port.
 	expectedPort := ""
 	if _, p, err := net.SplitHostPort(s.publicAuthority(r)); err == nil {
 		expectedPort = p
 	}
-	if u.Port() != "" {
-		if expectedPort != "" {
-			if u.Port() != expectedPort {
+	nextPort := u.Port()
+	if expectedPort != "" {
+		if nextPort == "" {
+			if !((u.Scheme == "http" && expectedPort == "80") || (u.Scheme == "https" && expectedPort == "443")) {
 				return false
 			}
-		} else if !((u.Scheme == "http" && u.Port() == "80") || (u.Scheme == "https" && u.Port() == "443")) {
+		} else if nextPort != expectedPort {
+			return false
+		}
+	} else if nextPort != "" {
+		if !((u.Scheme == "http" && nextPort == "80") || (u.Scheme == "https" && nextPort == "443")) {
 			return false
 		}
 	}

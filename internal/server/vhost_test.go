@@ -326,3 +326,46 @@ func TestValidateVHostsRequiresCookieCoverage(t *testing.T) {
 		t.Fatal("ValidateVHosts must reject a service host outside cookie_domain")
 	}
 }
+
+func TestLoginNextRequiresNonstandardPublicPort(t *testing.T) {
+	backend := newVHostBackend(t, "hugo")
+	host, port := backendAddr(t, backend.srv)
+	dir := t.TempDir()
+	writeVHostUser(t, dir, "alice", "hugo", "/hugo", "hugo.example.test", host, port, "pw")
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{
+			Host:         "127.0.0.1",
+			Port:         39099,
+			PublicHost:   "gw.example.test:39099",
+			PublicScheme: "http",
+			CookieDomain: ".example.test",
+		},
+		Auth: config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, dir)
+	if err := srv.ValidateVHosts(); err != nil {
+		t.Fatalf("ValidateVHosts: %v", err)
+	}
+
+	post := func(next string) *httptest.ResponseRecorder {
+		form := url.Values{
+			"username": {"alice"},
+			"password": {"pw"},
+			"next":     {next},
+		}
+		req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+		req.Host = "gw.example.test:39099"
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://gw.example.test:39099")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	withPort := "http://hugo.example.test:39099/docs/"
+	if rec := post(withPort); rec.Code != http.StatusFound || rec.Header().Get("Location") != withPort {
+		t.Fatalf("with port: status=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := post("http://hugo.example.test/docs/"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
+		t.Fatalf("missing port: status=%d location=%q, want /", rec.Code, rec.Header().Get("Location"))
+	}
+}

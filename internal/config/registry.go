@@ -103,7 +103,7 @@ func buildHostIndex(users map[string]*UserRecord) (map[string]*HostTarget, map[s
 	type candidate struct {
 		target *HostTarget
 		count  int
-		owners map[string]bool
+		owners map[string]bool // "username/serviceID", for actionable errors
 	}
 	candidates := make(map[string]*candidate)
 	for username, user := range users {
@@ -119,7 +119,7 @@ func buildHostIndex(users map[string]*UserRecord) (map[string]*HostTarget, map[s
 					candidates[host] = c
 				}
 				c.count++
-				c.owners[username] = true
+				c.owners[username+"/"+svc.ID] = true
 			}
 		}
 	}

@@ -257,6 +257,8 @@ services:
 
 ### 独立域名（虚拟主机，可选）
 
+> 详细配置、Caddy/nginx 示例与排障见 [docs/vhost.md](docs/vhost.md)。
+
 服务可以绑定独立主机名，在**根路径**直接代理，适合必须拥有 `/`、输出根绝对路径、
 或无法理解 `/proxy/<用户>/<服务>/` 前缀的应用（Hugo、部分 SPA、Jupyter 等）。
 
@@ -305,6 +307,9 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 - 也可以让 GoProx 直接使用一张 `*.gw.example.com` 通配证书（现有 `tls_cert`/`tls_key`）。
 - 启用 vhost 后请通过 `public_host` 访问主网关；旧的 host-only 会话需要重新登录一次，
   浏览器才会拿到带父域 `Domain` 的新 Cookie。
+- 本地测试可直接使用 `*.localhost`（浏览器会解析到本机）：
+  `public_host: gw.localhost:30152`、`cookie_domain: .localhost`、
+  `hostnames: [hugo.localhost]`。
 
 限制：
 
@@ -315,6 +320,19 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 - `cookie_domain` 必须是自己的父域，不要填写 `.com`、`.co.uk` 等公共后缀；
   网关只做语法/覆盖校验，无法判断公共后缀列表。
 - 与 `root_absolute` 的关系：vhost 更彻底；不能使用独立域名时再用 `root_absolute`。
+
+#### 配置模式怎么选
+
+| 场景 | 推荐配置 |
+| --- | --- |
+| 普通应用，能接受 `/proxy/<用户>/<服务>/` | `path` |
+| 后端自身有子路径 | `path` + `backend_path` |
+| 根路由型 SPA（按 `/...` 路径匹配） | `default_service` |
+| 输出根绝对路径，但不能改 `baseURL` | `root_absolute` |
+| 应用必须拥有独立 Origin / 根路径 `/` | `hostnames` |
+| 同一主机多实例 | 不同父域/主机名（或等待 Cookie 命名空间方案） |
+
+> `hostnames` 最彻底；`root_absolute` 是轻量兼容层；能改应用 `baseURL` 时优先改应用。
 
 #### 卡片（服务）参数一览
 

@@ -2,7 +2,7 @@
 
 ## 新功能
 
-- **独立域名虚拟主机（`hostnames`）**：服务可绑定一个或多个主机名，在该 Host 的根路径直接代理，适合必须拥有 `/` 或输出根绝对路径的应用。新增 `server.public_host` / `public_scheme` / `cookie_domain` 与 `ServiceConfig.Hostnames`；会话 Cookie 支持父域 Domain，未登录访问服务 Host 会跳转主网关登录，登录后回到原 URL。vhost 模式不设置 route cookie，后端 Cookie 保留原 Path，并丢弃与 GoProx 同名的后端 Cookie。默认关闭；`hostnames` 当前仅 YAML 配置，卡片编辑/排序会保留
+- **独立域名虚拟主机（`hostnames`）**：服务可绑定一个或多个主机名，在该 Host 的根路径直接代理，适合必须拥有 `/` 或输出根绝对路径的应用。新增 `server.public_host` / `public_scheme` / `cookie_domain` 与 `ServiceConfig.Hostnames`；会话 Cookie 支持父域 Domain，未登录访问服务 Host 会跳转主网关登录，登录后回到原 URL。vhost 模式不设置 route cookie，后端 Cookie 保留原 Path，并丢弃与 GoProx 同名的后端 Cookie。默认关闭；`hostnames` 当前仅 YAML 配置，卡片编辑/排序会保留。详细配置/排障见 `docs/vhost.md`
 - **跨用户 Host 冲突检测**：同一 Host 被多个用户/服务声明时，该 Host 不进入路由索引，启动校验直接报错；主 Host、`public_host` 与 `cookie_domain` 覆盖关系在启动时校验
 
 ## 测试

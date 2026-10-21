@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -104,8 +105,9 @@ func TestBuildHostIndexSameUserDuplicate(t *testing.T) {
 	if _, ok := hosts["dup.example.test"]; ok {
 		t.Fatal("duplicate within one user must not be routable")
 	}
-	if len(conflicts["dup.example.test"]) != 1 || conflicts["dup.example.test"][0] != "alice" {
-		t.Fatalf("conflicts = %#v", conflicts)
+	want := []string{"alice/a", "alice/b"}
+	if !reflect.DeepEqual(conflicts["dup.example.test"], want) {
+		t.Fatalf("conflicts = %#v, want %#v", conflicts["dup.example.test"], want)
 	}
 }
 

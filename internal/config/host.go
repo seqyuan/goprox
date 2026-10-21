@@ -133,6 +133,11 @@ func NormalizeCookieDomain(value string) (string, error) {
 		return "", fmt.Errorf("cookie_domain must start with '.' (e.g. .example.com)")
 	}
 	base := strings.TrimPrefix(value, ".")
+	if base == "localhost" {
+		// Development convenience: browsers resolve *.localhost to loopback,
+		// so .localhost can be used without DNS/hosts changes.
+		return ".localhost", nil
+	}
 	if net.ParseIP(base) != nil {
 		return "", fmt.Errorf("cookie_domain must be a DNS parent domain, not an IP")
 	}

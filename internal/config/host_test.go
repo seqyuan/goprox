@@ -84,6 +84,9 @@ func TestNormalizeCookieDomain(t *testing.T) {
 	if err != nil || got != ".gw.example.com" {
 		t.Fatalf("NormalizeCookieDomain = %q, %v", got, err)
 	}
+	if got, err := NormalizeCookieDomain(".localhost"); err != nil || got != ".localhost" {
+		t.Fatalf("NormalizeCookieDomain(.localhost) = %q, %v", got, err)
+	}
 	for _, in := range []string{
 		"gw.example.com", ".com", ".127.0.0.1", ".a..b", ".gw.example.com:443",
 	} {
