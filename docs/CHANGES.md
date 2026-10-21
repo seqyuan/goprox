@@ -1,3 +1,25 @@
+# GoProx v0.7.0 变更日志（2026-10-21）
+
+## 新功能
+
+- **根绝对路径服务（`root_absolute`）**：为输出 `/docs/`、`/static/...` 等根绝对路径的应用增加 opt-in 兼容模式。服务开启后，未被服务 `path` 认领的裸路径请求如果 Referer 或 route cookie 指向该服务，会优先转发回该服务，而不是交给 `default_service`。默认关闭，按服务生效；当前通过用户 YAML 配置，网页表单暂不显示；`serializeServices` 会保留该字段，卡片编辑/排序不会丢失
+
+## 修复
+
+- **Dashboard API 请求不续期**：`/api/services` 的所有请求现在与页面、代理请求共用滑动续期策略（剩余有效期低于 TTL 的 25% 时重新签发 `Set-Cookie`），避免用户在仪表盘持续操作时提前掉线。已过期或密码版本（`rev`）失效的会话仍返回 401，不会被续期绕过
+- **401 不再显示为业务错误**：前端统一识别 401，跳转 `/login` 并提示「登录状态已失效，请重新登录」；添加/编辑表单的值会暂存到 `sessionStorage`，重新登录后自动恢复
+- **`session_secret` 持久化失败不再静默**：`LoadState` 生成 secret 后若写盘失败会返回错误并拒绝启动，避免每次重启轮换 secret 导致全体用户掉线
+- **裸路径转发注入了错误的 `<base>`**：`default_service` / Referer / route cookie 等 as-is 转发现在按实际请求路径计算 `<base>`，修复 SvelteKit 等使用 `../_app/...` 相对资源的应用在网关根路径下资源 404 的问题；`/proxy/...` 规范访问的 base 保持不变
+
+## 测试
+
+- 新增 API session 续期/不续期、过期、rev 失效、CSRF 不续期单测；config 的 secret 持久化与只读失败单测；Node 的 `jsonRequest` 401/400/非 JSON 单测
+- 新增 Playwright E2E：短 TTL 下标签页闲置至 session 过期，提交添加表单会跳转登录并恢复草稿
+- 新增 server 单测：裸路径 HTML 的 `<base>` 按请求目录计算，canonical `/proxy/...` 的 base 保持不变
+- 新增 server 单测：`root_absolute` 的 Referer 路由、route cookie 回退、无上下文回退 default_service、非 opt-in 服务不受影响、跨用户 Referer 拒绝；config 单测覆盖 `root_absolute` 的序列化与编辑保留
+
+---
+
 # GoProx v0.6.0 变更日志（2026-10-12）
 
 ## 新功能
