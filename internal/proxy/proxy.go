@@ -43,9 +43,24 @@ func stripGatewayCookie(cookieHeader string) string {
 }
 
 // ProxyForwardContext holds forwarding metadata.
+// ForwardMode selects how browser paths map to the backend. The zero value
+// preserves the canonical /proxy/<user>/<service> prefix behavior.
+type ForwardMode int
+
+const (
+	// ForwardPrefix is the canonical /proxy/<user>/<service>/... mode.
+	ForwardPrefix ForwardMode = iota
+	// ForwardAsIs keeps the browser path unchanged (default_service, Referer,
+	// route cookie forwarding).
+	ForwardAsIs
+	// ForwardVHost serves a dedicated hostname at the root path.
+	ForwardVHost
+)
+
 type ProxyForwardContext struct {
 	Prefix   string
 	Base     string // <base href> to inject: directory of the served document
+	Mode     ForwardMode
 	ClientIP string
 	Proto    string
 	Host     string
@@ -223,7 +238,9 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			pr.Out.Header.Set("X-Forwarded-For", fc.ClientIP)
 			pr.Out.Header.Set("X-Forwarded-Proto", fc.Proto)
 			pr.Out.Header.Set("X-Forwarded-Host", fc.Host)
-			pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
+			if fc.Mode != ForwardVHost {
+				pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
+			}
 
 			// Lightweight SSO: carry the authenticated session user to
 			// backends that opt in, and never let the browser supply an
@@ -289,11 +306,20 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			if cookies := resp.Header.Values("Set-Cookie"); len(cookies) > 0 {
 				resp.Header.Del("Set-Cookie")
 				proxyPath := ""
-				if strings.HasPrefix(fc.OriginalPath, "/proxy/") {
+				// A vhost owns the root path, so backend cookie Paths are never
+				// narrowed. In path modes only canonical /proxy/ access re-roots
+				// them; bare/root-path access leaves Path untouched.
+				if fc.Mode != ForwardVHost && strings.HasPrefix(fc.OriginalPath, "/proxy/") {
 					proxyPath = fc.Prefix + "/"
 				}
 				secure := fc.Proto == "https"
 				for _, c := range cookies {
+					// A backend must not set a cookie that collides with the
+					// gateway's own session/route/2FA cookies: on a shared
+					// parent domain that would allow cookie tossing.
+					if fc.Mode == ForwardVHost && isGatewayCookie(c) {
+						continue
+					}
 					resp.Header.Add("Set-Cookie", RewriteSetCookie(c, proxyPath, secure))
 				}
 			}
@@ -417,7 +443,36 @@ func rewriteLocation(loc, backendPath string, fc ProxyForwardContext, backendHos
 			loc = "/"
 		}
 	}
+	if fc.Mode == ForwardVHost {
+		// The app owns this host's root; redirects stay rooted at /.
+		return loc, true
+	}
 	return fc.Prefix + loc, true
+}
+
+// isGatewayCookie reports whether a backend Set-Cookie uses one of GoProx's
+// own cookie names. In vhost mode such cookies are dropped to prevent a
+// backend from shadowing the shared session cookie (cookie tossing).
+func isGatewayCookie(raw string) bool {
+	// Extract the name from the first pair without relying on the full
+	// Set-Cookie parser: browsers are lenient, so a malformed gateway cookie
+	// must still be dropped rather than passed through.
+	pair := raw
+	if i := strings.IndexByte(pair, ';'); i >= 0 {
+		pair = pair[:i]
+	}
+	name := strings.TrimSpace(pair)
+	if eq := strings.IndexByte(pair, '='); eq >= 0 {
+		name = strings.TrimSpace(pair[:eq])
+	}
+	if name == "" {
+		return false
+	}
+	switch name {
+	case auth.SessionCookieName, auth.TOTACookieName, auth.TOTASetupCookie, auth.RouteCookieName:
+		return true
+	}
+	return strings.HasPrefix(name, auth.RouteCookiePrefix)
 }
 
 // sameBackendHost reports whether a redirect target host refers to the same

@@ -1,3 +1,19 @@
+# GoProx 未发布
+
+## 新功能
+
+- **独立域名虚拟主机（`hostnames`）**：服务可绑定一个或多个主机名，在该 Host 的根路径直接代理，适合必须拥有 `/` 或输出根绝对路径的应用。新增 `server.public_host` / `public_scheme` / `cookie_domain` 与 `ServiceConfig.Hostnames`；会话 Cookie 支持父域 Domain，未登录访问服务 Host 会跳转主网关登录，登录后回到原 URL。vhost 模式不设置 route cookie，后端 Cookie 保留原 Path，并丢弃与 GoProx 同名的后端 Cookie。默认关闭；`hostnames` 当前仅 YAML 配置，卡片编辑/排序会保留
+- **跨用户 Host 冲突检测**：同一 Host 被多个用户/服务声明时，该 Host 不进入路由索引，启动校验直接报错；主 Host、`public_host` 与 `cookie_domain` 覆盖关系在启动时校验
+
+## 测试
+
+- 新增 config 单测：Host/public_host/cookie_domain 规范化、Host 索引、跨用户重复、hostnames 序列化与编辑保留
+- 新增 auth 单测：带 Domain 的 session Set-Cookie / Clear-Cookie
+- 新增 proxy 单测：vhost Location 不再加 `/proxy` 前缀、`X-Forwarded-Prefix` 为空、base 按请求路径、Cookie Path 保留、网关同名 Cookie 丢弃
+- 新增 server 集成测试：vhost 路由/登录跳转/跨用户拒绝/主 Host 裸路径回归/登录 next 校验/Domain Cookie/退出清理
+
+---
+
 # GoProx v0.7.0 变更日志（2026-10-21）
 
 ## 新功能

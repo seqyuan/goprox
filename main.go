@@ -495,6 +495,9 @@ func runServer(opts options) {
 	}
 
 	srv := server.New(state, configDir)
+	if err := srv.ValidateVHosts(); err != nil {
+		log.Fatalf("invalid virtual-host config: %v", err)
+	}
 
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(state.Server.Host, strconv.Itoa(state.Server.Port)),

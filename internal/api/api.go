@@ -17,14 +17,17 @@ type Handler struct {
 	Registry      *config.UserRegistry
 	SessionSecret string
 	SessionTTL    int
+	CookieDomain  string
 }
 
-// NewHandler creates a new API handler.
-func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int) *Handler {
+// NewHandler creates a new API handler. cookieDomain is used when refreshing
+// the session cookie in virtual-host mode (empty keeps it host-only).
+func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int, cookieDomain string) *Handler {
 	return &Handler{
 		Registry:      registry,
 		SessionSecret: sessionSecret,
 		SessionTTL:    sessionTTL,
+		CookieDomain:  cookieDomain,
 	}
 }
 
@@ -96,12 +99,13 @@ func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request, session
 		return
 	}
 	secure := auth.IsSecureRequest(r)
-	w.Header().Add("Set-Cookie", auth.SetSessionCookie(
+	w.Header().Add("Set-Cookie", auth.SetSessionCookieWithDomain(
 		h.SessionSecret,
 		h.SessionTTL,
 		session.UserID,
 		h.currentSessionRev(session.UserID),
 		secure,
+		h.CookieDomain,
 	))
 }
 

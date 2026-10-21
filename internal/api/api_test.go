@@ -29,7 +29,7 @@ func newTestHandler(t *testing.T, ttl ...int) *Handler {
 	if len(ttl) > 0 {
 		sessionTTL = ttl[0]
 	}
-	return NewHandler(reg, "testsecret", sessionTTL)
+	return NewHandler(reg, "testsecret", sessionTTL, "")
 }
 
 func apiPost(t *testing.T, h *Handler, url, body, origin string) *httptest.ResponseRecorder {

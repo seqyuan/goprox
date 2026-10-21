@@ -30,10 +30,14 @@ type ServiceConfig struct {
 	// the Referer or route cookie points at it. Opt-in for apps that emit
 	// root-absolute URLs (/docs/, /static/...); default_service remains the
 	// fallback for requests without this context.
-	RootAbsolute bool   `yaml:"root_absolute,omitempty" json:"root_absolute,omitempty"`
-	Category     string `yaml:"category,omitempty" json:"category,omitempty"`
-	Order        int    `yaml:"order,omitempty" json:"order,omitempty"`
-	BWLimit      int64  `yaml:"bwlimit,omitempty" json:"bwlimit,omitempty"` // Per-service bandwidth cap in bytes/sec; 0 = unlimited
+	RootAbsolute bool `yaml:"root_absolute,omitempty" json:"root_absolute,omitempty"`
+	// Hostnames gives this service one or more dedicated virtual hosts (for
+	// example hugo.gw.example.com). A request whose Host matches is proxied to
+	// this service at the root path, bypassing /proxy and default_service.
+	Hostnames []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
+	Category  string   `yaml:"category,omitempty" json:"category,omitempty"`
+	Order     int      `yaml:"order,omitempty" json:"order,omitempty"`
+	BWLimit   int64    `yaml:"bwlimit,omitempty" json:"bwlimit,omitempty"` // Per-service bandwidth cap in bytes/sec; 0 = unlimited
 	// AuthBootstrap, when set, lets the gateway complete the backend's own
 	// browser session handshake (see AuthBootstrapConfig).
 	AuthBootstrap *AuthBootstrapConfig `yaml:"auth_bootstrap,omitempty" json:"auth_bootstrap,omitempty"`
@@ -307,6 +311,17 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 			}
 			cfg.Services[i].AuthBootstrap = nil
 		}
+		// Virtual-host names are optional; invalid entries are dropped with a
+		// one-time warning so the service remains usable through path routing.
+		hostnames, droppedHosts := NormalizeHostnames(cfg.Services[i].Hostnames)
+		if len(droppedHosts) > 0 {
+			key := path + "\x00" + cfg.Services[i].ID + "\x00hostnames"
+			if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+				log.Printf("[goprox] service %q of %s: invalid hostnames ignored: %v",
+					cfg.Services[i].ID, path, droppedHosts)
+			}
+		}
+		cfg.Services[i].Hostnames = hostnames
 		i++
 	}
 
@@ -699,6 +714,9 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 		}
 		if s.RootAbsolute {
 			m["root_absolute"] = true
+		}
+		if len(s.Hostnames) > 0 {
+			m["hostnames"] = s.Hostnames
 		}
 		m["websocket"] = s.WebSocket
 		m["order"] = s.Order

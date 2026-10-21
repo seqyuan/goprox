@@ -290,20 +290,43 @@ func IsSecureRequest(r *http.Request) bool {
 // SetSessionCookie creates a Set-Cookie header value for the session, bound
 // to the account's current password-hash revision.
 func SetSessionCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+	return SetSessionCookieWithDomain(secret, ttlSec, userID, rev, secure, "")
+}
+
+// SetSessionCookieWithDomain is SetSessionCookie with an optional parent
+// Domain, used by virtual-host mode to share the session across service
+// subdomains (e.g. ".gw.example.com"). An empty domain keeps the cookie
+// host-only.
+func SetSessionCookieWithDomain(secret string, ttlSec int, userID, rev string, secure bool, domain string) string {
 	token := CreateSessionToken(userID, secret, ttlSec, rev)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
 	if secure {
 		secureFlag = "; Secure"
 	}
-	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax; Expires=%s%s",
-		SessionCookieName, token, expires, secureFlag)
+	domainFlag := ""
+	if domain != "" {
+		domainFlag = "; Domain=" + domain
+	}
+	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax%s; Expires=%s%s",
+		SessionCookieName, token, domainFlag, expires, secureFlag)
 }
 
 // ClearSessionCookie creates a Set-Cookie header to clear the session.
 func ClearSessionCookie() string {
-	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-		SessionCookieName)
+	return ClearSessionCookieWithDomain("")
+}
+
+// ClearSessionCookieWithDomain clears a session cookie that was set with the
+// given parent Domain. The Domain attribute must match the original cookie or
+// the browser will keep the parent-domain cookie.
+func ClearSessionCookieWithDomain(domain string) string {
+	domainFlag := ""
+	if domain != "" {
+		domainFlag = "; Domain=" + domain
+	}
+	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax%s; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+		SessionCookieName, domainFlag)
 }
 
 // ClearRouteCookies returns the Set-Cookie headers needed to clear every

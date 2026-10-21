@@ -68,6 +68,16 @@ type ServerState struct {
 	// --tls-selfsigned writes absolute paths into the config dir.
 	TLSCert string `yaml:"tls_cert,omitempty"`
 	TLSKey  string `yaml:"tls_key,omitempty"`
+	// PublicHost is the gateway's externally visible authority
+	// (host or host:port), used to build absolute login redirects for
+	// virtual-host services.
+	PublicHost string `yaml:"public_host,omitempty"`
+	// PublicScheme is "http" or "https"; when empty the gateway infers it
+	// from TLS / trusted-proxy X-Forwarded-Proto.
+	PublicScheme string `yaml:"public_scheme,omitempty"`
+	// CookieDomain makes the session cookie shared across service subdomains
+	// (e.g. ".gw.example.com"). Required when any service declares hostnames.
+	CookieDomain string `yaml:"cookie_domain,omitempty"`
 }
 
 type AuthState struct {
@@ -126,6 +136,16 @@ func LoadState(path string) (*StateConfig, error) {
 	}
 	if s.Auth.SessionTTL == 0 {
 		s.Auth.SessionTTL = DefaultSessionTTL
+	}
+
+	if s.Server.PublicHost, err = NormalizePublicHost(s.Server.PublicHost); err != nil {
+		return nil, err
+	}
+	if s.Server.PublicScheme, err = NormalizePublicScheme(s.Server.PublicScheme); err != nil {
+		return nil, err
+	}
+	if s.Server.CookieDomain, err = NormalizeCookieDomain(s.Server.CookieDomain); err != nil {
+		return nil, err
 	}
 
 	// A hand-edited user_header must be a valid header name; anything else

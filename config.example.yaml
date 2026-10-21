@@ -86,3 +86,8 @@ services:
     category: "文档"
     order: 4
     root_absolute: true
+    # 可选：独立域名（虚拟主机）。需要在 state.yaml 配置
+    # public_host / public_scheme / cookie_domain，并为这些域名准备 DNS 与证书。
+    # 开启后该 Host 的根路径直接归应用，/docs/ 等根绝对路径无需兼容层。
+    # hostnames:
+    #   - hugo.gw.example.com

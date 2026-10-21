@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -10,19 +12,29 @@ import (
 
 // UserRegistry scans and caches user configs from the config directory.
 type UserRegistry struct {
-	configDir string
-	users     map[string]*UserRecord
-	mu        sync.RWMutex
-	lastScan  time.Time
-	scanEvery time.Duration
+	configDir     string
+	users         map[string]*UserRecord
+	hosts         map[string]*HostTarget
+	hostConflicts map[string][]string
+	mu            sync.RWMutex
+	lastScan      time.Time
+	scanEvery     time.Duration
+}
+
+// HostTarget maps a virtual hostname to the owning user's service.
+type HostTarget struct {
+	Username string
+	Service  *ServiceConfig
 }
 
 // NewUserRegistry creates a new registry scanning configDir/users/*.yaml.
 func NewUserRegistry(configDir string) *UserRegistry {
 	return &UserRegistry{
-		configDir: configDir,
-		users:     make(map[string]*UserRecord),
-		scanEvery: 10 * time.Second,
+		configDir:     configDir,
+		users:         make(map[string]*UserRecord),
+		hosts:         make(map[string]*HostTarget),
+		hostConflicts: make(map[string][]string),
+		scanEvery:     10 * time.Second,
 	}
 }
 
@@ -65,15 +77,112 @@ func (r *UserRegistry) Reload() {
 		}
 	}
 
+	newHosts, hostConflicts := buildHostIndex(newUsers)
+	for host, owners := range hostConflicts {
+		key := "host-conflict:" + host
+		if _, loaded := warnedHostConflicts.LoadOrStore(key, struct{}{}); !loaded {
+			log.Printf("[goprox] virtual host %q is configured by multiple services/users %v; disabled", host, owners)
+		}
+	}
+
 	r.mu.Lock()
 	r.users = newUsers
+	r.hosts = newHosts
+	r.hostConflicts = hostConflicts
 	r.lastScan = time.Now()
 	r.mu.Unlock()
 }
 
-// EnsureFresh reloads if enough time has passed.
+// warnedHostConflicts de-duplicates periodic-reload warnings.
+var warnedHostConflicts sync.Map
+
+// buildHostIndex maps every unique hostname to its service. A hostname
+// claimed by more than one service (across all users) is removed from the
+// routable index and reported as a conflict.
+func buildHostIndex(users map[string]*UserRecord) (map[string]*HostTarget, map[string][]string) {
+	type candidate struct {
+		target *HostTarget
+		count  int
+		owners map[string]bool
+	}
+	candidates := make(map[string]*candidate)
+	for username, user := range users {
+		for i := range user.Config.Services {
+			svc := &user.Config.Services[i]
+			for _, host := range svc.Hostnames {
+				c := candidates[host]
+				if c == nil {
+					c = &candidate{
+						target: &HostTarget{Username: username, Service: svc},
+						owners: make(map[string]bool),
+					}
+					candidates[host] = c
+				}
+				c.count++
+				c.owners[username] = true
+			}
+		}
+	}
+
+	hosts := make(map[string]*HostTarget, len(candidates))
+	conflicts := make(map[string][]string)
+	for host, c := range candidates {
+		if c.count == 1 {
+			hosts[host] = c.target
+			continue
+		}
+		owners := make([]string, 0, len(c.owners))
+		for owner := range c.owners {
+			owners = append(owners, owner)
+		}
+		sort.Strings(owners)
+		conflicts[host] = owners
+	}
+	return hosts, conflicts
+}
+
+// FindByHost looks up a virtual hostname in the current registry snapshot.
+func (r *UserRegistry) FindByHost(host string) *HostTarget {
+	r.EnsureFresh()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.hosts[host]
+}
+
+// HasHosts reports whether any virtual hostname is currently routable.
+func (r *UserRegistry) HasHosts() bool {
+	r.EnsureFresh()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.hosts) > 0
+}
+
+// ValidateHosts returns an error when any hostname is claimed by more than one
+// service. It is intended for startup validation, where fail-fast is safer
+// than silently routing to one of the claimants.
+func (r *UserRegistry) ValidateHosts() error {
+	r.EnsureFresh()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.hostConflicts) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(r.hostConflicts))
+	for host, owners := range r.hostConflicts {
+		lines = append(lines, fmt.Sprintf("%s (%s)", host, strings.Join(owners, ", ")))
+	}
+	sort.Strings(lines)
+	return fmt.Errorf("duplicate virtual hostnames: %s", strings.Join(lines, "; "))
+}
+
+// EnsureFresh reloads if enough time has passed. lastScan is written under
+// the registry lock by Reload; read it under RLock so concurrent vhost/path
+// lookups do not race with the scanner.
 func (r *UserRegistry) EnsureFresh() {
-	if time.Since(r.lastScan) > r.scanEvery {
+	r.mu.RLock()
+	last := r.lastScan
+	r.mu.RUnlock()
+	if time.Since(last) > r.scanEvery {
 		r.Reload()
 	}
 }
