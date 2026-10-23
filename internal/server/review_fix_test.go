@@ -280,3 +280,23 @@ func TestLogoutRejectsCrossOriginRequests(t *testing.T) {
 		t.Fatalf("cross-origin POST: status = %d, want 403", rec.Code)
 	}
 }
+
+// After logout, a bookmarked page-like bare path should lead to login, not a
+// bare 404. Asset-looking paths keep 404 so static misses are not masked.
+func TestUnauthenticatedBarePageRedirectsToLogin(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("page path: status=%d location=%q, want login redirect", rec.Code, rec.Header().Get("Location"))
+	}
+
+	req = httptest.NewRequest("GET", "/assets/app.js", nil)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("asset path: status=%d, want 404", rec.Code)
+	}
+}

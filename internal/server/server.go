@@ -306,6 +306,13 @@ func (s *Server) Handler() http.Handler {
 			// Bare service paths (e.g. /jupyter) must be redirected to the proxied
 			// URL before route-cookie forwarding can hijack them and 404.
 			session := s.sessionFromCookies(r.Header.Get("Cookie"))
+			// An unauthenticated page-like bare path (e.g. a bookmarked SPA route
+			// after logout) should show the login page instead of a bare 404.
+			// Assets (/x.js) and API paths keep their normal 404 handling.
+			if !session.Valid && (r.Method == "GET" || r.Method == "HEAD") && barePathIsPage(r.URL.Path) {
+				http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+				return
+			}
 			if session.Valid && session.UserID != "" && (r.Method == "GET" || r.Method == "HEAD") {
 				if s.redirectBareService(w, r, session.UserID) {
 					return
@@ -534,16 +541,16 @@ func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool
 
 	// Improved detection: check if this is a GoProx login vs backend login
 	ct := r.Header.Get("Content-Type")
-	origin := r.Header.Get("Origin")
 	referer := r.Header.Get("Referer")
 
 	// GoProx login characteristics:
 	// 1. Path is exactly /login (not /proxy/.../login)
-	// 2. Origin/Referer doesn't contain /proxy/ path
+	// 2. Referer is not inside a proxied service
 	// 3. Content-Type is form data
+	// (Origin is already enforced by the caller's SameOriginRequest guard;
+	// a browser Origin never contains a path, so testing it here was a no-op.)
 	isGoProxLogin := r.URL.Path == "/login" &&
 		strings.Contains(ct, "application/x-www-form-urlencoded") &&
-		!strings.Contains(origin, "/proxy/") &&
 		!strings.Contains(referer, "/proxy/")
 
 	if isGoProxLogin {

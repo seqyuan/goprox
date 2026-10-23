@@ -356,8 +356,8 @@ func TestDefaultServiceRequiresSession(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no session must not reach backend)", rec.Code)
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("status = %d location=%q, want redirect to /login (backend must not be reached)", rec.Code, rec.Header().Get("Location"))
 	}
 }
 
