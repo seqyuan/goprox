@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -25,4 +26,11 @@ func lockConfigFile(path string) (func(), error) {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 	}, nil
+}
+
+// lockUnsupported reports whether the filesystem does not support advisory
+// locks (e.g. some NFS mounts). In that case config writes fall back to the
+// in-process mutex with a warning instead of making the gateway unusable.
+func lockUnsupported(err error) bool {
+	return errors.Is(err, syscall.ENOLCK) || errors.Is(err, syscall.ENOTSUP)
 }

@@ -149,6 +149,22 @@ func DashboardPage(siteTitle, username string, services []config.ServiceConfig, 
 	return PageShell(siteTitle, "仪表盘", body)
 }
 
+// LogoutConfirmPage renders the GET /logout confirmation. Logout itself is a
+// POST, so a cross-site link or image cannot end the user's session.
+func LogoutConfirmPage(siteTitle string) string {
+	body := `<div class="login-wrap">
+  <div class="login-card">
+    <h1>退出登录</h1>
+    <p class="subtitle">确认退出当前账号？</p>
+    <form method="POST" action="/logout">
+      <button type="submit" class="submit-btn">退出登录</button>
+    </form>
+    <a href="/" class="cancel-link">返回</a>
+  </div>
+</div>`
+	return PageShell(siteTitle, "退出登录", body)
+}
+
 func NotFoundPage(siteTitle string) string {
 	body := notFoundTpl
 	return PageShell(siteTitle, "404", body)

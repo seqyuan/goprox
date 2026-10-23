@@ -261,7 +261,7 @@ func TestLogoutClearsDomainCookie(t *testing.T) {
 
 	reqCookie := vhostCookie("alice", hash) + "; " +
 		auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(hash), false)
-	rec := vhostRequest(t, srv, "GET", "gw.example.test", "/logout", reqCookie)
+	rec := vhostRequest(t, srv, "POST", "gw.example.test", "/logout", reqCookie)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d", rec.Code)
 	}

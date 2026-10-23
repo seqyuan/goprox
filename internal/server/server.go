@@ -157,8 +157,18 @@ func (s *Server) Handler() http.Handler {
 	// API routes (handled by api.Handler)
 	// Use specific exact matches to avoid conflicts with backend service APIs
 	mux.HandleFunc("/api/services", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" || r.Method == "POST" {
-			s.apiHandler.ServeHTTP(w, r)
+		if s.apiHandler.ServeHTTP(w, r) {
+			return
+		}
+		// Not a gateway API call (e.g. another method): fall back to the usual
+		// backend routing just like /api/* does.
+		if s.handleRefererProxy(w, r) {
+			return
+		}
+		if s.handleRouteCookieProxy(w, r) {
+			return
+		}
+		if s.handleDefaultServiceProxy(w, r) {
 			return
 		}
 		http.NotFound(w, r)
@@ -214,39 +224,8 @@ func (s *Server) Handler() http.Handler {
 		w.Write([]byte(web.FaviconSVG()))
 	})
 
-	// Logout
-	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
-		// Mild logout-CSRF fence: a cross-site link/image carries a Referer
-		// from another authority, and a cross-site POST carries a foreign
-		// Origin. (A top-level link with an explicitly suppressed Referer is
-		// still possible; the dashboard uses a normal same-origin link.)
-		if r.Header.Get("Referer") != "" && s.refererPath(r) == "" {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		if r.Method != "GET" && r.Method != "HEAD" && !auth.SameOriginRequest(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Set-Cookie", auth.ClearSessionCookieWithDomain(s.cookieDomain))
-		// A pre-vhost (or pre-cookie-domain) host-only session cookie can
-		// coexist with the parent-domain one. Clearing only the Domain variant
-		// leaves that host-only cookie valid, so logout would not actually log
-		// the user out. Clear both scopes.
-		if s.cookieDomain != "" {
-			w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
-		}
-		// Temporary 2FA state must not survive logout (the setup cookie also
-		// carries a plaintext pending TOTP secret).
-		w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
-		w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
-		// Route cookies outlive the session and would keep forwarding bare
-		// paths to backends after logout; clear every one the browser holds.
-		for _, c := range auth.ClearRouteCookies(r.Header.Get("Cookie")) {
-			w.Header().Add("Set-Cookie", c)
-		}
-		http.Redirect(w, r, "/", http.StatusFound)
-	})
+	// Logout (POST-only; GET renders a confirmation page)
+	mux.HandleFunc("/logout", s.handleLogout)
 
 	// Two-factor authentication (second login step)
 	mux.HandleFunc("/login/2fa", func(w http.ResponseWriter, r *http.Request) {
@@ -620,6 +599,43 @@ func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool 
 	target += "?" + r.URL.RawQuery
 	http.Redirect(w, r, target, http.StatusFound)
 	return true
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		// Never change state on GET: a cross-site link/image must not be able
+		// to log the user out. Show a confirmation form instead.
+		sendHTML(w, http.StatusOK, web.LogoutConfirmPage(s.siteTitle))
+		return
+	case http.MethodPost:
+		if !auth.SameOriginRequest(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Set-Cookie", auth.ClearSessionCookieWithDomain(s.cookieDomain))
+	// A pre-vhost (or pre-cookie-domain) host-only session cookie can coexist
+	// with the parent-domain one. Clearing only the Domain variant leaves that
+	// host-only cookie valid, so logout would not actually log the user out.
+	if s.cookieDomain != "" {
+		w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
+	}
+	// Temporary 2FA state must not survive logout (the setup cookie also
+	// carries a plaintext pending TOTP secret).
+	w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
+	w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
+	// Route cookies outlive the session and would keep forwarding bare paths to
+	// backends after logout; clear every one the browser holds.
+	for _, c := range auth.ClearRouteCookies(r.Header.Get("Cookie")) {
+		w.Header().Add("Set-Cookie", c)
+	}
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {

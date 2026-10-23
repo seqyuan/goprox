@@ -370,3 +370,12 @@ func TestDashboardRootServiceNoDoubleSlash(t *testing.T) {
 		t.Fatal("root service favicon URL missing")
 	}
 }
+
+// Logout is a POST; the GET page is only a confirmation and must not perform
+// any state change itself.
+func TestLogoutConfirmPageUsesPost(t *testing.T) {
+	page := LogoutConfirmPage("GoProx")
+	if !strings.Contains(page, `method="POST"`) || !strings.Contains(page, `action="/logout"`) {
+		t.Fatalf("logout confirmation page missing POST form: %s", page)
+	}
+}

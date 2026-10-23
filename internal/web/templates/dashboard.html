@@ -419,7 +419,9 @@
       <div class="account-menu" id="account-menu" hidden>
         <a class="account-item" href="/2fa/setup">%s</a>
         <button type="button" class="account-item" id="theme-toggle"><span class="theme-ico">🌙</span> 外观</button>
-        <a class="account-item" href="/logout">退出</a>
+        <form method="POST" action="/logout" style="margin:0">
+          <button type="submit" class="account-item">退出</button>
+        </form>
       </div>
     </div>
   </div>

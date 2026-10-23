@@ -9,3 +9,5 @@ package config
 func lockConfigFile(string) (func(), error) {
 	return func() {}, nil
 }
+
+func lockUnsupported(error) bool { return false }

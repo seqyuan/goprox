@@ -417,7 +417,10 @@ func UpdateTOTPSecret(path, secret string) error {
 }
 
 // Config lock for safe concurrent writes
-var configLocks sync.Map
+var (
+	configLocks  sync.Map
+	lockWarnings sync.Map
+)
 
 func withConfigLock(path string, fn func() error) error {
 	mu, _ := configLocks.LoadOrStore(path, &sync.Mutex{})
@@ -430,6 +433,15 @@ func withConfigLock(path string, fn func() error) error {
 	// next to the config and is ignored by the users-dir scanner (*.yaml only).
 	unlock, err := lockConfigFile(path + ".lock")
 	if err != nil {
+		if lockUnsupported(err) {
+			// Some NFS mounts cannot take advisory locks. Atomic rename still
+			// prevents truncated reads; only cross-process lost updates remain
+			// possible, so warn once per path and continue.
+			if _, loaded := lockWarnings.LoadOrStore(path, struct{}{}); !loaded {
+				log.Printf("[goprox] WARNING: file locking unavailable for %s (%v); using in-process lock only", path, err)
+			}
+			return fn()
+		}
 		return fmt.Errorf("lock config %s: %w", path, err)
 	}
 	defer unlock()

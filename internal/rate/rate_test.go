@@ -59,3 +59,24 @@ func TestLimiterBlocksAfterMaxFailures(t *testing.T) {
 		t.Fatal("expected unblocked after reset")
 	}
 }
+
+// Flooding many distinct keys must not evict a key that is currently blocked;
+// otherwise an attacker could reset their own limit by creating noise keys.
+func TestSweepKeepsBlockedKeys(t *testing.T) {
+	l := NewLimiter(10, time.Hour)
+	for i := 0; i < 10; i++ {
+		l.RecordFailure("attacked")
+	}
+	for i := 0; i < maxKeys+500; i++ {
+		l.RecordFailure(fmt.Sprintf("noise-%d", i))
+	}
+	if !l.IsBlocked("attacked") {
+		t.Fatal("blocked key was evicted by the key-flood sweep")
+	}
+	l.mu.Lock()
+	size := len(l.failures)
+	l.mu.Unlock()
+	if size > maxKeys {
+		t.Fatalf("map grew past cap: %d > %d", size, maxKeys)
+	}
+}

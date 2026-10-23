@@ -141,7 +141,7 @@ func TestLoginPageNotHijackedByStaleRouteCookie(t *testing.T) {
 // browser user cannot reach backends without logging in.
 func TestLogoutClearsRouteCookies(t *testing.T) {
 	srv, _ := newTestServer(t)
-	req := httptest.NewRequest("GET", "/logout", nil)
+	req := httptest.NewRequest("POST", "/logout", nil)
 	req.Header.Set("Cookie",
 		auth.SetSessionCookie("testsecret", 86400, "alice", "rev", false)+"; "+
 			auth.SetRouteCookie("/proxy/alice/jupyter")+"; "+
@@ -528,5 +528,31 @@ func TestBareServicePostForwardsWithStrippedPrefix(t *testing.T) {
 	}
 	if gotMethod != "POST" || gotPath != "/api" || gotBody != "payload" {
 		t.Fatalf("backend saw %s %q body=%q, want POST /api payload", gotMethod, gotPath, gotBody)
+	}
+}
+
+// The exact /api/services path is a gateway API only for GET/POST. Other
+// methods must fall back to normal backend routing (default_service here),
+// mirroring the /api/* fallback behavior.
+func TestAPIServicesExactPathFallsBackForOtherMethods(t *testing.T) {
+	var gotMethod, gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendAddr(t, backend)
+	srv := serverWithDiamondService(t, host, port, "diamond")
+
+	req := httptest.NewRequest("PUT", "/api/services", strings.NewReader("{}"))
+	req.Header.Set("Cookie", aliceSessionCookie())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if gotMethod != "PUT" || gotPath != "/api/services" {
+		t.Fatalf("backend saw %s %q, want PUT /api/services", gotMethod, gotPath)
 	}
 }

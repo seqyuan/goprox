@@ -201,3 +201,36 @@ func TestBootstrapWorksOnVHost(t *testing.T) {
 		t.Fatalf("Location = %q, want /docs/?token=tok-vhost", got)
 	}
 }
+
+// As-is forwarding (default_service/Referer/route cookie) keeps the browser
+// path, and the redirect targets that same path. Route cookies are stamped on
+// the 302 response, so the post-token request is routed back to the same
+// service; bootstrap is therefore safe here too.
+func TestBootstrapWorksOnAsIsForwarding(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, "auth required")
+	}))
+	defer backend.Close()
+
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{
+		Host: host, Port: mustAtoi(t, port), Path: "/app",
+		AuthBootstrap: &config.AuthBootstrapConfig{Mode: config.BootstrapModeStatic, TokenValue: "tok-asis"},
+	}
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	req.Header.Set("Accept", "text/html")
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	fc.Mode = ForwardAsIs
+	rp := NewReverseProxy(svc, fc)
+
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/dashboard?token=tok-asis" {
+		t.Fatalf("Location = %q, want /dashboard?token=tok-asis", got)
+	}
+}

@@ -94,8 +94,21 @@ func (l *Limiter) sweepIfLarge() {
 			l.failures[k] = filtered
 		}
 	}
-	// Hard cap: Go map iteration is randomized, so eviction is fair-ish.
+	// Hard cap. Prefer evicting keys that are not currently blocked: an
+	// attacker flooding distinct keys must not be able to reset the limit of
+	// the key they are actually attacking. Only if every remaining key is
+	// blocked do we fall back to arbitrary eviction.
 	excess := len(l.failures) - maxKeys
+	for k, times := range l.failures {
+		if excess <= 0 {
+			break
+		}
+		if len(times) >= l.maxFailures {
+			continue
+		}
+		delete(l.failures, k)
+		excess--
+	}
 	for k := range l.failures {
 		if excess <= 0 {
 			break

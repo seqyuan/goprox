@@ -141,8 +141,10 @@ Options:
 ├── goprox                  # 二进制
 └── config/                 # 0700，网关属主
     ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、session_secret）
+    ├── state.yaml.lock     # 并发写文件锁（自动生成，可忽略）
     └── users/              # 每个用户一个独立配置文件
         ├── alice.yaml
+        ├── alice.yaml.lock # 并发写文件锁（自动生成，可忽略）
         └── bob.yaml
 ```
 
@@ -491,7 +493,7 @@ goprox 2fa-reset <用户名>
 | 路径 | 用途 |
 |---|---|
 | `/login` | 网关登录页 / 登录提交 |
-| `/logout` | 退出登录 |
+| `/logout` | 退出登录（POST；GET 仅显示确认页） |
 | `/favicon.ico` | 网关自身图标 |
 | `/api/services`、`/api/services/*` | 卡片增删改、布局调整的 REST API |
 | `/proxy/*` | 服务代理前缀 |

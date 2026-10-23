@@ -257,8 +257,8 @@ func TestProxyOtherUserPathReturns404(t *testing.T) {
 	}
 }
 
-// Logout must not be triggerable from another origin via a link/image or a
-// cross-site POST (logout CSRF). Same-origin and no-Referer requests still work.
+// Logout is POST-only. A cross-site top-level link must only show the
+// confirmation page (no state change), and a cross-site POST must be rejected.
 func TestLogoutRejectsCrossOriginRequests(t *testing.T) {
 	srv, _ := newTestServer(t)
 
@@ -267,8 +267,11 @@ func TestLogoutRejectsCrossOriginRequests(t *testing.T) {
 	req.Header.Set("Referer", "http://evil.example/")
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("cross-host Referer: status = %d, want 403", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cross-site GET: status = %d, want confirmation page 200", rec.Code)
+	}
+	if len(rec.Result().Header.Values("Set-Cookie")) != 0 {
+		t.Fatalf("GET /logout must not clear cookies: %v", rec.Result().Header.Values("Set-Cookie"))
 	}
 
 	req = httptest.NewRequest("POST", "/logout", nil)
@@ -278,6 +281,9 @@ func TestLogoutRejectsCrossOriginRequests(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin POST: status = %d, want 403", rec.Code)
+	}
+	if len(rec.Result().Header.Values("Set-Cookie")) != 0 {
+		t.Fatalf("rejected POST must not clear cookies: %v", rec.Result().Header.Values("Set-Cookie"))
 	}
 }
 
