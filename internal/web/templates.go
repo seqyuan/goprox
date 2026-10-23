@@ -260,7 +260,10 @@ func cardVHostURL(s config.ServiceConfig, publicScheme, publicHost string) strin
 }
 
 func renderCard(s config.ServiceConfig, username string, writable bool, index, total int, publicScheme, publicHost string) string {
-	proxyURL := fmt.Sprintf("/proxy/%s%s/", username, s.Path)
+	proxyURL := fmt.Sprintf("/proxy/%s%s", username, s.Path)
+	if !strings.HasSuffix(proxyURL, "/") {
+		proxyURL += "/"
+	}
 	desc := ""
 	if s.Description != "" {
 		desc = fmt.Sprintf(`<p class="card-desc">%s</p>`, esc(s.Description))
@@ -333,7 +336,7 @@ const faviconOnError = "var e=this,l=e.getAttribute('data-favs').split(' '),i=+(
 // back to the colored first-letter block. This covers modern apps that serve
 // /favicon.svg or sized PNGs instead of the legacy .ico.
 func renderFavicon(username, servicePath, firstChar string) string {
-	base := fmt.Sprintf("/proxy/%s%s", username, servicePath)
+	base := strings.TrimSuffix(fmt.Sprintf("/proxy/%s%s", username, servicePath), "/")
 	favs := []string{
 		base + "/favicon.ico",
 		base + "/favicon.svg",

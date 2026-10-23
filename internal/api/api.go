@@ -65,16 +65,31 @@ func (h *Handler) validateHostnames(username, serviceID string, hostnames []stri
 	return normalized, nil
 }
 
+// isGatewayRoute reports whether path+method is a GoProx management API route.
+// Unknown subpaths under /api/services/ are deliberately not claimed: the
+// server falls back to proxying them to a backend (e.g. an app that happens to
+// expose /api/services/status), while the exact gateway routes stay reserved.
+func (h *Handler) isGatewayRoute(path, method string) bool {
+	switch {
+	case path == "/api/services":
+		return method == http.MethodGet || method == http.MethodPost
+	case path == "/api/services/layout":
+		return method == http.MethodPut || method == http.MethodDelete
+	case strings.HasPrefix(path, "/api/services/"):
+		id := strings.TrimPrefix(path, "/api/services/")
+		if id == "" || strings.Contains(id, "/") {
+			return false
+		}
+		return method == http.MethodPut || method == http.MethodDelete
+	}
+	return false
+}
+
 // ServeHTTP implements http.Handler. Returns false if the request is not an API route.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
 
-	// Only handle known API routes
-	isAPI := path == "/api/services" ||
-		path == "/api/services/layout" ||
-		strings.HasPrefix(path, "/api/services/")
-
-	if !isAPI {
+	if !h.isGatewayRoute(path, r.Method) {
 		return false
 	}
 

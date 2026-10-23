@@ -137,7 +137,8 @@
   var FAVICON_ONERR = "var e=this,l=e.getAttribute('data-favs').split(' '),i=+(e.getAttribute('data-fav-idx')||0)+1;if(i<l.length){e.setAttribute('data-fav-idx',i);e.src=l[i];}else{e.style.display='none';e.nextElementSibling.style.display='flex';}";
 
   function renderCard(s, index, total) {
-    var proxyUrl = "/proxy/" + encodeURIComponent(boot.username) + s.path + "/";
+    var proxyUrl = "/proxy/" + encodeURIComponent(boot.username) + s.path;
+    if (proxyUrl.slice(-1) !== "/") proxyUrl += "/";
     var desc = s.description ? '<p class="card-desc">' + esc(s.description) + '</p>' : '';
     var upDis = index === 0 ? " disabled" : "";
     var downDis = index >= total - 1 ? " disabled" : "";
@@ -149,7 +150,7 @@
         '<button type="button" class="card-delete" data-delete-id="' + esc(s.id) + '" title="删除" aria-label="删除">×</button>' +
         '</div></div>'
       : '';
-    var thumbBase = '/proxy/' + encodeURIComponent(boot.username) + s.path;
+    var thumbBase = ('/proxy/' + encodeURIComponent(boot.username) + s.path).replace(/\/+$/, "");
     var thumbFavs = [thumbBase + '/favicon.ico', thumbBase + '/favicon.svg', thumbBase + '/favicon.png', thumbBase + '/favicon-32x32.png', thumbBase + '/favicon-16x16.png'];
     var cp = (s.name || '?').codePointAt(0);
     var fl = cp ? String.fromCodePoint(cp).toUpperCase() : '?';

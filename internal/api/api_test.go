@@ -477,3 +477,25 @@ func TestUpdateLayoutRejectsOversizedCategory(t *testing.T) {
 		t.Fatalf("expected 400 for oversized category, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// Unknown subpaths under /api/services/ must not be claimed by the gateway API;
+// the caller (server mux) needs to be able to fall back to a backend route.
+func TestUnknownServicesSubpathNotClaimed(t *testing.T) {
+	h := newTestHandler(t)
+	cookie := auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(strings.Repeat("1", 64)), false)
+	for _, tc := range []struct{ method, url string }{
+		{"GET", "/api/services/status"},
+		{"POST", "/api/services/status"},
+		{"GET", "/api/services/layout"},
+		{"PATCH", "/api/services/x"},
+		{"PUT", "/api/services/x/y"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.url, nil)
+		req.Header.Set("Cookie", cookie)
+		req.Host = "gw:30152"
+		rec := httptest.NewRecorder()
+		if h.ServeHTTP(rec, req) {
+			t.Errorf("%s %s: API claimed an unknown route (status %d)", tc.method, tc.url, rec.Code)
+		}
+	}
+}

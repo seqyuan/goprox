@@ -61,23 +61,30 @@ func TestVerifyTOTP(t *testing.T) {
 // The pending 2FA token must round-trip and reject tampering / expiry.
 func TestPendingToken(t *testing.T) {
 	const secret = "session-secret"
-	token := CreatePendingToken("alice", secret, 300)
-	userID, ok := ValidatePendingToken(token, secret)
+	token := CreatePendingToken("alice", secret, 300, "rev-a")
+	userID, ok := ValidatePendingToken(token, secret, "rev-a")
 	if !ok || userID != "alice" {
 		t.Fatalf("pending token round-trip failed: userID=%q ok=%v", userID, ok)
 	}
+	if got, err := PendingTokenUser(token); err != nil || got != "alice" {
+		t.Fatalf("PendingTokenUser = %q, %v; want alice", got, err)
+	}
+	// A password change (new rev) invalidates the in-flight password step.
+	if _, ok := ValidatePendingToken(token, secret, "rev-b"); ok {
+		t.Fatal("pending token must fail after the password revision changes")
+	}
 
 	// Tampered token must fail.
-	if _, ok := ValidatePendingToken(token+"x", secret); ok {
+	if _, ok := ValidatePendingToken(token+"x", secret, "rev-a"); ok {
 		t.Fatal("tampered token must fail")
 	}
 	// Wrong secret must fail.
-	if _, ok := ValidatePendingToken(token, "other"); ok {
+	if _, ok := ValidatePendingToken(token, "other", "rev-a"); ok {
 		t.Fatal("token signed with wrong secret must fail")
 	}
 	// Expired token must fail.
-	expired := CreatePendingToken("alice", secret, -1)
-	if _, ok := ValidatePendingToken(expired, secret); ok {
+	expired := CreatePendingToken("alice", secret, -1, "rev-a")
+	if _, ok := ValidatePendingToken(expired, secret, "rev-a"); ok {
 		t.Fatal("expired token must fail")
 	}
 }
@@ -93,7 +100,7 @@ func TestSetupToken(t *testing.T) {
 	}
 
 	// A login pending token must NOT validate as a setup token.
-	login := CreatePendingToken("alice", secret, 300)
+	login := CreatePendingToken("alice", secret, 300, "rev")
 	if _, _, ok := ValidateSetupToken(login, secret); ok {
 		t.Fatal("login pending token must not validate as setup token")
 	}

@@ -352,3 +352,21 @@ func TestDashboardNoVHostLinkWithoutHostnames(t *testing.T) {
 		t.Fatal("card-vhost must not be rendered without hostnames")
 	}
 }
+
+// A service mounted at "/" must not produce double slashes in card links or
+// favicon URLs; ServeMux would redirect them and the base href would be odd.
+func TestDashboardRootServiceNoDoubleSlash(t *testing.T) {
+	svcs := []config.ServiceConfig{{
+		ID: "root", Name: "Root", Host: "127.0.0.1", Port: 1, Path: "/",
+	}}
+	page := DashboardPage("GoProx", "alice", svcs, true, false, "", "")
+	if strings.Contains(page, "/proxy/alice//") {
+		t.Fatalf("root service produced a double slash: %s", page)
+	}
+	if !strings.Contains(page, `href="/proxy/alice/"`) {
+		t.Fatal("root service card link missing /proxy/alice/")
+	}
+	if !strings.Contains(page, "/proxy/alice/favicon.ico") {
+		t.Fatal("root service favicon URL missing")
+	}
+}

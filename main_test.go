@@ -131,3 +131,28 @@ func TestRunSSOHMACOnlyKeepsExistingHeader(t *testing.T) {
 		t.Fatalf("hmac_secret = %q, want new-secret", st.SSO.HMACSecret)
 	}
 }
+
+// --tls-selfsigned must reuse an existing pair so the browser does not see a
+// new untrusted certificate on every restart. Deleting the files rotates it.
+func TestEnsureSelfSignedCertReusesExisting(t *testing.T) {
+	dir := t.TempDir()
+	cert1, key1, err := ensureSelfSignedCert(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certBytes1, err := os.ReadFile(cert1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert2, key2, err := ensureSelfSignedCert(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certBytes2, err := os.ReadFile(cert2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert1 != cert2 || key1 != key2 || string(certBytes1) != string(certBytes2) {
+		t.Fatal("ensureSelfSignedCert regenerated an existing certificate")
+	}
+}

@@ -562,7 +562,7 @@ func runServer(opts options) {
 		state.Server.TLSKey = mustAbsPath(opts.tlsKey)
 	}
 	if opts.tlsSelfSigned {
-		cert, key, err := generateSelfSignedCert(filepath.Join(configDir, "tls"))
+		cert, key, err := ensureSelfSignedCert(filepath.Join(configDir, "tls"))
 		if err != nil {
 			log.Fatalf("generate self-signed cert: %v", err)
 		}

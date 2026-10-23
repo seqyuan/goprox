@@ -216,6 +216,18 @@ func (s *Server) Handler() http.Handler {
 
 	// Logout
 	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
+		// Mild logout-CSRF fence: a cross-site link/image carries a Referer
+		// from another authority, and a cross-site POST carries a foreign
+		// Origin. (A top-level link with an explicitly suppressed Referer is
+		// still possible; the dashboard uses a normal same-origin link.)
+		if r.Header.Get("Referer") != "" && s.refererPath(r) == "" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if r.Method != "GET" && r.Method != "HEAD" && !auth.SameOriginRequest(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Set-Cookie", auth.ClearSessionCookieWithDomain(s.cookieDomain))
 		// A pre-vhost (or pre-cookie-domain) host-only session cookie can
 		// coexist with the parent-domain one. Clearing only the Domain variant
@@ -294,8 +306,16 @@ func (s *Server) Handler() http.Handler {
 			// Bare service paths (e.g. /jupyter) must be redirected to the proxied
 			// URL before route-cookie forwarding can hijack them and 404.
 			session := s.sessionFromCookies(r.Header.Get("Cookie"))
-			if session.Valid && session.UserID != "" && r.Method == "GET" {
+			if session.Valid && session.UserID != "" && (r.Method == "GET" || r.Method == "HEAD") {
 				if s.redirectBareService(w, r, session.UserID) {
+					return
+				}
+			}
+			// Other methods cannot be redirected without changing/losing the
+			// body, so forward them to the owning service with the service path
+			// stripped (e.g. POST /jupyter/api -> backend /api).
+			if session.Valid && session.UserID != "" && r.Method != "GET" && r.Method != "HEAD" {
+				if s.forwardBareService(w, r, session.UserID) {
 					return
 				}
 			}
@@ -441,6 +461,12 @@ func (s *Server) handleVirtualHost(w http.ResponseWriter, r *http.Request) bool 
 
 	session := s.sessionFromCookies(r.Header.Get("Cookie"))
 	if !session.Valid || session.UserID == "" {
+		// Browser navigations get the main login redirect; API/XHR clients
+		// get a 401 instead of a 302 to HTML, which they cannot parse.
+		if !wantsHTML(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return true
+		}
 		s.redirectToMainLogin(w, r)
 		return true
 	}
@@ -728,7 +754,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Account has TOTP enabled: hold at the second factor before issuing
 		// a real session.
 		if userConfig != nil && userConfig.Auth.TOTPSecret != "" {
-			w.Header().Set("Set-Cookie", auth.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, secure))
+			rev := auth.SessionRev(userConfig.Auth.PasswordHash)
+			w.Header().Set("Set-Cookie", auth.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, rev, secure))
 			http.Redirect(w, r, "/login/2fa?next="+url.QueryEscape(next), http.StatusFound)
 			return
 		}
@@ -755,8 +782,7 @@ func (s *Server) handleTwoFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	userID, ok := auth.ValidatePendingToken(cookies[auth.TOTACookieName], s.sessionSecret)
+	userID, ok := s.pendingTwoFAUser(r.Header.Get("Cookie"))
 	if !ok || userID == "" {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
@@ -768,14 +794,28 @@ func (s *Server) handleTwoFA(w http.ResponseWriter, r *http.Request) {
 	sendHTML(w, 200, web.TwoFAPage(s.siteTitle, "", next))
 }
 
+// pendingTwoFAUser validates the pending-2FA cookie against the account's
+// current password revision. A password reset therefore invalidates an
+// in-flight password step, not only already-issued sessions.
+func (s *Server) pendingTwoFAUser(cookieHeader string) (string, bool) {
+	token := auth.ParseCookies(cookieHeader)[auth.TOTACookieName]
+	if token == "" {
+		return "", false
+	}
+	userID, err := auth.PendingTokenUser(token)
+	if err != nil || !config.IsValidUsername(userID) {
+		return "", false
+	}
+	return auth.ValidatePendingToken(token, s.sessionSecret, s.currentSessionRev(userID))
+}
+
 func (s *Server) handleTwoFAPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		sendHTML(w, 500, web.TwoFAPage(s.siteTitle, "请求处理失败", ""))
 		return
 	}
 
-	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	userID, ok := auth.ValidatePendingToken(cookies[auth.TOTACookieName], s.sessionSecret)
+	userID, ok := s.pendingTwoFAUser(r.Header.Get("Cookie"))
 	if !ok || userID == "" {
 		// Pending token missing/expired: back to the password step.
 		next := r.FormValue("next")
@@ -961,7 +1001,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if multiMatch != nil {
 		pathUser := config.UsernameFromProxyPath(path)
 		if pathUser == "" || pathUser != session.UserID {
-			sendHTML(w, 403, web.NotFoundPage(s.siteTitle))
+			// Match vhost behavior: hide other users' services instead of
+			// returning 403, which would confirm that the path exists.
+			sendHTML(w, http.StatusNotFound, web.NotFoundPage(s.siteTitle))
 			return
 		}
 		s.proxyRequest(w, r, multiMatch)
@@ -1251,6 +1293,26 @@ func (s *Server) bestBareService(username, path string) *config.ServiceConfig {
 	return bestSvc
 }
 
+// forwardBareService proxies a non-GET bare request directly to the service
+// that owns the path. A redirect (used for GET) would lose the method/body, so
+// strip the service prefix and forward instead.
+func (s *Server) forwardBareService(w http.ResponseWriter, r *http.Request, username string) bool {
+	svc := s.bestBareService(username, r.URL.Path)
+	if svc == nil {
+		return false
+	}
+	remaining := r.URL.Path[len(svc.Path):]
+	if remaining == "" {
+		remaining = "/"
+	}
+	s.proxyRequest(w, r, &config.ServiceMatch{
+		Username:      username,
+		Service:       svc,
+		RemainingPath: remaining,
+	})
+	return true
+}
+
 func (s *Server) redirectBareService(w http.ResponseWriter, r *http.Request, username string) bool {
 	bestSvc := s.bestBareService(username, r.URL.Path)
 	if bestSvc == nil {
@@ -1356,6 +1418,15 @@ func (s *Server) matchRootAbsoluteReferer(r *http.Request, username string) (*co
 	// Canonical page of a non-flagged service: do not let a stale route
 	// cookie for a different service steal its bare paths.
 	return nil, true
+}
+
+// wantsHTML reports whether the request looks like a browser document
+// navigation (Accept: text/html), as opposed to an XHR/fetch/API call.
+func wantsHTML(r *http.Request) bool {
+	if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("Sec-Fetch-Dest"), "document")
 }
 
 // refererPath returns the Referer's path only when its host matches the

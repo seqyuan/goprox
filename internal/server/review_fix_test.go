@@ -214,3 +214,69 @@ func TestTwoFASetupRejectsOtherUsersToken(t *testing.T) {
 		t.Fatalf("cross-user setup token enrolled a TOTP secret: %q", after.Auth.TOTPSecret)
 	}
 }
+
+// A pending 2FA token is bound to the password-hash revision. After a password
+// change, an in-flight password step must not be able to complete the login.
+func TestTwoFARejectsPendingTokenAfterPasswordChange(t *testing.T) {
+	srv, _ := newTestServer(t)
+	token := auth.CreatePendingToken("alice", "testsecret", 300, "stale-revision")
+
+	req := httptest.NewRequest("GET", "/login/2fa", nil)
+	req.Header.Set("Cookie", auth.TOTACookieName+"="+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("stale pending token: status=%d location=%q, want 302 /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// Path mode must not reveal another user's service via a 403: vhost mode
+// already hides them with 404, so use the same response here.
+func TestProxyOtherUserPathReturns404(t *testing.T) {
+	srv, cfgPath := newTestServer(t)
+	configDir := filepath.Dir(filepath.Dir(cfgPath))
+	bobPath := config.UserConfigPath(configDir, "bob")
+	bobCfg := "auth:\n  password_hash: \"" + strings.Repeat("2", 64) + "\"\nservices:\n  - id: svc\n    name: Svc\n    host: 127.0.0.1\n    port: 1\n    path: /svc\n"
+	if err := os.WriteFile(bobPath, []byte(bobCfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	aliceCfg, err := config.LoadUserConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(aliceCfg.Auth.PasswordHash), false)
+
+	req := httptest.NewRequest("GET", "/proxy/bob/svc", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for another user's path", rec.Code)
+	}
+}
+
+// Logout must not be triggerable from another origin via a link/image or a
+// cross-site POST (logout CSRF). Same-origin and no-Referer requests still work.
+func TestLogoutRejectsCrossOriginRequests(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/logout", nil)
+	req.Host = "gw:30152"
+	req.Header.Set("Referer", "http://evil.example/")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-host Referer: status = %d, want 403", rec.Code)
+	}
+
+	req = httptest.NewRequest("POST", "/logout", nil)
+	req.Host = "gw:30152"
+	req.Header.Set("Origin", "http://evil.example")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin POST: status = %d, want 403", rec.Code)
+	}
+}

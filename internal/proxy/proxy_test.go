@@ -62,6 +62,7 @@ func TestBaseForPath(t *testing.T) {
 		want      string
 	}{
 		{"/proxy/alice/docs", "/", "/proxy/alice/docs/"},
+		{"/proxy/alice/docs/", "/", "/proxy/alice/docs/"},
 		{"/proxy/alice/docs", "/report/page.html", "/proxy/alice/docs/report/"},
 		{"/proxy/alice/docs", "/report/", "/proxy/alice/docs/report/"},
 		{"/proxy/alice/docs", "/my dir/page.html", "/proxy/alice/docs/my%20dir/"},
@@ -1029,5 +1030,32 @@ func TestInjectBaseTagIgnoresHeaderElement(t *testing.T) {
 	}
 	if iBase > iBody {
 		t.Fatalf("base injected after <body>: %q", out)
+	}
+}
+
+// Behind an HTTPS gateway the backend still receives plain HTTP; Origin must
+// use the backend connection's scheme so the backend's same-origin check sees
+// a match. Using the browser-facing https scheme would fail such checks.
+func TestOriginRewrittenToHTTPForHTTPSGateway(t *testing.T) {
+	var gotOrigin, gotHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin, gotHost = r.Header.Get("Origin"), r.Host
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+
+	req := httptest.NewRequest("POST", "/api/x", nil)
+	req.Host = "gw.example.test"
+	req.Header.Set("Origin", "https://gw.example.test")
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	fc.Proto = "https"
+	rp := NewReverseProxy(svc, fc)
+	rp.ServeHTTP(httptest.NewRecorder(), req)
+
+	want := "http://" + gotHost
+	if gotOrigin != want {
+		t.Fatalf("backend Origin = %q, want %q", gotOrigin, want)
 	}
 }

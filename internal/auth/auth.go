@@ -620,32 +620,51 @@ func totpCode(key []byte, counter uint64) string {
 // CreatePendingToken signs a short-lived token proving the password step
 // already succeeded, so the 2FA step can be entered without re-typing the
 // password. The "2fa" domain prefix keeps it distinct from session tokens.
-func CreatePendingToken(userID, secret string, ttlSec int) string {
+// rev is the account's current password-hash revision; embedding it means a
+// pending password step cannot be used after the password is changed.
+func CreatePendingToken(userID, secret string, ttlSec int, rev string) string {
 	expiry := time.Now().Unix() + int64(ttlSec)
-	payload := fmt.Sprintf("2fa|%s|%d", userID, expiry)
+	payload := fmt.Sprintf("2fa|%s|%d|%s", userID, expiry, rev)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
 	return base64URLEncode([]byte(payload + "|" + sig))
 }
 
-// ValidatePendingToken verifies a pending-2FA token and returns the username.
-func ValidatePendingToken(token, secret string) (string, bool) {
+// PendingTokenUser decodes the username from a pending-2FA token WITHOUT
+// verifying it. Callers use it to look up the account's current revision and
+// then call ValidatePendingToken, which verifies against that revision.
+func PendingTokenUser(token string) (string, error) {
+	decoded, err := base64URLDecode(token)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.SplitN(string(decoded), "|", 5)
+	if len(parts) != 5 || parts[0] != "2fa" || parts[1] == "" {
+		return "", fmt.Errorf("malformed pending token")
+	}
+	return parts[1], nil
+}
+
+// ValidatePendingToken verifies a pending-2FA token against the account's
+// CURRENT revision and returns the username. The signature is recomputed over
+// currentRev, so a token issued before a password change fails validation.
+func ValidatePendingToken(token, secret, currentRev string) (string, bool) {
 	decoded, err := base64URLDecode(token)
 	if err != nil {
 		return "", false
 	}
-	parts := strings.SplitN(string(decoded), "|", 4)
-	if len(parts) != 4 || parts[0] != "2fa" {
+	parts := strings.SplitN(string(decoded), "|", 5)
+	if len(parts) != 5 || parts[0] != "2fa" {
 		return "", false
 	}
-	userID, expiryStr, sig := parts[1], parts[2], parts[3]
+	userID, expiryStr, sig := parts[1], parts[2], parts[4]
 	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
 	if err != nil || time.Now().Unix() > expiry {
 		return "", false
 	}
 
-	payload := fmt.Sprintf("2fa|%s|%d", userID, expiry)
+	payload := fmt.Sprintf("2fa|%s|%d|%s", userID, expiry, currentRev)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	expected := hex.EncodeToString(mac.Sum(nil))
@@ -656,8 +675,8 @@ func ValidatePendingToken(token, secret string) (string, bool) {
 }
 
 // SetPendingCookie creates a Set-Cookie header for the pending 2FA token.
-func SetPendingCookie(secret string, ttlSec int, userID string, secure bool) string {
-	token := CreatePendingToken(userID, secret, ttlSec)
+func SetPendingCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+	token := CreatePendingToken(userID, secret, ttlSec, rev)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
 	if secure {

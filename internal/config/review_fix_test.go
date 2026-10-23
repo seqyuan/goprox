@@ -453,3 +453,59 @@ func TestAddServiceRejectsInvalidAutoPath(t *testing.T) {
 		t.Fatal("AddService accepted an invalid auto-generated path")
 	}
 }
+
+// Login/session-revision lookups are cached by mtime+size for performance, but
+// password and TOTP changes must be visible on the very next lookup.
+func TestGetUserConfigForLoginCacheInvalidation(t *testing.T) {
+	configDir := t.TempDir()
+	cfgPath := UserConfigPath(configDir, "alice")
+	if err := EnsureUserConfig(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	r := NewUserRegistry(configDir)
+
+	first := r.GetUserConfigForLogin("alice")
+	if first == nil {
+		t.Fatal("initial lookup failed")
+	}
+	if second := r.GetUserConfigForLogin("alice"); second != first {
+		t.Fatal("unchanged config was not served from cache")
+	}
+
+	newHash := HashPassword("new-password")
+	if err := UpdatePasswordHash(cfgPath, newHash); err != nil {
+		t.Fatal(err)
+	}
+	after := r.GetUserConfigForLogin("alice")
+	if after == nil || after.Auth.PasswordHash != newHash {
+		t.Fatalf("password change not observed: %+v", after)
+	}
+
+	if err := UpdateTOTPSecret(cfgPath, "GEZDGNBVGY3TQOJQ"); err != nil {
+		t.Fatal(err)
+	}
+	after = r.GetUserConfigForLogin("alice")
+	if after == nil || after.Auth.TOTPSecret != "GEZDGNBVGY3TQOJQ" {
+		t.Fatalf("TOTP change not observed: %+v", after)
+	}
+}
+
+// A missing path in a hand-written YAML must not silently become "/" (a
+// catch-all service); an explicit path "/" is still accepted.
+func TestLoadUserConfigRequiresExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alice.yaml")
+	raw := "auth:\n  password_hash: \"" + strings.Repeat("1", 64) + "\"\nservices:\n" +
+		"  - id: missing\n    name: Missing\n    host: 127.0.0.1\n    port: 1\n" +
+		"  - id: root\n    name: Root\n    host: 127.0.0.1\n    port: 2\n    path: /\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 1 || cfg.Services[0].ID != "root" || cfg.Services[0].Path != "/" {
+		t.Fatalf("services = %+v, want only explicit root", cfg.Services)
+	}
+}

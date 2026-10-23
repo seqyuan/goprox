@@ -84,7 +84,7 @@ func BuildProxyForwardContext(r *http.Request, username, servicePath string, leg
 	}
 	return ProxyForwardContext{
 		Prefix:       prefix,
-		Base:         prefix + "/",
+		Base:         BaseForPath(prefix, "/"),
 		ClientIP:     auth.ClientIP(r),
 		Proto:        proto(r),
 		Host:         r.Host,
@@ -99,7 +99,9 @@ func BuildProxyForwardContext(r *http.Request, username, servicePath string, leg
 // /proxy/user/svc/report/; for the service root (remaining "/") it is the
 // service prefix. The result is URL-escaped.
 func BaseForPath(prefix, remaining string) string {
-	full := prefix + remaining
+	// Join without doubling the slash when the prefix already ends in "/"
+	// (a service whose path is "/"), so the injected base stays canonical.
+	full := strings.TrimSuffix(prefix, "/") + "/" + strings.TrimPrefix(remaining, "/")
 	if !strings.HasSuffix(full, "/") {
 		full = pathpkg.Dir(full)
 	}
@@ -291,7 +293,11 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			// clients calling the proxied API from another site) are left
 			// untouched so backend CORS semantics stay intact.
 			if origin := pr.In.Header.Get("Origin"); origin != "" && originAuthorityMatches(origin, fc.Host) {
-				pr.Out.Header.Set("Origin", fc.Proto+"://"+target.Host)
+				// Use the backend connection's scheme (always http), not the
+				// browser-facing fc.Proto: an HTTPS gateway still talks plain
+				// HTTP to the backend, and backends compare Origin with the
+				// scheme they actually received.
+				pr.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
 			}
 
 			// Throttle the request body (upload) to the per-service cap. The
@@ -343,7 +349,7 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				// narrowed. In path modes only canonical /proxy/ access re-roots
 				// them; bare/root-path access leaves Path untouched.
 				if fc.Mode != ForwardVHost && strings.HasPrefix(fc.OriginalPath, "/proxy/") {
-					proxyPath = fc.Prefix + "/"
+					proxyPath = strings.TrimSuffix(fc.Prefix, "/") + "/"
 				}
 				secure := fc.Proto == "https"
 				for _, c := range cookies {

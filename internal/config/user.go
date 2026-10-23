@@ -284,7 +284,20 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 	// proxied pages (<base> injection), route cookies, or routing are skipped
 	// and reported once so the operator can fix the config.
 	for i := 0; i < len(cfg.Services); {
-		cfg.Services[i].Path = normalizePath(cfg.Services[i].Path)
+		rawPath := cfg.Services[i].Path
+		if strings.TrimSpace(rawPath) == "" {
+			// AddService auto-generates a path for new services, but a
+			// hand-written config with no path would otherwise become a catch-all
+			// "/" service and silently claim unrelated routes. Require an explicit
+			// path (use "/" deliberately if a catch-all is intended).
+			key := path + "\x00" + cfg.Services[i].ID + "\x00empty-path"
+			if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+				log.Printf("[goprox] skip service %q of %s: path is required (use \"/\" for a root service)", cfg.Services[i].ID, path)
+			}
+			cfg.Services = append(cfg.Services[:i], cfg.Services[i+1:]...)
+			continue
+		}
+		cfg.Services[i].Path = normalizePath(rawPath)
 		if err := ValidatePath(cfg.Services[i].Path); err != nil {
 			key := path + "\x00" + cfg.Services[i].ID
 			if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {

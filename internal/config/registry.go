@@ -307,6 +307,19 @@ func (r *UserRegistry) ListUsers() []*UserRecord {
 	return result
 }
 
+// loginConfigCache caches parsed user configs for session-revision lookups,
+// keyed by the config path and invalidated by mtime/size. Every proxied request
+// calls currentSessionRev, so reading and parsing YAML on each request is
+// unnecessarily expensive. Atomic writes (rename) change mtime, so password,
+// TOTP and service edits are observed on the next lookup.
+type loginConfigCacheEntry struct {
+	modTime time.Time
+	size    int64
+	cfg     *UserConfig
+}
+
+var loginConfigCache sync.Map
+
 // GetUserConfigForLogin loads a user config directly for login verification.
 func (r *UserRegistry) GetUserConfigForLogin(username string) *UserConfig {
 	if !IsValidUsername(username) {
@@ -314,14 +327,27 @@ func (r *UserRegistry) GetUserConfigForLogin(username string) *UserConfig {
 	}
 
 	configPath := UserConfigPath(r.configDir, username)
-	if _, err := os.Stat(configPath); err != nil {
+	info, err := os.Stat(configPath)
+	if err != nil {
+		loginConfigCache.Delete(configPath)
 		return nil
+	}
+	if v, ok := loginConfigCache.Load(configPath); ok {
+		entry := v.(loginConfigCacheEntry)
+		if entry.size == info.Size() && entry.modTime.Equal(info.ModTime()) {
+			return entry.cfg
+		}
 	}
 
 	cfg, err := LoadUserConfig(configPath)
 	if err != nil {
 		return nil
 	}
+	loginConfigCache.Store(configPath, loginConfigCacheEntry{
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		cfg:     cfg,
+	})
 	return cfg
 }
 
@@ -369,10 +395,16 @@ func (r *UserRegistry) FindService(requestPath string) *ServiceMatch {
 	for i := range user.Config.Services {
 		svc := &user.Config.Services[i]
 		sp := svc.Path
-		if pathAfterUser == sp || strings.HasPrefix(pathAfterUser, sp+"/") {
+		// A service mounted at "/" owns every path under /proxy/<user>/, but
+		// a more specific service path still wins via the longest match below.
+		matches := sp == "/" || pathAfterUser == sp || strings.HasPrefix(pathAfterUser, sp+"/")
+		if matches {
 			if len(sp) > bestLen {
 				bestLen = len(sp)
 				remaining := pathAfterUser[len(sp):]
+				if sp == "/" {
+					remaining = pathAfterUser
+				}
 				if remaining == "" {
 					remaining = "/"
 				}

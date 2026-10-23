@@ -76,6 +76,8 @@ func vhostRequest(t *testing.T, srv *Server, method, host, path, cookie string) 
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	req.Host = host
+	// Browser navigation, so unauthenticated requests get the login redirect.
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	if cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	}
@@ -387,5 +389,31 @@ func TestLoginNextRequiresNonstandardPublicPort(t *testing.T) {
 	}
 	if rec := post("http://hugo.example.test/docs/"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
 		t.Fatalf("missing port: status=%d location=%q, want /", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// Unauthenticated API/XHR requests on a vhost must get 401, not a 302 to the
+// login HTML page (which fetch clients would try to parse as their own data).
+func TestVHostUnauthenticatedAPIReturns401(t *testing.T) {
+	backend := newVHostBackend(t, "hugo")
+	host, port := backendAddr(t, backend.srv)
+	dir := t.TempDir()
+	writeVHostUser(t, dir, "alice", "hugo", "/hugo", "hugo.example.test", host, port, "pw")
+	srv := newVHostServer(t, dir)
+
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	req.Host = "hugo.example.test"
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Location") != "" {
+		t.Fatalf("API request must not be redirected to login: %q", rec.Header().Get("Location"))
+	}
+	if backend.path != "" {
+		t.Fatalf("backend must not be reached, got %q", backend.path)
 	}
 }

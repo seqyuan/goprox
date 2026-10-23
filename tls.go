@@ -58,6 +58,20 @@ func collectSANs() (dnsNames []string, ips []net.IP) {
 	return
 }
 
+// ensureSelfSignedCert reuses an existing certificate/key pair in dir and only
+// generates a new one when either file is missing. Reusing the pair keeps the
+// browser trust decision stable across restarts (delete the files to rotate).
+func ensureSelfSignedCert(dir string) (certPath, keyPath string, err error) {
+	certPath = filepath.Join(dir, "server.crt")
+	keyPath = filepath.Join(dir, "server.key")
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			return certPath, keyPath, nil
+		}
+	}
+	return generateSelfSignedCert(dir)
+}
+
 // generateSelfSignedCert writes a 10-year self-signed ECDSA certificate and
 // key into dir (default config/tls/server.crt / server.key, mode 0600) and
 // returns their paths. The certificate covers loopback, the hostname, and all

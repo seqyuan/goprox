@@ -141,3 +141,32 @@ func TestRegistryHostOwners(t *testing.T) {
 		t.Fatalf("all owners = %#v", all)
 	}
 }
+
+// A service whose path is "/" owns every path under /proxy/<user>/, while a
+// more specific path still wins. Previously the root service only matched the
+// exact prefix and its favicon/subresources 404ed.
+func TestFindServiceRootPathMatchesSubpaths(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := UserConfigPath(dir, "alice")
+	cfg := "auth:\n  password_hash: \"" + strings.Repeat("1", 64) + "\"\nservices:\n" +
+		"  - id: root\n    name: Root\n    host: 127.0.0.1\n    port: 1\n    path: /\n" +
+		"  - id: app\n    name: App\n    host: 127.0.0.1\n    port: 2\n    path: /app\n"
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewUserRegistry(dir)
+	r.Reload()
+
+	if m := r.FindService("/proxy/alice/favicon.ico"); m == nil || m.Service.ID != "root" || m.RemainingPath != "/favicon.ico" {
+		t.Fatalf("root service match = %+v", m)
+	}
+	if m := r.FindService("/proxy/alice/app/x"); m == nil || m.Service.ID != "app" || m.RemainingPath != "/x" {
+		t.Fatalf("specific service must win: %+v", m)
+	}
+	if m := r.FindService("/proxy/alice/"); m == nil || m.Service.ID != "root" || m.RemainingPath != "/" {
+		t.Fatalf("root service root match = %+v", m)
+	}
+}

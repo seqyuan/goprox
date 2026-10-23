@@ -502,3 +502,31 @@ func TestProxiedUploadBodyReachesBackend(t *testing.T) {
 		t.Fatalf("backend received %q, want hello-upload", got)
 	}
 }
+
+// Non-GET requests to a bare service path cannot be redirected (that would
+// change the method and drop the body). They must be forwarded to the owning
+// service with the service prefix stripped.
+func TestBareServicePostForwardsWithStrippedPrefix(t *testing.T) {
+	var gotPath, gotMethod, gotBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendAddr(t, backend)
+	srv := srvForBackend(t, host, port)
+
+	req := httptest.NewRequest("POST", "/jupyter/api", strings.NewReader("payload"))
+	req.Header.Set("Cookie", aliceSessionCookie())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if gotMethod != "POST" || gotPath != "/api" || gotBody != "payload" {
+		t.Fatalf("backend saw %s %q body=%q, want POST /api payload", gotMethod, gotPath, gotBody)
+	}
+}
