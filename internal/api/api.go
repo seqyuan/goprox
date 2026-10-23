@@ -270,6 +270,15 @@ func (h *Handler) handleUpdateLayout(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
+	// Keep layout categories bounded like add/update; the layout endpoint is
+	// otherwise a way to bypass the category length limit and bloat the page.
+	for _, item := range body.Items {
+		if len(item.Category) > 100 {
+			writeJSON(w, 400, map[string]string{"error": "category too long (≤ 100 chars)"})
+			return
+		}
+	}
+
 	configPath, err := h.getConfigPath(username)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": err.Error()})
@@ -331,6 +340,7 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 	}
 
 	// A provided name must be non-empty and bounded (mirrors handleAddService).
+	var trimmedName *string
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
 		if name == "" {
@@ -341,6 +351,7 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 			writeJSON(w, 400, map[string]string{"error": "name too long (≤ 200 chars)"})
 			return
 		}
+		trimmedName = &name
 	}
 	// Description/category bounds apply even when name is not being changed.
 	if (body.Description != nil && len(*body.Description) > 500) || (body.Category != nil && len(*body.Category) > 100) {
@@ -369,7 +380,7 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 	}
 
 	update := config.ServiceUpdate{
-		Name:         body.Name,
+		Name:         trimmedName,
 		Description:  body.Description,
 		Host:         body.Host,
 		Port:         body.Port,

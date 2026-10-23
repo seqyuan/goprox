@@ -168,7 +168,6 @@ func TestSafeDialContext(t *testing.T) {
 	}
 }
 
-
 func TestLoadUserConfigDefaultServiceValid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "alice.yaml")
@@ -194,5 +193,20 @@ func TestLoadUserConfigDefaultServiceInvalidDropped(t *testing.T) {
 	}
 	if cfg.DefaultService != "" {
 		t.Fatalf("stale DefaultService should be dropped, got %q", cfg.DefaultService)
+	}
+}
+
+func TestIsValidTrustedProxy(t *testing.T) {
+	valid := []string{"", "127.0.0.1", "127.0.0.1/32", "10.0.0.0/8", "::1", "fd00::/8"}
+	for _, v := range valid {
+		if !IsValidTrustedProxy(v) {
+			t.Errorf("IsValidTrustedProxy(%q) = false, want true", v)
+		}
+	}
+	invalid := []string{"not-a-cidr", "10.0.0.0/33", "300.1.1.1", "127.0.0.1:30152"}
+	for _, v := range invalid {
+		if IsValidTrustedProxy(v) {
+			t.Errorf("IsValidTrustedProxy(%q) = true, want false", v)
+		}
 	}
 }

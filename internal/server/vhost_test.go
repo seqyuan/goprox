@@ -257,18 +257,38 @@ func TestLogoutClearsDomainCookie(t *testing.T) {
 	hash := writeVHostUser(t, dir, "alice", "hugo", "/hugo", "hugo.example.test", host, port, "pw")
 	srv := newVHostServer(t, dir)
 
-	rec := vhostRequest(t, srv, "GET", "gw.example.test", "/logout", vhostCookie("alice", hash))
+	reqCookie := vhostCookie("alice", hash) + "; " +
+		auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(hash), false)
+	rec := vhostRequest(t, srv, "GET", "gw.example.test", "/logout", reqCookie)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	found := false
+	var domainClear, hostClear, pendingClear, setupClear bool
 	for _, c := range rec.Result().Header.Values("Set-Cookie") {
-		if strings.Contains(c, "Domain=.example.test") && strings.Contains(c, "Expires=Thu, 01 Jan 1970") {
-			found = true
+		switch {
+		case strings.HasPrefix(c, auth.SessionCookieName+"=;"):
+			if strings.Contains(c, "Domain=.example.test") {
+				domainClear = true
+			} else {
+				hostClear = true
+			}
+		case strings.HasPrefix(c, auth.TOTACookieName+"=;"):
+			pendingClear = true
+		case strings.HasPrefix(c, auth.TOTASetupCookie+"=;"):
+			setupClear = true
+		}
+		if !strings.Contains(c, "Expires=Thu, 01 Jan 1970") {
+			t.Fatalf("clear cookie does not expire immediately: %q", c)
 		}
 	}
-	if !found {
+	if !domainClear {
 		t.Fatalf("logout did not clear the parent-domain session: %v", rec.Result().Header.Values("Set-Cookie"))
+	}
+	if !hostClear {
+		t.Fatalf("logout did not clear a stale host-only session: %v", rec.Result().Header.Values("Set-Cookie"))
+	}
+	if !pendingClear || !setupClear {
+		t.Fatalf("logout did not clear temporary 2FA cookies: %v", rec.Result().Header.Values("Set-Cookie"))
 	}
 }
 

@@ -147,6 +147,12 @@ func LoadState(path string) (*StateConfig, error) {
 	if s.Server.CookieDomain, err = NormalizeCookieDomain(s.Server.CookieDomain); err != nil {
 		return nil, err
 	}
+	if !IsValidTrustedProxy(s.Server.TrustedProxy) {
+		return nil, fmt.Errorf("server.trusted_proxy %q is not an IP or CIDR", s.Server.TrustedProxy)
+	}
+	if (s.Server.TLSCert == "") != (s.Server.TLSKey == "") {
+		return nil, fmt.Errorf("server.tls_cert and server.tls_key must be set together")
+	}
 
 	// A hand-edited user_header must be a valid header name; anything else
 	// would panic http.Header.Set on every proxied request.
@@ -177,82 +183,79 @@ func LoadState(path string) (*StateConfig, error) {
 }
 
 func PersistServerConfig(path, host string, port int, trustedProxy, title, tlsCert, tlsKey, publicHost, publicScheme, cookieDomain string) error {
-	// Load existing or create default
-	var raw map[string]interface{}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		yaml.Unmarshal(data, &raw)
-	}
-	if raw == nil {
-		raw = make(map[string]interface{})
-	}
+	return withConfigLock(path, func() error {
+		// Load existing or create default
+		var raw map[string]interface{}
+		data, err := os.ReadFile(path)
+		if err == nil {
+			yaml.Unmarshal(data, &raw)
+		}
+		if raw == nil {
+			raw = make(map[string]interface{})
+		}
 
-	server, ok := raw["server"].(map[string]interface{})
-	if !ok {
-		server = make(map[string]interface{})
-	}
-	if host != "" {
-		server["host"] = host
-	}
-	if port > 0 {
-		server["port"] = port
-	}
-	if trustedProxy != "" {
-		server["trusted_proxy"] = trustedProxy
-	}
-	if title != "" {
-		server["title"] = title
-	}
-	if tlsCert != "" {
-		server["tls_cert"] = tlsCert
-	}
-	if tlsKey != "" {
-		server["tls_key"] = tlsKey
-	}
-	if publicHost != "" {
-		server["public_host"] = publicHost
-	}
-	if publicScheme != "" {
-		server["public_scheme"] = publicScheme
-	}
-	if cookieDomain != "" {
-		server["cookie_domain"] = cookieDomain
-	}
-	raw["server"] = server
+		server, ok := raw["server"].(map[string]interface{})
+		if !ok {
+			server = make(map[string]interface{})
+		}
+		if host != "" {
+			server["host"] = host
+		}
+		if port > 0 {
+			server["port"] = port
+		}
+		if trustedProxy != "" {
+			server["trusted_proxy"] = trustedProxy
+		}
+		if title != "" {
+			server["title"] = title
+		}
+		if tlsCert != "" {
+			server["tls_cert"] = tlsCert
+		}
+		if tlsKey != "" {
+			server["tls_key"] = tlsKey
+		}
+		if publicHost != "" {
+			server["public_host"] = publicHost
+		}
+		if publicScheme != "" {
+			server["public_scheme"] = publicScheme
+		}
+		if cookieDomain != "" {
+			server["cookie_domain"] = cookieDomain
+		}
+		raw["server"] = server
 
-	return writeStateFile(path, raw)
+		return writeStateFile(path, raw)
+	})
 }
 
 // PersistSSOConfig writes the sso section of state.yaml. Pass empty strings
 // to disable SSO.
 func PersistSSOConfig(path, userHeader, hmacSecret string) error {
-	var raw map[string]interface{}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		yaml.Unmarshal(data, &raw)
-	}
-	if raw == nil {
-		raw = make(map[string]interface{})
-	}
-	raw["sso"] = map[string]interface{}{
-		"user_header": userHeader,
-		"hmac_secret": hmacSecret,
-	}
-	return writeStateFile(path, raw)
+	return withConfigLock(path, func() error {
+		var raw map[string]interface{}
+		data, err := os.ReadFile(path)
+		if err == nil {
+			yaml.Unmarshal(data, &raw)
+		}
+		if raw == nil {
+			raw = make(map[string]interface{})
+		}
+		raw["sso"] = map[string]interface{}{
+			"user_header": userHeader,
+			"hmac_secret": hmacSecret,
+		}
+		return writeStateFile(path, raw)
+	})
 }
 
 func writeStateFile(path string, v interface{}) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
 	data, err := yaml.Marshal(v)
 	if err != nil {
 		return err
 	}
 	// 0600: state.yaml holds the session_secret.
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0600)
+	return writeFileAtomic(path, data, 0600)
 }

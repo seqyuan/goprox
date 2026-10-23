@@ -327,3 +327,129 @@ func TestAddServiceRejectsInvalidPath(t *testing.T) {
 		t.Fatalf("AddService rejected a valid path: %v", err)
 	}
 }
+
+// A failed scan (including a missing users dir on a fresh install) must still
+// advance lastScan. Otherwise EnsureFresh retries the scan on every request,
+// flooding the log and the filesystem.
+func TestReloadScanErrorUpdatesLastScan(t *testing.T) {
+	r := NewUserRegistry(filepath.Join(t.TempDir(), "missing"))
+	r.Reload()
+	if r.lastScan.IsZero() {
+		t.Fatal("lastScan not updated after a failed scan")
+	}
+	before := r.lastScan
+	// EnsureFresh must not rescan within the scan interval.
+	r.EnsureFresh()
+	if !r.lastScan.Equal(before) {
+		t.Fatalf("EnsureFresh rescanned immediately after a failed scan: %v -> %v", before, r.lastScan)
+	}
+}
+
+// Removing the service named by default_service must also clear the persisted
+// top-level key. LoadUserConfig only drops a stale reference in memory, which
+// would otherwise leave a dead ID in YAML and silently reactivate it if the
+// same service ID were added again.
+func TestRemoveServiceClearsDefaultService(t *testing.T) {
+	path := newTestConfig(t)
+	a, err := AddService(path, ServiceConfig{ID: "a", Name: "A", Host: "127.0.0.1", Port: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := AddService(path, ServiceConfig{ID: "b", Name: "B", Host: "127.0.0.1", Port: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := loadRawConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw["default_service"] = a.ID
+	if err := saveRawConfig(path, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	// Removing a different service must keep a valid default reference.
+	if err := RemoveService(path, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = loadRawConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := raw["default_service"].(string); got != a.ID {
+		t.Fatalf("default_service = %q, want %q", got, a.ID)
+	}
+
+	// Removing the referenced service must clear the key.
+	if err := RemoveService(path, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = loadRawConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["default_service"]; ok {
+		t.Fatalf("stale default_service survived removal: %#v", raw["default_service"])
+	}
+}
+
+// Config writes must be atomic (temp file + rename) so concurrent registry
+// scans never observe a truncated YAML document.
+func TestWriteFileAtomicReplacesCleanly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.yaml")
+	if err := os.WriteFile(path, []byte("old: true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, []byte("new: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new: true\n" {
+		t.Fatalf("content = %q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Fatalf("temporary file left behind: %s", e.Name())
+		}
+	}
+}
+
+// withConfigLock also takes a cross-process file lock; exercise the platform
+// implementation so a build tag/API mistake fails the test suite.
+func TestWithConfigLockTakesFileLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alice.yaml")
+	if err := withConfigLock(path, func() error { return nil }); err != nil {
+		t.Fatalf("withConfigLock: %v", err)
+	}
+	if _, err := os.Stat(path + ".lock"); err != nil {
+		t.Fatalf("lock file missing: %v", err)
+	}
+}
+
+// The auto-generated path comes from the service ID. Direct callers (outside
+// the API, which slugifies names) must not be able to persist an invalid path
+// that the next registry load would silently drop.
+func TestAddServiceRejectsInvalidAutoPath(t *testing.T) {
+	path := newTestConfig(t)
+	if _, err := AddService(path, ServiceConfig{ID: "bad id", Name: "Bad", Host: "127.0.0.1", Port: 1}); err == nil {
+		t.Fatal("AddService accepted an invalid auto-generated path")
+	}
+}

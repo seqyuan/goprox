@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
 )
 
@@ -740,5 +742,292 @@ func TestNonHTMLNoPolyfill(t *testing.T) {
 
 	if rec.Body.String() != "crypto.randomUUID()" {
 		t.Fatalf("JS body was altered: %q", rec.Body.String())
+	}
+}
+
+// All gateway cookies (session, 2FA pending/setup, route, and future suffixed
+// names) must be stripped before a request reaches a backend. The 2FA setup
+// cookie in particular carries the plaintext pending TOTP secret.
+func TestStripGatewayCookieRemoves2FAAndNamespace(t *testing.T) {
+	header := strings.Join([]string{
+		auth.SessionCookieName + "=sess",
+		auth.TOTACookieName + "=pending",
+		auth.TOTASetupCookie + "=setup-secret",
+		auth.RouteCookieName + "=/proxy/alice/app",
+		auth.RouteCookiePrefix + "abcd1234=/proxy/alice/app",
+		"goprox_session_1908=other-instance",
+		"goprox_future_cookie=x",
+		"app=1",
+	}, "; ")
+
+	got := stripGatewayCookie(header)
+	if strings.Contains(got, "goprox_") {
+		t.Fatalf("gateway cookies leaked to backend: %q", got)
+	}
+	if got != "app=1" {
+		t.Fatalf("non-gateway cookie was lost: %q", got)
+	}
+}
+
+// A backend must not be able to shadow the gateway's own cookie names when the
+// app is served at the root via default_service/Referer (ForwardAsIs), where
+// Path=/ is preserved and Set-Cookie would otherwise overwrite the gateway's
+// session/route cookies.
+func TestForwardAsIsDropsGatewayNamedBackendCookies(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Set-Cookie", "goprox_session=evil; Path=/; HttpOnly")
+		w.Header().Add("Set-Cookie", "goprox_route=evil; Path=/")
+		w.Header().Add("Set-Cookie", "sid=ok; Path=/")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	fc.Mode = ForwardAsIs
+	rp := NewReverseProxy(svc, fc)
+
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	vals := rec.Result().Header.Values("Set-Cookie")
+	if len(vals) != 1 {
+		t.Fatalf("Set-Cookie count = %d, want only sid (%v)", len(vals), vals)
+	}
+	if !strings.Contains(vals[0], "sid=ok") || strings.Contains(vals[0], "goprox_") {
+		t.Fatalf("unexpected Set-Cookie: %q", vals[0])
+	}
+}
+
+// In as-is forwarding the app is mounted at the gateway root, so a backend
+// root-absolute redirect must stay at the root; adding /proxy/... would move a
+// root-routed SPA under the prefix and break its client-side router.
+func TestRewriteLocationForwardAsIsKeepsRootPath(t *testing.T) {
+	fc := testFwdCtx()
+	fc.Mode = ForwardAsIs
+
+	for _, loc := range []string{"/login", "/docs?x=1"} {
+		got, ok := rewriteLocation(loc, "", fc, "127.0.0.1:8888")
+		if !ok || got != loc {
+			t.Errorf("rewriteLocation(%q) = %q, %v; want unchanged", loc, got, ok)
+		}
+	}
+
+	got, ok := rewriteLocation("http://127.0.0.1:8888/login", "", fc, "127.0.0.1:8888")
+	if !ok || got != "/login" {
+		t.Fatalf("absolute backend redirect = %q, %v; want /login", got, ok)
+	}
+}
+
+// IPv6 backend literals must be bracketed in the URL authority; otherwise the
+// outgoing Host/Origin headers are malformed and absolute Location rewriting
+// cannot recognize the backend.
+func TestBackendAuthorityBracketsIPv6(t *testing.T) {
+	cases := []struct {
+		host string
+		port int
+		want string
+	}{
+		{"127.0.0.1", 8888, "127.0.0.1:8888"},
+		{"localhost", 8080, "localhost:8080"},
+		{"::1", 8888, "[::1]:8888"},
+		{"[::1]", 8888, "[::1]:8888"},
+		{"fd00::1", 80, "[fd00::1]:80"},
+	}
+	for _, c := range cases {
+		svc := &config.ServiceConfig{Host: c.host, Port: c.port}
+		if got := backendAuthority(svc); got != c.want {
+			t.Errorf("backendAuthority(%q, %d) = %q, want %q", c.host, c.port, got, c.want)
+		}
+	}
+}
+
+// backend_path stripping must respect path-segment boundaries and trailing
+// slashes; exact file redirects map to the service root and siblings resolve
+// under the file's directory.
+func TestRewriteLocationBackendPathBoundary(t *testing.T) {
+	fc := testFwdCtx()
+	cases := []struct {
+		loc, backendPath, want string
+	}{
+		{"/application/x", "/app", "/proxy/alice/jupyter/application/x"},
+		{"/app/x", "/app/", "/proxy/alice/jupyter/x"},
+		{"/app", "/app", "/proxy/alice/jupyter/"},
+		{"/app?x=1", "/app", "/proxy/alice/jupyter/?x=1"},
+		{"/app/index.html", "/app/index.html", "/proxy/alice/jupyter/"},
+		{"/app/index.html?x=1", "/app/index.html", "/proxy/alice/jupyter/?x=1"},
+		{"/app/assets/main.js", "/app/index.html", "/proxy/alice/jupyter/assets/main.js"},
+		{"/application", "/app/index.html", "/proxy/alice/jupyter/application"},
+	}
+	for _, c := range cases {
+		got, ok := rewriteLocation(c.loc, c.backendPath, fc, "127.0.0.1:8888")
+		if !ok || got != c.want {
+			t.Errorf("rewriteLocation(%q, backend_path=%q) = %q, %v; want %q", c.loc, c.backendPath, got, ok, c.want)
+		}
+	}
+}
+
+type closeTrackingBody struct {
+	data   []byte
+	closed bool
+}
+
+func (b *closeTrackingBody) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// When an oversize chunked HTML body is streamed through without injection,
+// the wrapper must still close the original upstream body so an aborted client
+// does not leak the backend connection.
+func TestOversizeChunkedHTMLClosesUpstreamBody(t *testing.T) {
+	old := maxInjectHTML
+	maxInjectHTML = 16
+	defer func() { maxInjectHTML = old }()
+
+	body := &closeTrackingBody{data: []byte(strings.Repeat("<p>x</p>", 100))}
+	svc := &config.ServiceConfig{Host: "127.0.0.1", Port: 1, Path: "/app"}
+	rp := NewReverseProxy(svc, testFwdCtx())
+	rp.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			Status:        "200 OK",
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"text/html"}},
+			Body:          body,
+			ContentLength: -1,
+			Request:       req,
+		}, nil
+	})
+
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if !body.closed {
+		t.Fatal("upstream body was not closed after streaming an oversize HTML response")
+	}
+}
+
+// Client-supplied proxy-metadata headers other than XFF must also be removed
+// or overwritten: backends frequently trust X-Real-IP, Forwarded and
+// X-Original-URL/X-Rewrite-URL for access control or routing.
+func TestForwardedHeadersSanitized(t *testing.T) {
+	var got map[string]string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = map[string]string{
+			"X-Real-IP":          r.Header.Get("X-Real-IP"),
+			"Forwarded":          r.Header.Get("Forwarded"),
+			"X-Original-URL":     r.Header.Get("X-Original-URL"),
+			"X-Rewrite-URL":      r.Header.Get("X-Rewrite-URL"),
+			"X-Forwarded-Port":   r.Header.Get("X-Forwarded-Port"),
+			"X-Forwarded-Server": r.Header.Get("X-Forwarded-Server"),
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.9:4321"
+	for k, v := range map[string]string{
+		"X-Real-IP":          "10.0.0.1",
+		"Forwarded":          "for=10.0.0.1",
+		"X-Original-URL":     "/admin",
+		"X-Rewrite-URL":      "/admin",
+		"X-Forwarded-Port":   "9999",
+		"X-Forwarded-Server": "evil",
+	} {
+		req.Header.Set(k, v)
+	}
+	fc := BuildProxyForwardContext(req, "alice", "/app", false)
+	rp := NewReverseProxy(svc, fc)
+	rp.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got["X-Real-IP"] != "203.0.113.9" {
+		t.Errorf("X-Real-IP = %q, want peer 203.0.113.9", got["X-Real-IP"])
+	}
+	for _, h := range []string{"Forwarded", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Port", "X-Forwarded-Server"} {
+		if got[h] != "" {
+			t.Errorf("%s leaked to backend: %q", h, got[h])
+		}
+	}
+}
+
+// X-Forwarded-Prefix describes the mount point: the canonical prefix in path
+// mode, but empty for vhost (host root) and as-is (gateway root) forwarding.
+func TestForwardedPrefixOnlySetInPrefixMode(t *testing.T) {
+	var got string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Forwarded-Prefix")
+		w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{Host: host, Port: mustAtoi(t, port), Path: "/app"}
+
+	for _, tc := range []struct {
+		name string
+		mode ForwardMode
+		want string
+	}{
+		{"prefix", ForwardPrefix, "/proxy/alice/app"},
+		{"as-is", ForwardAsIs, ""},
+		{"vhost", ForwardVHost, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got = "unset"
+			req := httptest.NewRequest("GET", "/dashboard", nil)
+			req.Header.Set("X-Forwarded-Prefix", "/attacker")
+			fc := BuildProxyForwardContext(req, "alice", "/app", false)
+			fc.Mode = tc.mode
+			NewReverseProxy(svc, fc).ServeHTTP(httptest.NewRecorder(), req)
+			if got != tc.want {
+				t.Fatalf("X-Forwarded-Prefix = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Origin host comparison must be case-insensitive (browsers normalize it, but
+// a client may send mixed-case Host/authority).
+func TestOriginAuthorityMatchesCaseInsensitive(t *testing.T) {
+	if !originAuthorityMatches("http://GW:30152", "gw:30152") {
+		t.Fatal("originAuthorityMatches should ignore host case")
+	}
+	if originAuthorityMatches("http://other:30152", "gw:30152") {
+		t.Fatal("different authorities must not match")
+	}
+}
+
+// <head> detection must not match <header>; otherwise the base/polyfill is
+// injected inside a page header when the document has no <head>.
+func TestInjectBaseTagIgnoresHeaderElement(t *testing.T) {
+	body := []byte("<html><header>nav</header><body>content</body></html>")
+	base := []byte(`<base href="/x/">`)
+	out := injectBaseTag(body, base)
+
+	iBase := bytes.Index(out, base)
+	iBody := bytes.Index(out, []byte("<body"))
+	if iBase < 0 || iBody < 0 {
+		t.Fatalf("missing injected base or body: %q", out)
+	}
+	if iBase > iBody {
+		t.Fatalf("base injected after <body>: %q", out)
 	}
 }

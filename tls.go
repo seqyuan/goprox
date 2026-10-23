@@ -114,5 +114,10 @@ func generateSelfSignedCert(dir string) (certPath, keyPath string, err error) {
 	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
 		return "", "", fmt.Errorf("write key: %w", err)
 	}
+	// WriteFile only applies perm on create; an existing key file may still be
+	// more permissive. Enforce 0600 regardless.
+	if err := os.Chmod(keyPath, 0600); err != nil {
+		return "", "", fmt.Errorf("chmod key: %w", err)
+	}
 	return certPath, keyPath, nil
 }

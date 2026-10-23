@@ -242,10 +242,9 @@ func EnsureUserConfig(path string) error {
 	}
 
 	// Create with 0600: the config dir is owned by the gateway operator.
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := writeFileAtomic(path, data, 0600); err != nil {
 		return err
 	}
-	os.Chmod(path, 0600)
 	fmt.Printf("[goprox] created user config: %s\n", path)
 	return nil
 }
@@ -358,55 +357,50 @@ func loadRawConfig(path string) (map[string]interface{}, error) {
 
 // saveRawConfig writes raw YAML to a file.
 func saveRawConfig(path string, raw map[string]interface{}) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
 	data, err := yaml.Marshal(raw)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return err
-	}
-	// Ensure 0600 regardless of umask
-	os.Chmod(path, 0600)
-	return nil
+	return writeFileAtomic(path, data, 0600)
 }
 
 // UpdatePasswordHash updates only the password hash in a user config.
 func UpdatePasswordHash(path, hash string) error {
-	raw, err := loadRawConfig(path)
-	if err != nil {
-		return err
-	}
-	auth, _ := raw["auth"].(map[string]interface{})
-	if auth == nil {
-		auth = make(map[string]interface{})
-	}
-	auth["password_hash"] = hash
-	raw["auth"] = auth
-	return saveRawConfig(path, raw)
+	return withConfigLock(path, func() error {
+		raw, err := loadRawConfig(path)
+		if err != nil {
+			return err
+		}
+		auth, _ := raw["auth"].(map[string]interface{})
+		if auth == nil {
+			auth = make(map[string]interface{})
+		}
+		auth["password_hash"] = hash
+		raw["auth"] = auth
+		return saveRawConfig(path, raw)
+	})
 }
 
 // UpdateTOTPSecret updates only the TOTP secret in a user config. An empty
 // secret removes the field (disabling 2FA).
 func UpdateTOTPSecret(path, secret string) error {
-	raw, err := loadRawConfig(path)
-	if err != nil {
-		return err
-	}
-	auth, _ := raw["auth"].(map[string]interface{})
-	if auth == nil {
-		auth = make(map[string]interface{})
-	}
-	if secret == "" {
-		delete(auth, "totp_secret")
-	} else {
-		auth["totp_secret"] = secret
-	}
-	raw["auth"] = auth
-	return saveRawConfig(path, raw)
+	return withConfigLock(path, func() error {
+		raw, err := loadRawConfig(path)
+		if err != nil {
+			return err
+		}
+		auth, _ := raw["auth"].(map[string]interface{})
+		if auth == nil {
+			auth = make(map[string]interface{})
+		}
+		if secret == "" {
+			delete(auth, "totp_secret")
+		} else {
+			auth["totp_secret"] = secret
+		}
+		raw["auth"] = auth
+		return saveRawConfig(path, raw)
+	})
 }
 
 // Config lock for safe concurrent writes
@@ -417,6 +411,15 @@ func withConfigLock(path string, fn func() error) error {
 	m := mu.(*sync.Mutex)
 	m.Lock()
 	defer m.Unlock()
+
+	// Cross-process serialization: the CLI (goprox passwd/2fa-reset/sso) and a
+	// running gateway may write the same file concurrently. The lock file sits
+	// next to the config and is ignored by the users-dir scanner (*.yaml only).
+	unlock, err := lockConfigFile(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock config %s: %w", path, err)
+	}
+	defer unlock()
 	return fn()
 }
 
@@ -466,6 +469,9 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 			svc.Path = basePath
 			for n := 2; serviceWithPath(cfg.Services, svc.Path); n++ {
 				svc.Path = fmt.Sprintf("%s-%d", basePath, n)
+			}
+			if err := ValidatePath(svc.Path); err != nil {
+				return fmt.Errorf("invalid auto-generated service path from id %q: %w", svc.ID, err)
 			}
 		} else {
 			svc.Path = normalizePath(svc.Path)
@@ -557,6 +563,12 @@ func RemoveService(configPath, id string) error {
 
 		raw, _ := loadRawConfig(configPath)
 		raw["services"] = serializeServices(cfg.Services)
+		// Drop a persisted default_service that pointed at the removed service.
+		// LoadUserConfig only drops it in memory, so without this the stale ID
+		// stays in YAML (and silently reactivates if the same ID is re-added).
+		if def, _ := raw["default_service"].(string); def != "" && !serviceWithID(cfg.Services, def) {
+			delete(raw, "default_service")
+		}
 		return saveRawConfig(configPath, raw)
 	})
 }

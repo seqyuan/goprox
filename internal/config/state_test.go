@@ -114,3 +114,16 @@ func TestPersistServerConfigVHostFields(t *testing.T) {
 		t.Fatalf("vhost fields were lost: %+v", st.Server)
 	}
 }
+
+// A hand-edited state with only one half of the TLS pair must fail fast instead
+// of silently serving plain HTTP (while public_scheme logic assumes HTTPS).
+func TestLoadStateRejectsHalfTLSConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFile)
+	raw := "server:\n  host: 127.0.0.1\n  port: 30152\n  tls_cert: /tmp/cert.pem\nauth:\n  session_ttl: 60\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadState(path); err == nil {
+		t.Fatal("LoadState accepted tls_cert without tls_key")
+	}
+}

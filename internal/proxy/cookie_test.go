@@ -162,3 +162,22 @@ func TestProxyLeavesCookiePathForBarePath(t *testing.T) {
 		t.Fatalf("bare path cookie: Path=%q Secure=%v (want /, false over HTTP)", c.Path, c.Secure)
 	}
 }
+
+// SameSite=None is only valid together with Secure. When the gateway clears
+// Secure for plain HTTP, None must fall back to Lax or the browser drops the
+// backend's cookie entirely.
+func TestRewriteSetCookieNoneFallsBackToLaxOverHTTP(t *testing.T) {
+	c := parseCookie(t, RewriteSetCookie("sid=1; Path=/; Secure; SameSite=None", "/proxy/alice/svc/", false))
+	if c.Secure {
+		t.Fatal("Secure must be cleared over HTTP")
+	}
+	if c.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("SameSite = %v, want Lax", c.SameSite)
+	}
+
+	// Over HTTPS, Secure is kept and SameSite=None remains valid.
+	c = parseCookie(t, RewriteSetCookie("sid=1; Path=/; Secure; SameSite=None", "/proxy/alice/svc/", true))
+	if !c.Secure || c.SameSite != http.SameSiteNoneMode {
+		t.Fatalf("HTTPS cookie = Secure:%v SameSite:%v; want true/None", c.Secure, c.SameSite)
+	}
+}

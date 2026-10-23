@@ -179,3 +179,38 @@ func TestLoginRejectsCrossOrigin(t *testing.T) {
 		t.Fatalf("expected 302 for same-origin login, got %d", rr2.Code)
 	}
 }
+
+// A pending 2FA setup token is bound to the user who started enrollment. A
+// stale cookie from another account must not enroll that secret into the
+// current user's account on a shared browser.
+func TestTwoFASetupRejectsOtherUsersToken(t *testing.T) {
+	srv, cfgPath := newTestServer(t)
+	cfg, err := config.LoadUserConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := auth.SetSessionCookie("testsecret", 86400, "alice", auth.SessionRev(cfg.Auth.PasswordHash), false)
+	secret, err := auth.GenerateTOTPSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := auth.SetSetupCookie("bob", secret, "testsecret", 300, false)
+
+	form := url.Values{"code": {"123456"}}
+	req := httptest.NewRequest("POST", "/2fa/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", session+"; "+setup)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for another user's setup token", rec.Code)
+	}
+	after, err := config.LoadUserConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Auth.TOTPSecret != "" {
+		t.Fatalf("cross-user setup token enrolled a TOTP secret: %q", after.Auth.TOTPSecret)
+	}
+}

@@ -438,3 +438,42 @@ func TestUpdateServiceRejectsCrossUserHostname(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// A name update is validated after trimming and must be persisted trimmed too;
+// otherwise "  Foo  " is stored while the length check used "Foo".
+func TestUpdateServiceTrimsName(t *testing.T) {
+	h := newTestHandler(t)
+	rr := apiPost(t, h, "/api/services", `{"name":"x","port":8080}`, "http://gw:30152")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("setup add failed: %d body=%s", rr.Code, rr.Body.String())
+	}
+	rr = apiPut(t, h, "/api/services/x", `{"name":"  Renamed  "}`, "http://gw:30152")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update failed: %d body=%s", rr.Code, rr.Body.String())
+	}
+	user := h.Registry.GetUser("alice")
+	if user == nil {
+		t.Fatal("alice missing")
+	}
+	cfg, err := config.LoadUserConfig(user.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := config.ServiceByID(cfg.Services, "x")
+	if svc == nil {
+		t.Fatal("service x missing after update")
+	}
+	if svc.Name != "Renamed" {
+		t.Fatalf("name = %q, want trimmed %q", svc.Name, "Renamed")
+	}
+}
+
+func TestUpdateLayoutRejectsOversizedCategory(t *testing.T) {
+	h := newTestHandler(t)
+	long := strings.Repeat("c", 101)
+	body := `{"items":[{"id":"x","order":0,"category":"` + long + `"}]}`
+	rr := apiPut(t, h, "/api/services/layout", body, "http://gw:30152")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized category, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}

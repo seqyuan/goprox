@@ -27,7 +27,21 @@ const (
 	TOTASetupCookie   = "goprox_2fa_setup" // pending secret during enrollment
 	RouteCookieName   = "goprox_route"
 	RouteCookiePrefix = "goprox_route_" // Prefix for service-specific route cookies
+
+	// CookieNamespace is the name prefix reserved for gateway-owned cookies.
+	// The whole namespace is stripped from proxied requests and refused from
+	// backend Set-Cookie responses, so future/suffixed gateway cookie names
+	// (and cookies from another gateway instance on the same host) can never
+	// leak to a backend or shadow the gateway's own session/route state.
+	CookieNamespace = "goprox_"
 )
+
+// IsGatewayCookieName reports whether a cookie name belongs to the gateway's
+// reserved namespace. It intentionally matches the prefix rather than an
+// exhaustive list so new gateway cookies are protected by default.
+func IsGatewayCookieName(name string) bool {
+	return strings.HasPrefix(name, CookieNamespace)
+}
 
 // SessionResult holds session validation result.
 type SessionResult struct {
@@ -475,14 +489,37 @@ func ShouldRefreshSession(session SessionResult, ttlSec int) bool {
 // direct client).
 func ClientIP(r *http.Request) string {
 	if fromTrustedProxy(r) {
-		// Check X-Forwarded-For first
+		// Walk X-Forwarded-For from right to left, skipping hops inside the
+		// trusted-proxy range. A proxy commonly appends the real peer to a
+		// client-supplied header (nginx's $proxy_add_x_forwarded_for), so the
+		// leftmost value is attacker-controlled; the rightmost non-proxy hop is
+		// the first address the trusted edge actually observed.
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			return strings.TrimSpace(parts[0])
+			for i := len(parts) - 1; i >= 0; i-- {
+				addr := strings.TrimSpace(parts[i])
+				ip := net.ParseIP(addr)
+				if ip == nil {
+					continue
+				}
+				if trustedProxy != nil && trustedProxy.Contains(ip) {
+					continue
+				}
+				return ip.String()
+			}
+			// All entries were trusted proxies or unparsable; fall back to the
+			// leftmost valid value for compatibility with old behavior.
+			for _, part := range parts {
+				if ip := net.ParseIP(strings.TrimSpace(part)); ip != nil {
+					return ip.String()
+				}
+			}
 		}
 		// Check X-Real-IP
 		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			return xri
+			if ip := net.ParseIP(strings.TrimSpace(xri)); ip != nil {
+				return ip.String()
+			}
 		}
 	}
 	// Fall back to the TCP peer address.
@@ -640,44 +677,47 @@ func ClearPendingCookie() string {
 
 // CreateSetupToken signs a freshly generated TOTP secret so the enrollment
 // flow can show the QR code and verify a code without any server-side state.
-func CreateSetupToken(secret, sessionSecret string, ttlSec int) string {
+// The username is part of the signed payload so a stale setup cookie cannot be
+// used to enroll a secret into a different account on a shared browser.
+func CreateSetupToken(userID, secret, sessionSecret string, ttlSec int) string {
 	expiry := time.Now().Unix() + int64(ttlSec)
-	payload := fmt.Sprintf("setup|%s|%d", secret, expiry)
+	payload := fmt.Sprintf("setup|%s|%s|%d", userID, secret, expiry)
 	mac := hmac.New(sha256.New, []byte(sessionSecret))
 	mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
 	return base64URLEncode([]byte(payload + "|" + sig))
 }
 
-// ValidateSetupToken verifies a setup token and returns the pending secret.
-func ValidateSetupToken(token, sessionSecret string) (string, bool) {
+// ValidateSetupToken verifies a setup token and returns its user and pending
+// secret. Callers must check the user against the active session.
+func ValidateSetupToken(token, sessionSecret string) (userID, secret string, ok bool) {
 	decoded, err := base64URLDecode(token)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
-	parts := strings.SplitN(string(decoded), "|", 4)
-	if len(parts) != 4 || parts[0] != "setup" {
-		return "", false
+	parts := strings.SplitN(string(decoded), "|", 5)
+	if len(parts) != 5 || parts[0] != "setup" {
+		return "", "", false
 	}
-	secret, expiryStr, sig := parts[1], parts[2], parts[3]
+	userID, secret, expiryStr, sig := parts[1], parts[2], parts[3], parts[4]
 	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
 	if err != nil || time.Now().Unix() > expiry {
-		return "", false
+		return "", "", false
 	}
 
-	payload := fmt.Sprintf("setup|%s|%d", secret, expiry)
+	payload := fmt.Sprintf("setup|%s|%s|%d", userID, secret, expiry)
 	mac := hmac.New(sha256.New, []byte(sessionSecret))
 	mac.Write([]byte(payload))
 	expected := hex.EncodeToString(mac.Sum(nil))
 	if subtle.ConstantTimeCompare([]byte(sig), []byte(expected)) != 1 {
-		return "", false
+		return "", "", false
 	}
-	return secret, true
+	return userID, secret, true
 }
 
 // SetSetupCookie creates a Set-Cookie header for the pending setup secret.
-func SetSetupCookie(secret, sessionSecret string, ttlSec int, secure bool) string {
-	token := CreateSetupToken(secret, sessionSecret, ttlSec)
+func SetSetupCookie(userID, secret, sessionSecret string, ttlSec int, secure bool) string {
+	token := CreateSetupToken(userID, secret, sessionSecret, ttlSec)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
 	if secure {

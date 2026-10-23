@@ -196,6 +196,21 @@ func AssertAllowedHost(host string) error {
 	return nil
 }
 
+// IsValidTrustedProxy reports whether value is empty, a CIDR, or a single IP.
+// The gateway validates this at startup instead of silently ignoring a typo
+// (which would leave forwarded headers untrusted while the log claims the
+// proxy is configured).
+func IsValidTrustedProxy(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	if _, _, err := net.ParseCIDR(value); err == nil {
+		return true
+	}
+	return net.ParseIP(value) != nil
+}
+
 // IsTrustedProxyTooBroad reports whether a trusted-proxy CIDR covers the whole
 // address space (e.g. 0.0.0.0/0 or ::/0). Such a range would let any direct
 // client spoof X-Forwarded-* headers, defeating login rate limiting and

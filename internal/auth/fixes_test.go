@@ -131,3 +131,55 @@ func TestHandlerIsHTTP(t *testing.T) {
 	}
 	_ = http.StatusOK
 }
+
+// Every gateway cookie, including future/suffixed variants, must be
+// recognized by name so it is never forwarded to a backend.
+func TestIsGatewayCookieName(t *testing.T) {
+	for _, name := range []string{
+		SessionCookieName,
+		TOTACookieName,
+		TOTASetupCookie,
+		RouteCookieName,
+		RouteCookiePrefix + "abcd1234",
+		"goprox_session_1908",
+		"goprox_2fa_1908",
+		"goprox_custom_future",
+	} {
+		if !IsGatewayCookieName(name) {
+			t.Errorf("IsGatewayCookieName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"app", "session", "goprox", "xgoprox_session", "", "GOPROX_session"} {
+		if IsGatewayCookieName(name) {
+			t.Errorf("IsGatewayCookieName(%q) = true, want false", name)
+		}
+	}
+}
+
+// The rightmost non-trusted X-Forwarded-For hop is the address the trusted
+// edge observed. Taking the leftmost value lets a client bypass login rate
+// limiting behind nginx's "$proxy_add_x_forwarded_for" (which appends).
+func TestClientIPTakesRightmostUntrustedHop(t *testing.T) {
+	ConfigureTrustedProxy("127.0.0.1/32")
+	defer ConfigureTrustedProxy("")
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:4321"
+
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.9")
+	if got := ClientIP(req); got != "203.0.113.9" {
+		t.Fatalf("ClientIP = %q, want rightmost untrusted hop 203.0.113.9", got)
+	}
+
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.9, 127.0.0.1")
+	if got := ClientIP(req); got != "203.0.113.9" {
+		t.Fatalf("ClientIP = %q, want 203.0.113.9 after skipping the trusted hop", got)
+	}
+
+	// Invalid X-Real-IP must not become a rate-limit key.
+	req.Header.Del("X-Forwarded-For")
+	req.Header.Set("X-Real-IP", "not-an-ip")
+	if got := ClientIP(req); got != "127.0.0.1" {
+		t.Fatalf("ClientIP = %q, want peer address for invalid X-Real-IP", got)
+	}
+}

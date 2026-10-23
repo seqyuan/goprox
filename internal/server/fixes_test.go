@@ -207,6 +207,9 @@ func TestGatewayPagesSetSecurityHeaders(t *testing.T) {
 	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("expected X-Content-Type-Options nosniff, got %q", got)
 	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected Cache-Control no-store, got %q", got)
+	}
 }
 
 // absoluteRedirectBackendSrv serves HTML plus a redirect to its own absolute
@@ -398,11 +401,104 @@ func TestDefaultServicePageVsResourceRouting(t *testing.T) {
 
 	// 2. Resource-like /api/x with a Referer on the default service goes there.
 	req = httptest.NewRequest("GET", "/api/x", nil)
+	req.Host = "gateway"
 	req.Header.Set("Cookie", sessionCookie)
 	req.Header.Set("Referer", "http://gateway/dashboard")
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if gotPath != "/api/x" || gotHost != backendHost {
 		t.Fatalf("resource path routed to %q @ %q, want /api/x @ %s (via Referer)", gotPath, gotHost, backendHost)
+	}
+}
+
+// A default_service app is mounted at the gateway root. Its root-absolute
+// redirects must stay there (they must not be rewritten to
+// /proxy/<user>/<service>/...), otherwise a root-routed SPA's client router
+// sees an unexpected pathname.
+func TestDefaultServiceRedirectStaysAtRoot(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendAddr(t, backend)
+	srv := serverWithDiamondService(t, host, port, "diamond")
+
+	req := httptest.NewRequest("GET", "/dashboard", nil)
+	req.Header.Set("Cookie", aliceSessionCookie())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/login" {
+		t.Fatalf("Location = %q, want /login (must not gain /proxy prefix)", got)
+	}
+}
+
+// Dashboard card favicons are passive image loads. They must not update the
+// global "most recently visited service" route cookie: opening the dashboard
+// would otherwise make the fallback point at whichever favicon loaded last.
+func TestFaviconDoesNotUpdateRecentRouteCookie(t *testing.T) {
+	var gotPath string
+	backend := htmlBackend(t, &gotPath)
+	host, port := backendAddr(t, backend)
+	srv := srvForBackend(t, host, port)
+	cookie := aliceSessionCookie()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/proxy/alice/jupyter/favicon.ico", nil)
+	req.Header.Set("Cookie", cookie)
+	srv.Handler().ServeHTTP(rec, req)
+
+	for _, c := range rec.Result().Header.Values("Set-Cookie") {
+		if strings.HasPrefix(c, auth.RouteCookieName+"=") {
+			t.Fatalf("favicon request updated the global recent-service cookie: %q", c)
+		}
+	}
+	if !strings.Contains(strings.Join(rec.Result().Header.Values("Set-Cookie"), "\n"), auth.RouteCookiePrefix) {
+		t.Fatalf("favicon request did not set the per-service route cookie: %v", rec.Result().Header.Values("Set-Cookie"))
+	}
+
+	// A normal page request still stamps both cookies.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/proxy/alice/jupyter/", nil)
+	req.Header.Set("Cookie", cookie)
+	srv.Handler().ServeHTTP(rec, req)
+	foundRecent := false
+	for _, c := range rec.Result().Header.Values("Set-Cookie") {
+		if strings.HasPrefix(c, auth.RouteCookieName+"=") {
+			foundRecent = true
+		}
+	}
+	if !foundRecent {
+		t.Fatalf("normal page request did not update the recent-service cookie: %v", rec.Result().Header.Values("Set-Cookie"))
+	}
+}
+
+// Proxied request bodies must still arrive intact after wrapping them with the
+// per-read idle deadline used to avoid the server's absolute ReadTimeout.
+func TestProxiedUploadBodyReachesBackend(t *testing.T) {
+	var got string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendAddr(t, backend)
+	srv := srvForBackend(t, host, port)
+
+	req := httptest.NewRequest("POST", "/proxy/alice/jupyter/upload", strings.NewReader("hello-upload"))
+	req.Header.Set("Cookie", aliceSessionCookie())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if got != "hello-upload" {
+		t.Fatalf("backend received %q, want hello-upload", got)
 	}
 }

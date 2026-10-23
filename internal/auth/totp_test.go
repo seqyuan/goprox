@@ -86,15 +86,15 @@ func TestPendingToken(t *testing.T) {
 // pending login token, so the two flows cannot be confused.
 func TestSetupToken(t *testing.T) {
 	const secret = "session-secret"
-	token := CreateSetupToken("GEZDGNBVGY3TQOJQ", secret, 300)
-	got, ok := ValidateSetupToken(token, secret)
-	if !ok || got != "GEZDGNBVGY3TQOJQ" {
-		t.Fatalf("setup token round-trip failed: got=%q ok=%v", got, ok)
+	token := CreateSetupToken("alice", "GEZDGNBVGY3TQOJQ", secret, 300)
+	user, got, ok := ValidateSetupToken(token, secret)
+	if !ok || user != "alice" || got != "GEZDGNBVGY3TQOJQ" {
+		t.Fatalf("setup token round-trip failed: user=%q got=%q ok=%v", user, got, ok)
 	}
 
 	// A login pending token must NOT validate as a setup token.
-	login := CreatePendingToken("GEZDGNBVGY3TQOJQ", secret, 300)
-	if _, ok := ValidateSetupToken(login, secret); ok {
+	login := CreatePendingToken("alice", secret, 300)
+	if _, _, ok := ValidateSetupToken(login, secret); ok {
 		t.Fatal("login pending token must not validate as setup token")
 	}
 }

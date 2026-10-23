@@ -52,7 +52,17 @@ func (r *UserRegistry) Reload() {
 	usersDir := UsersDir(r.configDir)
 	entries, err := os.ReadDir(usersDir)
 	if err != nil {
-		log.Printf("[goprox] scan %s: %v", usersDir, err)
+		// A fresh install has no users directory until the first `goprox user`
+		// command, so a missing directory is a normal empty state. For any
+		// error (including missing) still advance lastScan: otherwise
+		// EnsureFresh sees the zero timestamp and retries the scan on every
+		// single request, flooding the log and the filesystem.
+		if !os.IsNotExist(err) {
+			log.Printf("[goprox] scan %s: %v", usersDir, err)
+		}
+		r.mu.Lock()
+		r.lastScan = time.Now()
+		r.mu.Unlock()
 		return
 	}
 

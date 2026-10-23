@@ -172,7 +172,9 @@ func main() {
 type options struct {
 	configDir     string
 	host          string
+	hostSet       bool // --host was passed explicitly (do not override persisted state otherwise)
 	port          int
+	portSet       bool // --port was passed explicitly
 	trustedProxy  string
 	title         string
 	tlsCert       string
@@ -210,7 +212,7 @@ func parseOptions(args []string) (options, error) {
 			if !ok {
 				return opts, fmt.Errorf("option %s requires a value", a)
 			}
-			opts.host = v
+			opts.host, opts.hostSet = v, true
 		case "--port":
 			v, ok := next()
 			if !ok {
@@ -220,7 +222,7 @@ func parseOptions(args []string) (options, error) {
 			if err != nil || p < 1 || p > 65535 {
 				return opts, fmt.Errorf("invalid port %q (must be 1-65535)", v)
 			}
-			opts.port = p
+			opts.port, opts.portSet = p, true
 		case "--trusted-proxy":
 			v, ok := next()
 			if !ok {
@@ -270,13 +272,6 @@ func parseOptions(args []string) (options, error) {
 		}
 	}
 
-	if opts.host == "" {
-		opts.host = config.DefaultHost
-	}
-	if opts.port == 0 {
-		opts.port = config.DefaultPort
-	}
-
 	if opts.tlsCert != "" || opts.tlsKey != "" {
 		if opts.tlsCert == "" || opts.tlsKey == "" {
 			return opts, fmt.Errorf("tls requires both --tls-cert and --tls-key")
@@ -284,6 +279,19 @@ func parseOptions(args []string) (options, error) {
 	}
 
 	return opts, nil
+}
+
+// applyListenOverrides applies only the listen options the user passed on the
+// command line. host/port live in state.yaml; treating parser defaults as
+// explicit overrides would silently reset them on every restart (and could
+// expose a loopback-only gateway on all interfaces).
+func applyListenOverrides(state *config.StateConfig, opts options) {
+	if opts.hostSet {
+		state.Server.Host = opts.host
+	}
+	if opts.portSet {
+		state.Server.Port = opts.port
+	}
 }
 
 // ---- user management (admin CLI) ----
@@ -417,7 +425,7 @@ func runSSO(sa ssoArgs) {
 		return
 	}
 
-	if !sa.haveHeader {
+	if !sa.haveHeader && !sa.haveHMAC {
 		// No changes requested: show the current configuration.
 		if state.SSO.UserHeader == "" {
 			fmt.Println("[goprox] sso: disabled")
@@ -432,21 +440,31 @@ func runSSO(sa ssoArgs) {
 		return
 	}
 
-	if sa.userHeader == "" {
-		log.Fatalf("--user-header requires a non-empty header name (use --off to disable)")
-	}
-	if !config.IsValidHeaderName(sa.userHeader) {
-		log.Fatalf("invalid header name %q (must be a valid HTTP header name)", sa.userHeader)
-	}
 	if sa.haveHMAC && sa.hmacSecret == "" {
 		log.Fatalf("--hmac-secret requires a non-empty key (omit it to keep the current one)")
+	}
+
+	// A header update replaces the name; an HMAC-only update keeps the existing
+	// name. Both must never silently turn a requested change into a no-op.
+	userHeader := state.SSO.UserHeader
+	if sa.haveHeader {
+		if sa.userHeader == "" {
+			log.Fatalf("--user-header requires a non-empty header name (use --off to disable)")
+		}
+		if !config.IsValidHeaderName(sa.userHeader) {
+			log.Fatalf("invalid header name %q (must be a valid HTTP header name)", sa.userHeader)
+		}
+		userHeader = sa.userHeader
+	}
+	if userHeader == "" {
+		log.Fatalf("--hmac-secret requires a configured user header; pass --user-header too")
 	}
 
 	hmacSecret := state.SSO.HMACSecret // keep the current secret unless replaced
 	if sa.haveHMAC {
 		hmacSecret = sa.hmacSecret
 	}
-	if err := config.PersistSSOConfig(statePath, sa.userHeader, hmacSecret); err != nil {
+	if err := config.PersistSSOConfig(statePath, userHeader, hmacSecret); err != nil {
 		log.Fatalf("update state: %v", err)
 	}
 
@@ -454,7 +472,7 @@ func runSSO(sa ssoArgs) {
 	if hmacSecret != "" {
 		mode = "HMAC-signed"
 	}
-	fmt.Printf("[goprox] sso: user_header=%s (%s)\n", sa.userHeader, mode)
+	fmt.Printf("[goprox] sso: user_header=%s (%s)\n", userHeader, mode)
 	fmt.Println("[goprox] restart the gateway for changes to take effect")
 }
 
@@ -513,6 +531,12 @@ func runServer(opts options) {
 	if err := checkWritableDir(configDir); err != nil {
 		log.Fatalf("config dir %s is not writable: %v\nhint: copy the goprox binary to a writable directory (do NOT use a symlink)", configDir, err)
 	}
+	// Create config/users up front. A fresh install has no user configs yet;
+	// without this directory every registry scan fails (and logs) until the
+	// first `goprox user` command runs.
+	if err := os.MkdirAll(config.UsersDir(configDir), 0700); err != nil {
+		log.Fatalf("create users dir %s: %v", config.UsersDir(configDir), err)
+	}
 
 	statePath := config.StatePath(configDir)
 
@@ -521,30 +545,29 @@ func runServer(opts options) {
 		log.Fatalf("load state: %v", err)
 	}
 
-	// Apply CLI overrides
-	if opts.host != "" {
-		state.Server.Host = opts.host
-	}
-	if opts.port > 0 {
-		state.Server.Port = opts.port
-	}
+	// Apply CLI overrides. Host/port are persisted in state.yaml, so only an
+	// explicitly-passed flag may override them; parser defaults must not.
+	applyListenOverrides(state, opts)
 	if opts.trustedProxy != "" {
 		state.Server.TrustedProxy = opts.trustedProxy
+	}
+	if !config.IsValidTrustedProxy(state.Server.TrustedProxy) {
+		log.Fatalf("invalid --trusted-proxy %q (must be an IP or CIDR)", state.Server.TrustedProxy)
 	}
 	if opts.title != "" {
 		state.Server.Title = opts.title
 	}
 	if opts.tlsCert != "" || opts.tlsKey != "" {
-		state.Server.TLSCert = opts.tlsCert
-		state.Server.TLSKey = opts.tlsKey
+		state.Server.TLSCert = mustAbsPath(opts.tlsCert)
+		state.Server.TLSKey = mustAbsPath(opts.tlsKey)
 	}
 	if opts.tlsSelfSigned {
 		cert, key, err := generateSelfSignedCert(filepath.Join(configDir, "tls"))
 		if err != nil {
 			log.Fatalf("generate self-signed cert: %v", err)
 		}
-		state.Server.TLSCert = cert
-		state.Server.TLSKey = key
+		state.Server.TLSCert = mustAbsPath(cert)
+		state.Server.TLSKey = mustAbsPath(key)
 	}
 	if opts.publicHost != "" {
 		v, err := config.NormalizePublicHost(opts.publicHost)
@@ -586,7 +609,7 @@ func runServer(opts options) {
 		Addr:              net.JoinHostPort(state.Server.Host, strconv.Itoa(state.Server.Port)),
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second, // slow header (slowloris) protection
-		ReadTimeout:       60 * time.Second, // bound slow request bodies (slowloris variant)
+		ReadTimeout:       60 * time.Second, // cap form posts; proxied bodies are extended to an idle timeout per read (see forwardToBackend)
 		IdleTimeout:       120 * time.Second,
 		// No WriteTimeout: it would cut off long-lived streaming responses
 		// (SSE, log tails) from proxied services. WebSocket upgrades are safe
@@ -605,9 +628,12 @@ func runServer(opts options) {
 	// the already-running check / bind would let a failed start overwrite
 	// state.yaml with a port we never bound, corrupting the running gateway's
 	// recorded port for `status` and future default starts.
-	config.PersistServerConfig(statePath, opts.host, opts.port, opts.trustedProxy, opts.title,
+	if err := config.PersistServerConfig(statePath, state.Server.Host, state.Server.Port,
+		opts.trustedProxy, opts.title,
 		state.Server.TLSCert, state.Server.TLSKey,
-		state.Server.PublicHost, state.Server.PublicScheme, state.Server.CookieDomain)
+		state.Server.PublicHost, state.Server.PublicScheme, state.Server.CookieDomain); err != nil {
+		log.Printf("[goprox] WARNING: failed to persist server config to %s: %v", statePath, err)
+	}
 
 	// Start config scanner
 	stopScan := make(chan struct{})
@@ -666,6 +692,16 @@ func runServer(opts options) {
 }
 
 // ---- helpers ----
+
+// mustAbsPath resolves a persisted file path (TLS cert/key) to an absolute one,
+// so a later restart from a different working directory still finds it.
+func mustAbsPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("resolve path %s: %v", path, err)
+	}
+	return abs
+}
 
 // passwordReader is shared across readPassword calls: a fresh bufio.Reader per
 // call would eagerly buffer all of stdin on the first read, starving the second

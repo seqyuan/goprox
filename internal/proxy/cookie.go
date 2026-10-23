@@ -36,6 +36,12 @@ func RewriteSetCookie(raw, proxyPath string, clientSecure bool) string {
 	}
 	if !clientSecure {
 		c.Secure = false
+		// Browsers reject SameSite=None without Secure, so a backend cookie
+		// intended for cross-site use would be silently dropped over plain
+		// HTTP. Fall back to Lax, the most permissive value HTTP supports.
+		if c.SameSite == http.SameSiteNoneMode {
+			c.SameSite = http.SameSiteLaxMode
+		}
 	}
 	// __Host- requires Secure + Path=/ + no Domain; __Secure- requires Secure.
 	// Strip the prefix once the rewrite breaks the invariant (a reserved prefix

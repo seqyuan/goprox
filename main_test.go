@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/seqyuan/goprox/internal/config"
 )
 
 func TestParseOptionsTLS(t *testing.T) {
@@ -74,5 +76,58 @@ func TestGenerateSelfSignedCert(t *testing.T) {
 	}
 	if !leaf.NotAfter.After(leaf.NotBefore.AddDate(5, 0, 0)) {
 		t.Fatalf("cert validity too short: %v -> %v", leaf.NotBefore, leaf.NotAfter)
+	}
+}
+
+// Persisted host/port must not be overwritten by parser defaults. Only flags
+// the operator actually passed may change the effective listen address.
+func TestApplyListenOverridesPreservesStateUnlessExplicit(t *testing.T) {
+	state := &config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 39001},
+	}
+
+	opts, err := parseOptions(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.hostSet || opts.portSet {
+		t.Fatalf("hostSet/portSet must be false without flags: %+v", opts)
+	}
+	applyListenOverrides(state, opts)
+	if state.Server.Host != "127.0.0.1" || state.Server.Port != 39001 {
+		t.Fatalf("state was overwritten by defaults: %+v", state.Server)
+	}
+
+	opts, err = parseOptions([]string{"--host", "0.0.0.0", "--port", "40000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.hostSet || !opts.portSet {
+		t.Fatalf("explicit flags not recorded: %+v", opts)
+	}
+	applyListenOverrides(state, opts)
+	if state.Server.Host != "0.0.0.0" || state.Server.Port != 40000 {
+		t.Fatalf("explicit flags not applied: %+v", state.Server)
+	}
+}
+
+// `goprox sso --hmac-secret ...` without --user-header must update the secret
+// while keeping the existing header, not silently act as "show config".
+func TestRunSSOHMACOnlyKeepsExistingHeader(t *testing.T) {
+	dir := t.TempDir()
+	path := config.StatePath(dir)
+	if err := config.PersistSSOConfig(path, "X-Authenticated-User", "old-secret"); err != nil {
+		t.Fatal(err)
+	}
+	runSSO(ssoArgs{configDir: dir, hmacSecret: "new-secret", haveHMAC: true})
+	st, err := config.LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SSO.UserHeader != "X-Authenticated-User" {
+		t.Fatalf("user_header = %q, want preserved X-Authenticated-User", st.SSO.UserHeader)
+	}
+	if st.SSO.HMACSecret != "new-secret" {
+		t.Fatalf("hmac_secret = %q, want new-secret", st.SSO.HMACSecret)
 	}
 }

@@ -188,6 +188,7 @@ func TestDashboardUXChrome(t *testing.T) {
 		`hover: hover`,
 		`data-move="up"`,
 		`data-move="down"`,
+		`if (after === card) return;`,
 		"这只删除转发入口",
 		"正在保存",
 		"1048576",

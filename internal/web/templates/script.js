@@ -379,7 +379,10 @@
         var card = findCard(id);
         if (!card) return;
         var after = ev.target.closest(".service-card");
-        if (after && after !== card) {
+        // Dropping a card onto itself must be a no-op; appendChild below would
+        // silently move it to the end of the category.
+        if (after === card) return;
+        if (after) {
           after.parentNode.insertBefore(card, after);
         } else {
           zone.appendChild(card);

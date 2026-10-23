@@ -18,8 +18,9 @@ import (
 // error:
 //   - only 401/403 (an unauthenticated page),
 //   - only GET navigations that ask for HTML (Accept: text/html),
-//   - only the canonical /proxy/ path (bare/root paths may be routed via
-//     referer or default_service, where re-deriving a redirect is unsafe),
+//   - only a path whose ownership is unambiguous: the canonical /proxy/ path
+//     or a vhost (which owns its host root), never bare/root paths routed via
+//     referer or default_service where re-deriving a redirect is unsafe,
 //   - never when the request already carried the token param (so a rejected
 //     token degrades to the backend's own response instead of a redirect loop).
 func shouldBootstrap(resp *http.Response, fc ProxyForwardContext) bool {
@@ -36,7 +37,7 @@ func shouldBootstrap(resp *http.Response, fc ProxyForwardContext) bool {
 	if !strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/html") {
 		return false
 	}
-	if !strings.HasPrefix(fc.OriginalPath, "/proxy/") {
+	if fc.Mode != ForwardVHost && !strings.HasPrefix(fc.OriginalPath, "/proxy/") {
 		return false
 	}
 	if req.URL.Query().Get(bootstrapParam(fc.Bootstrap)) != "" {

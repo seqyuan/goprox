@@ -34,7 +34,7 @@ func stripGatewayCookie(cookieHeader string) string {
 		if idx := strings.Index(part, "="); idx != -1 {
 			name = part[:idx]
 		}
-		if name == auth.SessionCookieName || name == auth.RouteCookieName || strings.HasPrefix(name, auth.RouteCookiePrefix) {
+		if auth.IsGatewayCookieName(name) {
 			continue
 		}
 		kept = append(kept, part)
@@ -178,7 +178,7 @@ func originAuthorityMatches(origin, gatewayHost string) bool {
 	if err != nil || g.Host == "" {
 		return false
 	}
-	return o.Host == g.Host
+	return strings.EqualFold(o.Host, g.Host)
 }
 
 // maxInjectHTML caps how much of an HTML body we buffer for <base>
@@ -188,11 +188,24 @@ func originAuthorityMatches(origin, gatewayHost string) bool {
 // (Package-level var so tests can shrink it to exercise the cap.)
 var maxInjectHTML int64 = 8 << 20
 
+// backendAuthority returns the backend URL authority, bracketing IPv6
+// literals correctly (net.JoinHostPort); naive host+":"+port produces an
+// invalid Host/Origin for addresses such as ::1.
+func backendAuthority(svc *config.ServiceConfig) string {
+	host := svc.Host
+	// A hand-edited config may spell an IPv6 literal as [::1]; JoinHostPort
+	// adds its own brackets, so strip a pre-existing pair first.
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return net.JoinHostPort(host, strconv.Itoa(svc.Port))
+}
+
 // NewReverseProxy creates a configured reverse proxy for a service.
 func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputil.ReverseProxy {
 	target := &url.URL{
 		Scheme: "http",
-		Host:   svc.Host + ":" + strconv.Itoa(svc.Port),
+		Host:   backendAuthority(svc),
 	}
 
 	// Carry the service's session-bootstrap config into the response hook.
@@ -226,9 +239,15 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				pr.Out.Header.Del("Accept-Encoding")
 			}
 
-			// Strip gateway cookies
+			// Strip gateway cookies. This includes the 2FA pending/setup cookies:
+			// the setup cookie carries the not-yet-persisted TOTP secret, so
+			// forwarding it to a backend would leak a future second factor.
 			if cookie := pr.In.Header.Get("Cookie"); cookie != "" {
-				pr.Out.Header.Set("Cookie", stripGatewayCookie(cookie))
+				if stripped := stripGatewayCookie(cookie); stripped != "" {
+					pr.Out.Header.Set("Cookie", stripped)
+				} else {
+					pr.Out.Header.Del("Cookie")
+				}
 			}
 
 			// Forwarded headers: send only the peer address computed by
@@ -236,10 +255,24 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			// through, otherwise a backend that trusts XFF (for logging or
 			// IP-based access control) would see an attacker-controlled source.
 			pr.Out.Header.Set("X-Forwarded-For", fc.ClientIP)
+			pr.Out.Header.Set("X-Real-IP", fc.ClientIP)
 			pr.Out.Header.Set("X-Forwarded-Proto", fc.Proto)
 			pr.Out.Header.Set("X-Forwarded-Host", fc.Host)
-			if fc.Mode != ForwardVHost {
+			// Other proxy-metadata headers are commonly trusted by frameworks
+			// (e.g. X-Original-URL/X-Rewrite-URL auth bypasses, Forwarded). They
+			// must never come from the browser unchanged.
+			for _, h := range []string{
+				"Forwarded", "X-Original-URL", "X-Rewrite-URL",
+				"X-Forwarded-Port", "X-Forwarded-Server",
+			} {
+				pr.Out.Header.Del(h)
+			}
+			if fc.Mode == ForwardPrefix {
 				pr.Out.Header.Set("X-Forwarded-Prefix", fc.Prefix)
+			} else {
+				// A vhost owns its host root; as-is forwarding is mounted at the
+				// gateway root. Neither is under the canonical /proxy/ prefix.
+				pr.Out.Header.Del("X-Forwarded-Prefix")
 			}
 
 			// Lightweight SSO: carry the authenticated session user to
@@ -314,10 +347,12 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				}
 				secure := fc.Proto == "https"
 				for _, c := range cookies {
-					// A backend must not set a cookie that collides with the
-					// gateway's own session/route/2FA cookies: on a shared
-					// parent domain that would allow cookie tossing.
-					if fc.Mode == ForwardVHost && isGatewayCookie(c) {
+					// A backend must not set a cookie in the gateway's reserved
+					// namespace: on bare/root paths the backend's Path=/ cookie
+					// would overwrite the gateway's session/route cookies, and on
+					// a shared parent domain it allows cookie tossing. Drop these
+					// in every forwarding mode, not only vhost.
+					if isGatewayCookie(c) {
 						continue
 					}
 					resp.Header.Add("Set-Cookie", RewriteSetCookie(c, proxyPath, secure))
@@ -338,6 +373,11 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			// HEAD responses carry no body; injecting would advertise a
 			// Content-Length the client never receives.
 			if resp.Request != nil && resp.Request.Method == "HEAD" {
+				return nil
+			}
+			// Statuses that cannot carry a body must not receive injected
+			// content (it would set a Content-Length the client never gets).
+			if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
 				return nil
 			}
 
@@ -383,7 +423,11 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 				return err
 			}
 			if int64(len(body)) > maxInjectHTML {
-				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+				// Keep streaming the remainder, but preserve the upstream body's
+				// Close: io.NopCloser would drop it and leak the backend
+				// connection when the client aborts before EOF.
+				orig := resp.Body
+				resp.Body = &readCloser{Reader: io.MultiReader(bytes.NewReader(body), orig), Closer: orig}
 				resp.ContentLength = -1
 				resp.Header.Del("Content-Length")
 				return nil
@@ -406,6 +450,15 @@ func NewReverseProxy(svc *config.ServiceConfig, fc ProxyForwardContext) *httputi
 			return nil
 		},
 	}
+}
+
+// readCloser pairs a Reader with the original response body's Closer. It is
+// used when a body is partially buffered and the remainder is streamed: the
+// wrapper must still close the upstream body so the connection can be released
+// if the client disconnects before EOF.
+type readCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // rewriteLocation converts a backend-generated redirect into a
@@ -437,22 +490,70 @@ func rewriteLocation(loc, backendPath string, fc ProxyForwardContext, backendHos
 	}
 
 	// If backend path is set, strip it from redirects before adding prefix.
-	if backendPath != "" && strings.HasPrefix(loc, backendPath) {
-		loc = strings.TrimPrefix(loc, backendPath)
-		if loc == "" {
-			loc = "/"
-		}
+	if stripped, ok := stripBackendPath(loc, backendPath); ok {
+		loc = stripped
 	}
-	if fc.Mode == ForwardVHost {
-		// The app owns this host's root; redirects stay rooted at /.
+	if fc.Mode == ForwardVHost || fc.Mode == ForwardAsIs {
+		// The app owns this host's root (vhost) or is mounted at the gateway
+		// root (default_service / Referer / route-cookie as-is forwarding).
+		// Root-absolute redirects must stay at the root; prefixing them would
+		// move a root-routed SPA under /proxy/ and break its client router.
 		return loc, true
 	}
 	return fc.Prefix + loc, true
 }
 
-// isGatewayCookie reports whether a backend Set-Cookie uses one of GoProx's
-// own cookie names. In vhost mode such cookies are dropped to prevent a
-// backend from shadowing the shared session cookie (cookie tossing).
+// stripBackendPath maps a backend-root-absolute redirect path back to the
+// service-relative path. It only strips on path-segment boundaries: matching a
+// raw string prefix would turn /application into lication for backend_path
+// /app. A file-like backend_path (e.g. /app/index.html) also strips its
+// directory so sibling resources redirect back under the service prefix.
+func stripBackendPath(loc, backendPath string) (string, bool) {
+	bp := strings.TrimSpace(backendPath)
+	if bp == "" || bp == "/" {
+		return loc, false
+	}
+	if !strings.HasPrefix(bp, "/") {
+		bp = "/" + bp
+	}
+
+	// The backend path itself (optionally with a query) is the service root.
+	if loc == bp {
+		return "/", true
+	}
+	if strings.HasPrefix(loc, bp+"?") {
+		return "/" + loc[len(bp):], true
+	}
+
+	// A file-like backend path: sub-resources live under its directory.
+	if !strings.HasSuffix(bp, "/") && strings.Contains(pathpkg.Base(bp), ".") {
+		dir := pathpkg.Dir(bp)
+		if loc == dir {
+			return "/", true
+		}
+		if strings.HasPrefix(loc, dir+"/") {
+			return loc[len(dir):], true
+		}
+		return loc, false
+	}
+
+	base := strings.TrimRight(bp, "/")
+	if base == "" {
+		return loc, false
+	}
+	if loc == base {
+		return "/", true
+	}
+	if strings.HasPrefix(loc, base+"/") || strings.HasPrefix(loc, base+"?") {
+		return loc[len(base):], true
+	}
+	return loc, false
+}
+
+// isGatewayCookie reports whether a backend Set-Cookie uses a name in the
+// gateway's reserved namespace. Such cookies are dropped in every forwarding
+// mode to prevent a backend from shadowing the gateway's session/route state
+// (cookie tossing), especially on bare/root paths where Path=/ is preserved.
 func isGatewayCookie(raw string) bool {
 	// Extract the name from the first pair without relying on the full
 	// Set-Cookie parser: browsers are lenient, so a malformed gateway cookie
@@ -468,11 +569,7 @@ func isGatewayCookie(raw string) bool {
 	if name == "" {
 		return false
 	}
-	switch name {
-	case auth.SessionCookieName, auth.TOTACookieName, auth.TOTASetupCookie, auth.RouteCookieName:
-		return true
-	}
-	return strings.HasPrefix(name, auth.RouteCookiePrefix)
+	return auth.IsGatewayCookieName(name)
 }
 
 // sameBackendHost reports whether a redirect target host refers to the same
@@ -509,6 +606,29 @@ func splitHostPort(h string) (host, port string) {
 // defined) and for pages that never call it.
 const WebCompatPolyfill = `<script>(function(){var c=window.crypto;if(c&&typeof c.randomUUID!=="function"&&c.getRandomValues){try{Object.defineProperty(c,"randomUUID",{value:function(){var b=c.getRandomValues(new Uint8Array(16));b[6]=b[6]&15|64;b[8]=b[8]&63|128;var h="";for(var i=0;i<16;i++){h+=(b[i]<16?"0":"")+b[i].toString(16)}return h.slice(0,8)+"-"+h.slice(8,12)+"-"+h.slice(12,16)+"-"+h.slice(16,20)+"-"+h.slice(20)},writable:true,configurable:true})}catch(e){}}})();</script>`
 
+// indexOpeningTag finds an HTML opening tag by name (e.g. "head") without
+// matching longer names such as <header> when looking for <head>.
+func indexOpeningTag(lower []byte, name string) int {
+	needle := []byte("<" + name)
+	for off := 0; off < len(lower); {
+		i := bytes.Index(lower[off:], needle)
+		if i < 0 {
+			return -1
+		}
+		i += off
+		next := i + len(needle)
+		if next >= len(lower) {
+			return i
+		}
+		switch lower[next] {
+		case '>', ' ', '\t', '\r', '\n', '/':
+			return i
+		}
+		off = i + 1
+	}
+	return -1
+}
+
 // injectBaseTag inserts a <base> tag into an HTML body.
 // Priority: right after <head> opening tag (to precede all <script>/<link>),
 // then before </head>, then before <body, then after <html>, finally prepend.
@@ -516,7 +636,7 @@ func injectBaseTag(body, baseTag []byte) []byte {
 	lower := bytes.ToLower(body)
 
 	// 1. Right after <head> or <head ...> — sets base before any resources are loaded.
-	if idx := bytes.Index(lower, []byte("<head")); idx != -1 {
+	if idx := indexOpeningTag(lower, "head"); idx != -1 {
 		// find the '>' that closes the <head ...> opening tag
 		closeIdx := idx + bytes.IndexByte(body[idx:], '>') + 1
 		result := make([]byte, 0, len(body)+len(baseTag))
@@ -536,7 +656,7 @@ func injectBaseTag(body, baseTag []byte) []byte {
 	}
 
 	// 3. Before <body
-	if idx := bytes.Index(lower, []byte("<body")); idx != -1 {
+	if idx := indexOpeningTag(lower, "body"); idx != -1 {
 		result := make([]byte, 0, len(body)+len(baseTag))
 		result = append(result, body[:idx]...)
 		result = append(result, baseTag...)
@@ -545,7 +665,7 @@ func injectBaseTag(body, baseTag []byte) []byte {
 	}
 
 	// 4. After <html ...>
-	if idx := bytes.Index(lower, []byte("<html")); idx != -1 {
+	if idx := indexOpeningTag(lower, "html"); idx != -1 {
 		closeIdx := idx + bytes.IndexByte(body[idx:], '>') + 1
 		result := make([]byte, 0, len(body)+len(baseTag))
 		result = append(result, body[:closeIdx]...)

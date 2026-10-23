@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -24,6 +25,13 @@ import (
 const (
 	loginErrorMsg     = "用户名或密码错误"
 	pendingTTLSeconds = 300 // pending 2FA token lifetime (5 minutes)
+
+	// proxyBodyIdleTimeout is the per-read idle deadline applied while an
+	// uploaded/proxied request body is being consumed. The server's absolute
+	// ReadTimeout (60s) protects non-proxied form posts, but must not cap a
+	// legitimate long upload (Jupyter/RStudio, large files): the deadline is
+	// reset to this value before every read instead.
+	proxyBodyIdleTimeout = 10 * time.Minute
 )
 
 // Server is the main GoProx HTTP server.
@@ -209,6 +217,17 @@ func (s *Server) Handler() http.Handler {
 	// Logout
 	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", auth.ClearSessionCookieWithDomain(s.cookieDomain))
+		// A pre-vhost (or pre-cookie-domain) host-only session cookie can
+		// coexist with the parent-domain one. Clearing only the Domain variant
+		// leaves that host-only cookie valid, so logout would not actually log
+		// the user out. Clear both scopes.
+		if s.cookieDomain != "" {
+			w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
+		}
+		// Temporary 2FA state must not survive logout (the setup cookie also
+		// carries a plaintext pending TOTP secret).
+		w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
+		w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
 		// Route cookies outlive the session and would keep forwarding bare
 		// paths to backends after logout; clear every one the browser holds.
 		for _, c := range auth.ClearRouteCookies(r.Header.Get("Cookie")) {
@@ -513,19 +532,17 @@ func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool
 
 // findBackendService tries to locate the target service from Referer or route cookie.
 func (s *Server) findBackendService(r *http.Request, username string) *config.ServiceMatch {
-	// Referer is the strongest signal for backend-originated login posts.
-	referer := r.Header.Get("Referer")
-	if referer != "" {
-		refPath := "/"
-		if u, err := url.Parse(referer); err == nil && u.Path != "" {
-			refPath = u.Path
-		}
+	// Referer is the strongest signal for backend-originated login posts, but
+	// only when it comes from this same gateway authority: an external page
+	// controls its own path and must not choose a backend.
+	refPath := s.refererPath(r)
+	if refPath != "" {
 		if match := s.matchRouteForUser(refPath, username); match != nil {
 			return match
 		}
 	}
 
-	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, referer)
+	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, refPath)
 	if route == "" {
 		return nil
 	}
@@ -558,7 +575,7 @@ func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool 
 		return false
 	}
 	route := auth.GetRouteCookieForRequest(
-		r.Header.Get("Cookie"), "", r.Header.Get("Referer"),
+		r.Header.Get("Cookie"), "", s.refererPath(r),
 	)
 	if route == "" || !strings.HasPrefix(route, "/proxy/"+session.UserID+"/") {
 		return false
@@ -824,7 +841,7 @@ func (s *Server) handleTwoFASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secure := auth.IsSecureRequest(r)
-	w.Header().Set("Set-Cookie", auth.SetSetupCookie(secret, s.sessionSecret, pendingTTLSeconds, secure))
+	w.Header().Set("Set-Cookie", auth.SetSetupCookie(session.UserID, secret, s.sessionSecret, pendingTTLSeconds, secure))
 	sendHTML(w, 200, web.TwoFASetupPage(s.siteTitle, "", secret, enabled))
 }
 
@@ -836,8 +853,8 @@ func (s *Server) handleTwoFASetupPost(w http.ResponseWriter, r *http.Request, us
 	}
 
 	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
-	if !ok {
+	setupUser, secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
+	if !ok || setupUser != username {
 		sendHTML(w, 401, web.TwoFASetupPage(s.siteTitle, "设置会话已过期，请重新开始", "", enabled))
 		return
 	}
@@ -876,8 +893,8 @@ func (s *Server) handleTwoFAQr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
-	if !ok {
+	setupUser, secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
+	if !ok || setupUser != session.UserID {
 		http.Error(w, "invalid setup", http.StatusBadRequest)
 		return
 	}
@@ -887,6 +904,7 @@ func (s *Server) handleTwoFAQr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Write(png)
 }
 
@@ -975,9 +993,7 @@ func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *con
 	// the service prefix, so relative links in plain HTML files in
 	// subdirectories resolve correctly.
 	forwardCtx.Base = proxy.BaseForPath(forwardCtx.Prefix, match.RemainingPath)
-	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
-		w.Header().Add("Set-Cookie", c)
-	}
+	setRouteCookies(w, r, forwardCtx.Prefix)
 	r.URL.Path = match.RemainingPath
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
 }
@@ -1004,13 +1020,23 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 	if !strings.HasPrefix(r.URL.Path, "/proxy/") {
 		forwardCtx.Base = proxy.BaseForPath("", r.URL.Path)
 	}
-	for _, c := range auth.SetRouteCookies(forwardCtx.Prefix) {
-		w.Header().Add("Set-Cookie", c)
-	}
+	setRouteCookies(w, r, forwardCtx.Prefix)
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
 }
 
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
+	// Go's http.Server.ReadTimeout caps the whole request body, which would
+	// abort any upload taking longer than 60s. For proxied requests reset the
+	// deadline to an idle timeout before every body read: a continuously
+	// uploading client is not cut off, while a stalled upload still fails.
+	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = &idleReadBody{
+			ReadCloser: r.Body,
+			rc:         http.NewResponseController(w),
+			timeout:    proxyBodyIdleTimeout,
+		}
+	}
+
 	rp := proxy.NewReverseProxy(svc, fc)
 	rp.Transport = s.transport
 	// Go's ReverseProxy logs body-copy errors ("unexpected EOF") through its
@@ -1059,10 +1085,10 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 		return false
 	}
 
-	// Extract path from referer
-	refPath := "/"
-	if u, err := url.Parse(referer); err == nil && u.Path != "" {
-		refPath = u.Path
+	// Extract the path only when the Referer belongs to this gateway authority.
+	refPath := s.refererPath(r)
+	if refPath == "" {
+		return false
 	}
 
 	match := s.registry.FindService(refPath)
@@ -1161,6 +1187,12 @@ func (s *Server) forwardToDefaultService(w http.ResponseWriter, r *http.Request)
 	if svc == nil {
 		return false
 	}
+	// Keep default-service page navigations on the same sliding-session policy
+	// as dashboard/proxy/API requests; otherwise a root-routed SPA that only
+	// makes page-like requests can expire while actively in use.
+	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		w.Header().Add("Set-Cookie", s.issueSessionCookie(session.UserID, auth.IsSecureRequest(r)))
+	}
 	match := &config.ServiceMatch{
 		Username:      session.UserID,
 		Service:       svc,
@@ -1234,6 +1266,31 @@ func (s *Server) redirectBareService(w http.ResponseWriter, r *http.Request, use
 	return true
 }
 
+// isPassiveSubresource reports whether this is an image/favicon load. Such
+// requests are issued by the dashboard for every card and must not update the
+// global "most recently visited service" marker: otherwise the root-absolute /
+// default-service fallback would point at whichever favicon loaded last.
+func isPassiveSubresource(r *http.Request) bool {
+	if strings.EqualFold(r.Header.Get("Sec-Fetch-Dest"), "image") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(pathpkg.Base(r.URL.Path)), "favicon.")
+}
+
+// setRouteCookies writes the per-service route cookie on every proxied
+// response, and the global recent-service cookie only for real page/API
+// traffic (not passive image/favicon subresources).
+func setRouteCookies(w http.ResponseWriter, r *http.Request, prefix string) {
+	cookies := auth.SetRouteCookies(prefix)
+	if isPassiveSubresource(r) {
+		// SetRouteCookies returns [per-service, global]; keep only the former.
+		cookies = cookies[:1]
+	}
+	for _, c := range cookies {
+		w.Header().Add("Set-Cookie", c)
+	}
+}
+
 // handleRootAbsoluteService routes a bare request back to a service that opted
 // into root_absolute. Such apps emit root-absolute URLs (/docs/, /static/...)
 // while being hosted under /proxy/<user>/<service>/; the current page
@@ -1274,20 +1331,16 @@ func (s *Server) handleRootAbsoluteService(w http.ResponseWriter, r *http.Reques
 // path (whether or not it points at a root_absolute service): a canonical
 // referer is authoritative, so a stale route cookie must not override it.
 func (s *Server) matchRootAbsoluteReferer(r *http.Request, username string) (*config.ServiceMatch, bool) {
-	referer := r.Header.Get("Referer")
-	if referer == "" {
+	refPath := s.refererPath(r)
+	if refPath == "" {
 		return nil, false
 	}
-	u, err := url.Parse(referer)
-	if err != nil || u.Path == "" {
-		return nil, false
-	}
-	if !strings.HasPrefix(u.Path, "/proxy/") {
+	if !strings.HasPrefix(refPath, "/proxy/") {
 		// Bare/external referer: no canonical page identity, so the caller
 		// may fall back to the route cookie.
 		return nil, false
 	}
-	match := s.registry.FindServiceForUser(u.Path, username)
+	match := s.registry.FindServiceForUser(refPath, username)
 	if match == nil {
 		// Canonical proxy path with no matching service (deleted/unknown):
 		// authoritative, but not ours.
@@ -1303,6 +1356,26 @@ func (s *Server) matchRootAbsoluteReferer(r *http.Request, username string) (*co
 	// Canonical page of a non-flagged service: do not let a stale route
 	// cookie for a different service steal its bare paths.
 	return nil, true
+}
+
+// refererPath returns the Referer's path only when its host matches the
+// authority the browser is currently addressing. The path component of an
+// external page's URL is attacker-controlled, so it must never be used to
+// choose a backend (a cross-site link/Referer could otherwise drive an
+// authenticated bare-path request into any proxied service).
+func (s *Server) refererPath(r *http.Request) string {
+	referer := r.Header.Get("Referer")
+	if referer == "" {
+		return ""
+	}
+	u, err := url.Parse(referer)
+	if err != nil || u.Path == "" {
+		return ""
+	}
+	if !strings.EqualFold(u.Host, r.Host) {
+		return ""
+	}
+	return u.Path
 }
 
 // ScanLoop periodically reloads the user registry.
@@ -1345,8 +1418,26 @@ func (s *Server) HostEntries() []config.HostEntry {
 	return s.registry.HostEntries()
 }
 
+// idleReadBody resets the connection's read deadline before each Read so a
+// long upload is bounded by idle time between chunks, not by the total request
+// duration. SetReadDeadline errors (e.g. HTTP/2 or a test ResponseRecorder)
+// are ignored; the original deadline still applies in that case.
+type idleReadBody struct {
+	io.ReadCloser
+	rc      *http.ResponseController
+	timeout time.Duration
+}
+
+func (b *idleReadBody) Read(p []byte) (int, error) {
+	_ = b.rc.SetReadDeadline(time.Now().Add(b.timeout))
+	return b.ReadCloser.Read(p)
+}
+
 func sendHTML(w http.ResponseWriter, status int, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Authenticated pages (and error pages echoing login state) must not be
+	// cached by a shared browser/proxy after logout.
+	w.Header().Set("Cache-Control", "no-store")
 	// Gateway-owned pages must not be framed by unrelated sites (clickjacking
 	// of the login/dashboard) or sniffed as a different content type.
 	w.Header().Set("X-Frame-Options", "DENY")

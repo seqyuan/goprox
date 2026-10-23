@@ -166,3 +166,38 @@ func TestExtractTokenRegexWholeMatchWithoutGroup(t *testing.T) {
 		t.Fatalf("whole-match token = %q,%v; want token=abc123,true", tok, ok)
 	}
 }
+
+// A vhost is a deterministic host→service mapping: the app owns the whole
+// host root, so the unauthenticated 401→token redirect is safe there too.
+// (It is still disabled for bare paths routed via default_service/Referer.)
+func TestBootstrapWorksOnVHost(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, "auth required")
+	}))
+	defer backend.Close()
+
+	host, port := splitHostPort(backend.Listener.Addr().String())
+	svc := &config.ServiceConfig{
+		Host: host, Port: mustAtoi(t, port), Path: "/hugo",
+		AuthBootstrap: &config.AuthBootstrapConfig{Mode: config.BootstrapModeStatic, TokenValue: "tok-vhost"},
+	}
+
+	req := httptest.NewRequest("GET", "/docs/", nil)
+	req.Header.Set("Accept", "text/html")
+	fc := BuildProxyForwardContext(req, "alice", "/hugo", false)
+	fc.Mode = ForwardVHost
+	fc.Base = BaseForPath("", req.URL.Path)
+	rp := NewReverseProxy(svc, fc)
+
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/docs/?token=tok-vhost" {
+		t.Fatalf("Location = %q, want /docs/?token=tok-vhost", got)
+	}
+}

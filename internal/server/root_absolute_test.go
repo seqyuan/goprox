@@ -76,6 +76,9 @@ func newRootAbsoluteServer(t *testing.T, svc, def *rootAbsoluteBackend, rootAbso
 func rootAbsoluteRequest(t *testing.T, srv *Server, path, cookie, referer string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("GET", path, nil)
+	// Referer-based routing requires the same gateway authority; the test
+	// referers use http://gw/... .
+	req.Host = "gw"
 	req.Header.Set("Cookie", cookie)
 	if referer != "" {
 		req.Header.Set("Referer", referer)
@@ -243,5 +246,25 @@ func TestRootAbsoluteLegacyRefererRoutes(t *testing.T) {
 	}
 	if def.path != "" {
 		t.Fatalf("default service must not be hit, saw %q", def.path)
+	}
+}
+
+// A Referer from another origin must not be trusted even if its path matches
+// this user's service. The path component is attacker-controlled on the
+// external page; only same-authority Referers may drive routing.
+func TestRootAbsoluteRefererRejectsCrossHost(t *testing.T) {
+	svc := newRootAbsoluteBackend(t, "service")
+	def := newRootAbsoluteBackend(t, "xifeng")
+	srv := newRootAbsoluteServer(t, svc, def, true)
+
+	rec := rootAbsoluteRequest(t, srv, "/docs/", aliceSessionCookie(), "http://evil.example/proxy/alice/service/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.path != "" {
+		t.Fatalf("cross-host Referer routed to the service: %q", svc.path)
+	}
+	if def.path != "/docs/" {
+		t.Fatalf("cross-host Referer should fall back to default_service, got %q", def.path)
 	}
 }
