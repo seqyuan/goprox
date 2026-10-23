@@ -141,10 +141,10 @@ Options:
 ├── goprox                  # 二进制
 └── config/                 # 0700，网关属主
     ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、session_secret）
-    ├── state.yaml.lock     # 并发写文件锁（自动生成，可忽略）
+    ├── state.yaml.lock     # 临时并发写锁（正常释放即删除；崩溃遗留自动回收）
     └── users/              # 每个用户一个独立配置文件
         ├── alice.yaml
-        ├── alice.yaml.lock # 并发写文件锁（自动生成，可忽略）
+        ├── alice.yaml.lock # 临时并发写锁（正常释放即删除；崩溃遗留自动回收）
         └── bob.yaml
 ```
 

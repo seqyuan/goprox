@@ -1,11 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestConfig(t *testing.T) string {
@@ -432,16 +434,43 @@ func TestWriteFileAtomicReplacesCleanly(t *testing.T) {
 	}
 }
 
-// withConfigLock also takes a cross-process file lock; exercise the platform
-// implementation so a build tag/API mistake fails the test suite.
-func TestWithConfigLockTakesFileLock(t *testing.T) {
+// withConfigLock creates the cross-process lock while the callback runs and
+// removes it on release (no .lock clutter in normal operation).
+func TestWithConfigLockRemovesFileLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alice.yaml")
-	if err := withConfigLock(path, func() error { return nil }); err != nil {
+	if err := withConfigLock(path, func() error {
+		if _, err := os.Stat(path + ".lock"); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		t.Fatalf("withConfigLock: %v", err)
 	}
-	if _, err := os.Stat(path + ".lock"); err != nil {
-		t.Fatalf("lock file missing: %v", err)
+	if _, err := os.Stat(path + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf("lock file remained after release: %v", err)
 	}
+}
+
+// Two holders must not acquire the same O_EXCL lock; the second times out.
+func TestLockConfigFileExclusive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.lock")
+	unlock, err := lockConfigFileWith(path, time.Second, time.Minute, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockConfigFileWith(path, 30*time.Millisecond, time.Minute, 5*time.Millisecond); err == nil {
+		t.Fatal("second lock acquisition unexpectedly succeeded")
+	}
+	unlock()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("lock file not removed on release: %v", err)
+	}
+	unlock2, err := lockConfigFileWith(path, time.Second, time.Minute, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("re-acquire after release: %v", err)
+	}
+	unlock2()
 }
 
 // The auto-generated path comes from the service ID. Direct callers (outside
@@ -507,5 +536,83 @@ func TestLoadUserConfigRequiresExplicitPath(t *testing.T) {
 	}
 	if len(cfg.Services) != 1 || cfg.Services[0].ID != "root" || cfg.Services[0].Path != "/" {
 		t.Fatalf("services = %+v, want only explicit root", cfg.Services)
+	}
+}
+
+// User creation is one locked, atomic step: it must write the real hash and
+// never overwrite an existing account.
+func TestCreateUserConfigAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alice.yaml")
+	first := HashPassword("first")
+	if err := CreateUserConfig(path, first); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.PasswordHash != first {
+		t.Fatalf("hash = %q, want %q", cfg.Auth.PasswordHash, first)
+	}
+
+	if err := CreateUserConfig(path, HashPassword("second")); err == nil {
+		t.Fatal("CreateUserConfig overwrote an existing account")
+	}
+	cfg, err = LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.PasswordHash != first {
+		t.Fatalf("hash changed by failed create: %q", cfg.Auth.PasswordHash)
+	}
+}
+
+// Deleting a user also releases/removes the lock file.
+func TestRemoveUserConfigRemovesFileAndLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alice.yaml")
+	if err := EnsureUserConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveUserConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("user config still exists: %v", err)
+	}
+	if _, err := os.Stat(path + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf("lock file still exists: %v", err)
+	}
+}
+
+// A lock left by a crashed process on this host is reclaimed immediately via
+// PID liveness instead of blocking config writes for the full stale interval.
+func TestLockConfigFileReclaimsDeadPID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.lock")
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skip("hostname unavailable")
+	}
+	// 2^31-1 is not a live PID on Linux; the file's mtime is fresh, so only
+	// the liveness check can reclaim it.
+	content := fmt.Sprintf("%s 2147483647 0\n", host)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockConfigFileWith(path, 200*time.Millisecond, time.Hour, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("dead-PID lock was not reclaimed: %v", err)
+	}
+	unlock()
+}
+
+// `goprox user` may run before `goprox serve`, so CreateUserConfig must create
+// the users directory before trying to O_EXCL-create the lock file.
+func TestCreateUserConfigCreatesMissingDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config", "users", "alice.yaml")
+	if err := CreateUserConfig(path, HashPassword("pw")); err != nil {
+		t.Fatalf("CreateUserConfig with missing dir: %v", err)
+	}
+	if _, err := LoadUserConfig(path); err != nil {
+		t.Fatalf("created config unreadable: %v", err)
 	}
 }

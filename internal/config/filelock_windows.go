@@ -3,11 +3,8 @@
 
 package config
 
-// lockConfigFile is a no-op on Windows. GoProx targets Linux/Unix (the CLI's
-// terminal handling is Unix-only), but keeping the symbol lets the package
-// still compile on Windows for tooling.
-func lockConfigFile(string) (func(), error) {
-	return func() {}, nil
-}
-
-func lockUnsupported(error) bool { return false }
+// processAlive cannot check PIDs portably on Windows here; returning true
+// means stale locks are reclaimed by the mtime threshold instead of PID
+// liveness. (GoProx itself targets Linux/Unix; this keeps the package
+// buildable for tooling.)
+func processAlive(int) bool { return true }

@@ -302,18 +302,16 @@ func runUserAdd(opts options, username string) {
 		log.Fatalf("user %s already exists (%s)", username, configPath)
 	}
 
-	if err := config.EnsureUserConfig(configPath); err != nil {
-		log.Fatalf("create config: %v", err)
-	}
-
+	// Prompt before touching disk, then create the account (with the password
+	// hash) in one locked, atomic step. This avoids leaving a placeholder
+	// account if the prompt is aborted, and refuses to overwrite an account
+	// created concurrently by another CLI process.
 	password, err := promptNewPassword()
 	if err != nil {
-		// Clean up the empty config on failure.
-		os.Remove(configPath)
 		log.Fatalf("%v", err)
 	}
-	if err := config.UpdatePasswordHash(configPath, auth.HashPassword(password)); err != nil {
-		log.Fatalf("update password: %v", err)
+	if err := config.CreateUserConfig(configPath, auth.HashPassword(password)); err != nil {
+		log.Fatalf("create user: %v", err)
 	}
 	fmt.Printf("[goprox] user %s created (%s)\n", username, configPath)
 }
@@ -339,7 +337,7 @@ func runUserDel(opts options, username string) {
 	if _, err := os.Stat(configPath); err != nil {
 		log.Fatalf("user %s does not exist (%s)", username, configPath)
 	}
-	if err := os.Remove(configPath); err != nil {
+	if err := config.RemoveUserConfig(configPath); err != nil {
 		log.Fatalf("remove config: %v", err)
 	}
 	fmt.Printf("[goprox] user %s deleted\n", username)

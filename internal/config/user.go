@@ -249,6 +249,38 @@ func EnsureUserConfig(path string) error {
 	return nil
 }
 
+// CreateUserConfig atomically creates a user config with the given password
+// hash. Unlike EnsureUserConfig (which writes an idempotent placeholder), it
+// refuses to overwrite an existing account, so two concurrent `goprox user`
+// processes cannot clobber each other's password.
+func CreateUserConfig(path, passwordHash string) error {
+	if !IsValidPasswordHash(passwordHash) {
+		return fmt.Errorf("invalid password hash")
+	}
+	return withConfigLock(path, func() error {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("user config already exists: %s", path)
+		}
+		cfg := UserConfig{
+			Auth:     UserAuthConfig{PasswordHash: passwordHash},
+			Services: []ServiceConfig{},
+		}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		return writeFileAtomic(path, data, 0600)
+	})
+}
+
+// RemoveUserConfig deletes a user config while holding the same cross-process
+// lock, so a concurrent `goprox passwd` cannot recreate/overwrite it mid-delete.
+func RemoveUserConfig(path string) error {
+	return withConfigLock(path, func() error {
+		return os.Remove(path)
+	})
+}
+
 // warnedInvalidPath remembers (configPath, serviceID) pairs whose service was
 // skipped for an invalid path, so registry scans (every 10s) don't log the
 // same warning repeatedly. The entries are tiny and rare.
@@ -417,10 +449,7 @@ func UpdateTOTPSecret(path, secret string) error {
 }
 
 // Config lock for safe concurrent writes
-var (
-	configLocks  sync.Map
-	lockWarnings sync.Map
-)
+var configLocks sync.Map
 
 func withConfigLock(path string, fn func() error) error {
 	mu, _ := configLocks.LoadOrStore(path, &sync.Mutex{})
@@ -428,20 +457,19 @@ func withConfigLock(path string, fn func() error) error {
 	m.Lock()
 	defer m.Unlock()
 
+	// The lock file lives next to the config. Create the directory first: on a
+	// fresh install `goprox user alice` runs before the gateway has created
+	// config/users, so O_EXCL would otherwise fail with ENOENT.
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
 	// Cross-process serialization: the CLI (goprox passwd/2fa-reset/sso) and a
 	// running gateway may write the same file concurrently. The lock file sits
-	// next to the config and is ignored by the users-dir scanner (*.yaml only).
+	// next to the config, is ignored by the users-dir scanner (*.yaml only),
+	// and is removed on release.
 	unlock, err := lockConfigFile(path + ".lock")
 	if err != nil {
-		if lockUnsupported(err) {
-			// Some NFS mounts cannot take advisory locks. Atomic rename still
-			// prevents truncated reads; only cross-process lost updates remain
-			// possible, so warn once per path and continue.
-			if _, loaded := lockWarnings.LoadOrStore(path, struct{}{}); !loaded {
-				log.Printf("[goprox] WARNING: file locking unavailable for %s (%v); using in-process lock only", path, err)
-			}
-			return fn()
-		}
 		return fmt.Errorf("lock config %s: %w", path, err)
 	}
 	defer unlock()

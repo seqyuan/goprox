@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -209,17 +208,5 @@ func TestIsValidTrustedProxy(t *testing.T) {
 		if IsValidTrustedProxy(v) {
 			t.Errorf("IsValidTrustedProxy(%q) = true, want false", v)
 		}
-	}
-}
-
-func TestLockUnsupported(t *testing.T) {
-	if !lockUnsupported(syscall.ENOLCK) {
-		t.Fatal("ENOLCK must be treated as lock-unsupported")
-	}
-	if !lockUnsupported(syscall.ENOTSUP) {
-		t.Fatal("ENOTSUP must be treated as lock-unsupported")
-	}
-	if lockUnsupported(os.ErrNotExist) {
-		t.Fatal("unrelated errors must not fall back silently")
 	}
 }
