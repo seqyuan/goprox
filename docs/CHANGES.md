@@ -1,3 +1,47 @@
+# GoProx v0.8.2 变更日志（2026-10-24）
+
+## 安全修复
+
+- **网关 Cookie 命名空间隔离**：代理请求前剥离所有 `goprox_*` Cookie；后端 `Set-Cookie` 在所有转发模式下拒绝网关命名空间。修复 2FA setup Cookie 携带明文 TOTP 密钥泄漏给后端、default_service 裸路径下后端覆盖 session/route Cookie（Cookie tossing）等问题
+- **登出改为 POST-only**：GET `/logout` 只渲染确认页，不再改变会话；POST 校验 Origin。登出同时清理 Domain/host-only session、2FA pending/setup 与全部 route Cookie，彻底消除跨站登出 CSRF 和旧 host-only Cookie 残留
+- **2FA 令牌绑定**：setup token 绑定用户，pending token 绑定密码 rev；密码重置后未完成的二次验证失效，共享浏览器也不能把旧 setup token 绑定到其他账号
+- **Referer 与转发头加固**：Referer 路由要求同 authority；`X-Real-IP` 覆盖为真实对端，清理 `Forwarded`、`X-Original-URL`、`X-Rewrite-URL`、`X-Forwarded-Port/Server`；XFF 从右向左取非可信跳点，避免伪造最左值绕过登录限流
+- **vhost / path 边界**：未登录 vhost API 返回 401（浏览器导航仍跳转登录）；path 模式跨用户服务返回 404，避免枚举；HTTPS 网关下 Origin 改写使用后端 http scheme，修复后端同源校验
+
+## 稳定性与配置
+
+- **修复重启覆盖监听配置**：`--host` / `--port` 仅在显式传参时覆盖 `state.yaml`，避免重启被默认值重置，甚至把仅监听回环的网关暴露到所有网卡
+- **配置原子写入与临时锁**：配置文件改为 temp + fsync + rename；跨进程锁改为 O_EXCL 临时锁，正常释放即删除，崩溃遗留按 host+PID 存活或 mtime 自动回收；不再依赖 flock，兼容不支持 advisory lock 的 NFS
+- **首次运行与用户管理**：`goprox user` 先输入密码再原子创建账号（拒绝覆盖并发创建的账号），`goprox del` 在锁内删除；首次运行自动创建 `config/users`
+- **registry 稳定性**：扫描失败也推进 `lastScan`，避免每个请求重复扫描/刷日志；登录与 session rev 查询按 mtime+size 缓存，降低每请求 YAML 解析开销
+- **大文件上传**：代理请求体每次 Read 重置空闲超时，不再被 `ReadTimeout` 的 60 秒总时长中断（Jupyter/RStudio 上传）
+- **启动校验**：`trusted_proxy` 必须是 IP/CIDR，TLS 证书与私钥必须成对配置；TLS 路径持久化为绝对路径；`--tls-selfsigned` 复用已有证书；`goprox sso --hmac-secret` 单独使用时保留现有 header
+- **限流饱和兜底**：map 满时优先淘汰未封禁 key；全部封禁时保护在途 key，确保新 key 仍能累计失败并进入封禁，而不是被立即删除导致限流失效
+- **配置清理**：删除服务时清除失效的 `default_service`；缺失 `path` 的 YAML 服务不再静默变成 `/`；root service（`path: "/"`）支持子路径，修复 base/favicon/cookie path 双斜杠
+
+## 代理与路由
+
+- `ForwardAsIs`（default_service / Referer / route cookie）的根绝对重定向不再错误加上 `/proxy/` 前缀
+- `auth_bootstrap` 支持 vhost 与 as-is 转发模式
+- 非 GET 裸 service path 直接转发并剥离服务前缀，POST 不再被重定向/丢 body
+- favicon/图片请求不再覆盖全局“最近访问服务”route cookie
+- `/api/services` 下未识别的子路径交还后端 fallback；`backend_path` 按路径段边界剥离，修复 `/application` 误伤和尾斜杠丢字符
+- IPv6 后端 authority 正确加方括号；HTTP 下 `SameSite=None` 自动降级为 `Lax`
+- 未登录访问页面类裸路径（如登出后的 SPA 书签）跳转登录，资源类路径仍返回 404
+
+## 升级提示
+
+- `/logout` 现在需要 POST；仪表盘退出入口已改为按钮，直接访问 `/logout` 会看到确认页
+- 升级时进行中的 2FA 绑定或 pending 登录需要重新开始（token 格式已更新）
+- 后端不应再使用 `goprox_*` 作为 Cookie 名（该命名空间由网关保留）
+
+## 测试
+
+- `go vet ./...`、`go test ./...`、`go test -race ./...` 全部通过
+- 新增/扩展测试覆盖：状态持久化、Cookie 隔离与 tossing、POST 登出、2FA token 绑定与 rev 失效、Referer/转发头、XFF、vhost 401、跨用户 404、裸路径 POST、root service、原子写/O_EXCL 锁/死 PID 回收、用户创建/删除、限流饱和、上传 body、IPv6、backend_path、favicon route cookie 等
+
+---
+
 # GoProx v0.8.1 变更日志（2026-10-21）
 
 ## 用户友好度
