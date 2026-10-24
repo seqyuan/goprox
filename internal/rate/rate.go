@@ -12,6 +12,7 @@ const maxKeys = 10000
 // Limiter limits the rate of events per key.
 type Limiter struct {
 	maxFailures int
+	capacity    int // failure-map hard cap (maxKeys, overridable in tests)
 	window      time.Duration
 	mu          sync.Mutex
 	failures    map[string][]time.Time
@@ -21,6 +22,7 @@ type Limiter struct {
 func NewLimiter(maxFailures int, window time.Duration) *Limiter {
 	return &Limiter{
 		maxFailures: maxFailures,
+		capacity:    maxKeys,
 		window:      window,
 		failures:    make(map[string][]time.Time),
 	}
@@ -31,7 +33,7 @@ func (l *Limiter) IsBlocked(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.prune(key)
-	l.sweepIfLarge()
+	l.sweepIfLarge(key)
 	return len(l.failures[key]) >= l.maxFailures
 }
 
@@ -41,7 +43,7 @@ func (l *Limiter) RecordFailure(key string) {
 	defer l.mu.Unlock()
 	l.prune(key)
 	l.failures[key] = append(l.failures[key], time.Now())
-	l.sweepIfLarge()
+	l.sweepIfLarge(key)
 }
 
 // Reset clears failures for a key.
@@ -71,12 +73,14 @@ func (l *Limiter) prune(key string) {
 }
 
 // sweepIfLarge removes expired entries for every key once the map grows past
-// maxKeys, then evicts arbitrary entries if the map is still over the cap
-// (flooded keys that are never looked up again cannot be reclaimed by per-key
-// pruning; eviction bounds memory while live keys re-accumulate on the next
-// failure).
-func (l *Limiter) sweepIfLarge() {
-	if len(l.failures) <= maxKeys {
+// capacity, then evicts entries if the map is still over the cap. protectKey
+// (the key being checked/recorded) is never evicted: under a saturated map,
+// dropping the incoming key would prevent it from ever accumulating failures,
+// silently disabling the per-key limit. Instead an existing blocked key is
+// evicted to make room, so new keys still become blocked (at the cost of one
+// old block under an extreme all-blocked flood).
+func (l *Limiter) sweepIfLarge(protectKey string) {
+	if len(l.failures) <= l.capacity {
 		return
 	}
 	cutoff := time.Now().Add(-l.window)
@@ -94,21 +98,34 @@ func (l *Limiter) sweepIfLarge() {
 			l.failures[k] = filtered
 		}
 	}
-	// Hard cap. Prefer evicting keys that are not currently blocked: an
-	// attacker flooding distinct keys must not be able to reset the limit of
-	// the key they are actually attacking. Only if every remaining key is
-	// blocked do we fall back to arbitrary eviction.
-	excess := len(l.failures) - maxKeys
+	// Hard cap. Prefer evicting unblocked keys: an attacker flooding cheap
+	// distinct keys must not reset the limit of the key being attacked.
+	excess := len(l.failures) - l.capacity
 	for k, times := range l.failures {
 		if excess <= 0 {
 			break
 		}
-		if len(times) >= l.maxFailures {
+		if k == protectKey || len(times) >= l.maxFailures {
 			continue
 		}
 		delete(l.failures, k)
 		excess--
 	}
+	// All remaining unblocked keys (if any) were the protected incoming key,
+	// or every key is blocked. Evict a blocked key other than the protected
+	// one so the incoming key can still reach the failure threshold.
+	for k := range l.failures {
+		if excess <= 0 {
+			break
+		}
+		if k == protectKey {
+			continue
+		}
+		delete(l.failures, k)
+		excess--
+	}
+	// Degenerate case: the protected key is the only entry (e.g. capacity 0
+	// or a tiny test limiter). Drop it rather than growing past the cap.
 	for k := range l.failures {
 		if excess <= 0 {
 			break

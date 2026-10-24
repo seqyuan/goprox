@@ -80,3 +80,52 @@ func TestSweepKeepsBlockedKeys(t *testing.T) {
 		t.Fatalf("map grew past cap: %d > %d", size, maxKeys)
 	}
 }
+
+// Under a saturated map (all existing keys blocked), the incoming key must
+// still accumulate failures and become blocked; otherwise the per-key limit
+// would silently stop working for every new key. One old block is evicted to
+// make room (the documented hard-cap tradeoff).
+func TestSweepAllowsNewKeyToBlockWhenSaturated(t *testing.T) {
+	l := NewLimiter(2, time.Hour)
+	l.capacity = 2
+
+	for _, key := range []string{"a", "a", "b", "b"} {
+		l.RecordFailure(key)
+	}
+	l.RecordFailure("c")
+	if l.IsBlocked("c") {
+		t.Fatal("c must not be blocked after one failure")
+	}
+	l.RecordFailure("c")
+	if !l.IsBlocked("c") {
+		t.Fatal("new key must be able to become blocked under saturation")
+	}
+	l.mu.Lock()
+	size := len(l.failures)
+	l.mu.Unlock()
+	if size > l.capacity {
+		t.Fatalf("map size = %d, cap = %d", size, l.capacity)
+	}
+}
+
+// While there are unblocked keys, eviction must prefer them over a blocked
+// key (the target of the attack).
+func TestSweepEvictsUnblockedBeforeBlocked(t *testing.T) {
+	l := NewLimiter(2, time.Hour)
+	l.capacity = 2
+
+	l.RecordFailure("attacked")
+	l.RecordFailure("attacked")
+	l.RecordFailure("noise")
+	l.RecordFailure("incoming")
+
+	if !l.IsBlocked("attacked") {
+		t.Fatal("blocked key was evicted before unblocked noise")
+	}
+	if _, ok := l.failures["noise"]; ok {
+		t.Fatal("unblocked noise key should have been evicted")
+	}
+	if _, ok := l.failures["incoming"]; !ok {
+		t.Fatal("incoming protected key should have been kept")
+	}
+}
