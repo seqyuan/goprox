@@ -27,6 +27,59 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.8.2 — 2026-10-24（安全与稳定性修复）</h2>
+    <ul>
+      <li><strong>网关 Cookie 命名空间隔离</strong>：转发前剥离所有 <code>goprox_*</code> Cookie，后端也不能再设置该命名空间；修复 2FA setup Cookie 携带明文 TOTP 密钥泄漏、default_service 裸路径下后端覆盖 session/route Cookie。</li>
+      <li><strong>登出改为 POST-only</strong>：GET <code>/logout</code> 只显示确认页；POST 校验 Origin，并清理 Domain/host-only session、2FA 临时 Cookie 与全部 route Cookie，消除跨站登出 CSRF。</li>
+      <li><strong>2FA 令牌绑定</strong>：setup token 绑定用户、pending token 绑定密码 rev；改密后未完成的二次验证失效，共享浏览器不能跨账号绑定。</li>
+      <li><strong>Referer / 转发头 / XFF 加固</strong>：Referer 路由要求同 authority；覆盖 <code>X-Real-IP</code>，清理 <code>Forwarded</code> / <code>X-Original-URL</code> / <code>X-Rewrite-URL</code> 等；XFF 从右向左取非可信跳点。</li>
+      <li><strong>vhost / path 边界</strong>：未登录 vhost API 返回 401；跨用户 path 返回 404；HTTPS 网关下 Origin 使用后端 http scheme。</li>
+      <li><strong>监听配置持久化修复</strong>：<code>--host</code> / <code>--port</code> 仅在显式传参时覆盖 <code>state.yaml</code>，重启不再被默认值重置或意外暴露到所有网卡。</li>
+      <li><strong>配置原子写 + 临时锁</strong>：temp + fsync + rename；O_EXCL 临时锁正常释放即删除、崩溃遗留按 PID/mtime 回收，兼容不支持 flock 的 NFS。</li>
+      <li><strong>用户与 registry</strong>：<code>goprox user</code> 原子创建、<code>del</code> 锁内删除；首次运行自动建 <code>users/</code>；扫描失败不再每请求重扫；session rev 查询加缓存。</li>
+      <li><strong>上传与限流</strong>：代理上传改为空闲读超时，不再被 60s 总时长中断；限流饱和时保护在途 key，新 key 仍能进入封禁。</li>
+      <li><strong>路由修复</strong>：ForwardAsIs 重定向不再加 <code>/proxy/</code> 前缀、vhost/as-is 支持 <code>auth_bootstrap</code>、非 GET 裸路径直接转发、favicon 不覆盖最近服务、<code>backend_path</code> 段边界、IPv6 authority、root service 子路径等。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.8.1 — 2026-10-21（vhost 配置用户友好度）</h2>
+    <ul>
+      <li>仪表盘/API 的「高级」区支持 <code>hostnames</code> 与 <code>root_absolute</code>，保存时校验 Host、同用户重复、跨用户冲突、<code>public_host</code> 冲突与 <code>cookie_domain</code> 覆盖。</li>
+      <li>新增 <code>goprox check</code> 预检命令：不启动服务即可校验 state/users/虚拟主机并列出 Host → user/service。</li>
+      <li><code>goprox serve</code> 新增 <code>--public-host</code> / <code>--public-scheme</code> / <code>--cookie-domain</code> 并持久化。</li>
+      <li>配置了 <code>hostnames</code> 的卡片显示「独立域名」入口；README / docs/vhost.md 同步更新。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.8.0 — 2026-10-21（独立域名虚拟主机）</h2>
+    <ul>
+      <li><strong>hostnames（Phase 1）</strong>：服务可绑定一个或多个主机名，在该 Host 根路径直接代理；新增 <code>public_host</code> / <code>public_scheme</code> / <code>cookie_domain</code>，会话 Cookie 支持父域 Domain。</li>
+      <li>未登录访问服务 Host 跳转主网关登录，登录后回到原 URL；vhost 不设置 route cookie，后端 Cookie 保留原 Path，并丢弃与网关同名的 Cookie 防 tossing。</li>
+      <li>跨用户 Host 冲突检测：重复 Host 不进入路由索引并在启动时直接报错；主 Host、<code>public_host</code> 与 <code>cookie_domain</code> 覆盖关系启动校验。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.7.0 — 2026-10-21（根绝对路径与会话续期）</h2>
+    <ul>
+      <li><strong>root_absolute</strong>：输出 <code>/docs/</code>、<code>/static/...</code> 等根绝对路径的应用，可通过 Referer / route cookie 把裸路径请求优先交回该服务。</li>
+      <li>仪表盘页面、代理请求和 <code>/api/services</code> 统一滑动续期；401 统一跳转登录并保留未提交的添加/编辑草稿。</li>
+      <li><code>session_secret</code> 持久化失败不再静默；裸路径 as-is 转发的 <code>&lt;base&gt;</code> 改为按实际请求目录计算。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>v0.6.0 — 2026-10-12（后端会话令牌握手）</h2>
+    <ul>
+      <li><strong>auth_bootstrap</strong>：把本地优先后端（dsh / Jupyter / code-server）的 401 页面请求改写成 <code>302 ?token=&lt;令牌&gt;</code>，由后端完成自己的会话握手；支持 static / file / log 三种令牌来源，日志来源每次遇 401 重读尾部以跟上重启换令牌。</li>
+      <li><strong>Set-Cookie 重写</strong>：丢弃后端 Domain、规范 Path、HTTP 下清除 Secure，并处理 <code>__Host-</code> / <code>__Secure-</code> 前缀；修复 dsh 的 303 + Set-Cookie 会话建立。</li>
+      <li>修复卡片编辑/排序会丢失 <code>auth_bootstrap</code> 配置的问题。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.5.1 — 2026-10-11</h2>
     <ul>
       <li><strong>卡片不再显示 WebSocket 徽标</strong>：卡片仅保留图标、名称与说明，去掉标签行，行高更紧凑；<code>websocket</code> 字段与编辑表单开关不受影响。</li>

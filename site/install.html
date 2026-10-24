@@ -42,6 +42,9 @@ cp ~/go/bin/goprox /opt/goprox/</pre>
     <h2>启动</h2>
     <p>GoProx 只有<strong>前台运行</strong>这一种模式，<code>Ctrl+C</code> 优雅停机：</p>
     <pre>./goprox serve --port 30152</pre>
+    <div class="note"><strong>监听地址/端口会持久化</strong>：首次用 <code>--host</code> / <code>--port</code>
+      启动后写入 <code>config/state.yaml</code>，之后直接 <code>./goprox serve</code> 即可沿用；
+      只有再次显式传参才会覆盖。</div>
     <p>需要常驻后台时：</p>
     <pre># tmux / screen 会话
 tmux new -s goprox -d './goprox serve --port 30152'
@@ -53,6 +56,7 @@ nohup ./goprox serve --port 30152 > goprox.log 2>&1 &</pre>
   <div class="card">
     <h2>命令参考</h2>
     <pre>./goprox serve [options]    启动网关（前台运行，Ctrl+C 停止）
+./goprox check [options]    校验 state/users/虚拟主机，不启动
 
 # 用户管理（管理员）
 ./goprox user &lt;name&gt;        创建用户账号（交互设置密码）
@@ -69,13 +73,17 @@ nohup ./goprox serve --port 30152 > goprox.log 2>&1 &</pre>
     <table>
       <tr><th>选项</th><th>说明</th></tr>
       <tr><td><code>-d, --config-dir &lt;dir&gt;</code></td><td>配置目录（默认 <code>&lt;程序目录&gt;/config</code>）</td></tr>
-      <tr><td><code>--host &lt;host&gt;</code></td><td>监听地址（默认 <code>0.0.0.0</code>）</td></tr>
-      <tr><td><code>--port &lt;port&gt;</code></td><td>监听端口（默认 30152）</td></tr>
+      <tr><td><code>--host &lt;host&gt;</code></td><td>监听地址（默认 <code>0.0.0.0</code>）；显式传参后写入 <code>state.yaml</code></td></tr>
+      <tr><td><code>--port &lt;port&gt;</code></td><td>监听端口（默认 30152）；显式传参后写入 <code>state.yaml</code></td></tr>
       <tr><td><code>--trusted-proxy &lt;cidr&gt;</code></td><td>可信反向代理网段（如 <code>127.0.0.1/32</code>），启用后信任其 X-Forwarded-For/Proto 头（默认不信任）</td></tr>
       <tr><td><code>--tls-cert &lt;file&gt;</code></td><td>TLS 证书（PEM），与 <code>--tls-key</code> 一起启用 HTTPS</td></tr>
       <tr><td><code>--tls-key &lt;file&gt;</code></td><td>TLS 私钥（PEM）</td></tr>
-      <tr><td><code>--tls-selfsigned</code></td><td>生成自签证书（覆盖 localhost + 局域网 IP）并启用 HTTPS——整个站点成为安全上下文，代理应用的 <code>crypto.randomUUID</code> / <code>crypto.subtle</code> / <code>navigator.storage</code> 等安全上下文 API 全部可用</td></tr>
+      <tr><td><code>--tls-selfsigned</code></td><td>生成自签证书（覆盖 localhost + 局域网 IP）并启用 HTTPS；已有证书会复用，删除 <code>config/tls/server.crt|key</code> 可重新生成</td></tr>
       <tr><td><code>--title &lt;text&gt;</code></td><td>页面左上角站点标题（默认 GoProx），支持中文/emoji</td></tr>
+      <tr><td><code>--public-host &lt;host[:port]&gt;</code></td><td>虚拟主机模式下主网关的对外地址（用于 vhost 登录跳转）</td></tr>
+      <tr><td><code>--public-scheme &lt;http|https&gt;</code></td><td>虚拟主机模式下的对外 scheme</td></tr>
+      <tr><td><code>--cookie-domain &lt;.domain&gt;</code></td><td>虚拟主机会话 Cookie 的父域（如 <code>.example.com</code>）</td></tr>
+      <tr><td><code>-V, --version</code></td><td>显示版本</td></tr>
       <tr><td><code>-h, --help</code></td><td>显示帮助</td></tr>
     </table>
     <h3>SSO 选项（<code>goprox sso</code>）</h3>
@@ -99,8 +107,10 @@ nohup ./goprox serve --port 30152 > goprox.log 2>&1 &</pre>
 ├── goprox                  # 二进制
 └── config/                 # 0700，网关属主
     ├── state.yaml          # 网关状态（监听地址/端口、trusted_proxy、title、session_secret、sso）
+    ├── state.yaml.lock     # 临时并发写锁（正常释放即删除；崩溃遗留自动回收）
     └── users/              # 每个用户一个独立配置文件
         ├── alice.yaml
+        ├── alice.yaml.lock # 临时并发写锁（正常释放即删除）
         └── bob.yaml</pre>
     <p>多用户共享同一端口：登录后每个用户只能看到和管理自己的服务，访问路径为
       <code>/proxy/&lt;用户名&gt;/&lt;服务&gt;/</code>。</p>

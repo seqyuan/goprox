@@ -87,6 +87,9 @@ services:
       <tr><td><code>bwlimit</code></td><td>int</td><td>—</td><td><code>0</code></td><td>该服务带宽上限（字节/秒），上行/下行各限；<code>0</code>/缺省 = 不限速</td></tr>
       <tr><td><code>description</code></td><td>string</td><td>—</td><td>空</td><td>说明文字（≤500 字符）</td></tr>
       <tr><td><code>category</code></td><td>string</td><td>—</td><td>未分类</td><td>分类/分组名（≤100 字符）</td></tr>
+      <tr><td><code>root_absolute</code></td><td>bool</td><td>—</td><td><code>false</code></td><td>应用输出根绝对路径（<code>/docs/</code>、<code>/static/...</code>）时，按 Referer / route cookie 把裸路径交回该服务</td></tr>
+      <tr><td><code>hostnames</code></td><td>list</td><td>—</td><td>空</td><td>独立域名列表；需同时在 <code>state.yaml</code> 配置 <code>public_host</code> / <code>cookie_domain</code></td></tr>
+      <tr><td><code>auth_bootstrap</code></td><td>object</td><td>—</td><td>空</td><td>后端 <code>?token=</code> 会话握手（<code>static</code> / <code>file</code> / <code>log</code>），见 <a href="dsh-demo.html">dsh 示例</a></td></tr>
       <tr><td><code>id</code></td><td>string</td><td>—</td><td>🔒 系统自动</td><td>服务唯一 ID，由名称自动生成，重名自动加 <code>-2</code>、<code>-3</code>…</td></tr>
       <tr><td><code>order</code></td><td>int</td><td>—</td><td>🔒 系统自动</td><td>排序号（新增 = 最大 order+1，拖拽排序时更新）</td></tr>
     </table>
@@ -109,6 +112,46 @@ services:
     <p>访问 <code>http://网关:30152/dashboard</code>、<code>/dashboard/api</code> 直接进入应用页面
       （页面类路径确定性路由）；页面内的资源与 API 请求跟随页面 Referer 转发到同一服务。
       未配置默认服务的用户行为不变。</p>
+  </div>
+
+  <div class="card">
+    <h2>根绝对路径应用（root_absolute）</h2>
+    <p>应用会输出 <code>/docs/</code>、<code>/scss/main.css</code> 这类根绝对路径，但又不方便改
+      <code>baseURL</code> 时，给服务开启 <code>root_absolute</code>。未被服务 <code>path</code>
+      认领的裸路径请求，如果 Referer 或 route cookie 指向该服务，会优先转发回它：</p>
+    <pre>services:
+  - id: hugo
+    name: "Hugo 预览"
+    host: "127.0.0.1"
+    port: 1313
+    path: "/hugo"
+    root_absolute: true</pre>
+    <p>限制：只覆盖从已加载页面发起的站内跳转；收藏夹直链、<code>no-referrer</code>、
+      外部站点直接链接仍可能落到 <code>default_service</code> 或 404。能改应用 baseURL 时优先改应用。</p>
+  </div>
+
+  <div class="card">
+    <h2>独立域名（hostnames）</h2>
+    <p>应用必须拥有独立 Origin 或根路径 <code>/</code> 时，可绑定主机名。先在
+      <code>config/state.yaml</code> 配置主网关对外地址与父域 Cookie：</p>
+    <pre>server:
+  public_host: "gw.example.com"     # 主网关对外地址，非标准端口写 host:port
+  public_scheme: "https"            # http 或 https
+  cookie_domain: ".example.com"     # public_host 与 hostnames 都必须被它覆盖
+  trusted_proxy: "127.0.0.1/32"     # 前面有 TLS 反代时</pre>
+    <p>再给服务加 <code>hostnames</code>：</p>
+    <pre>services:
+  - id: hugo
+    name: "Hugo 预览"
+    host: "127.0.0.1"
+    port: 1313
+    path: "/hugo"
+    hostnames:
+      - hugo.example.com</pre>
+    <p>未登录访问 <code>hugo.example.com</code> 会跳转主网关登录，登录后回到原 URL；
+      vhost 下所有路径（包括 <code>/login</code>、<code>/api</code>、<code>/logout</code>）都归应用。
+      需要 DNS 与 HTTPS；父域 Cookie、跨用户 Host 冲突和排障详见
+      <a href="https://github.com/seqyuan/goprox/blob/main/docs/vhost.md" target="_blank" rel="noopener">docs/vhost.md</a>。</p>
   </div>
 
   <div class="card">
