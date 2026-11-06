@@ -439,10 +439,26 @@
     <input id="add-name" name="name" type="text" required>
     <label for="add-description">说明</label>
     <input id="add-description" name="description" type="text">
-    <label for="add-host">后端地址</label>
-    <input id="add-host" name="host" type="text" value="127.0.0.1" required>
-    <label for="add-port">端口</label>
-    <input id="add-port" name="port" type="number" min="1" max="65535" required>
+    <label for="add-kind">服务类型</label>
+    <select id="add-kind" name="kind">
+      <option value="proxy">代理后端服务（host:port）</option>
+      <option value="files">文件浏览（本机目录，只读）</option>
+    </select>
+    <div id="add-proxy-fields">
+      <label for="add-host">后端地址</label>
+      <input id="add-host" name="host" type="text" value="127.0.0.1">
+      <label for="add-port">端口</label>
+      <input id="add-port" name="port" type="number" min="1" max="65535">
+    </div>
+    <div id="add-files-fields" hidden>
+      <label for="add-root">目录路径</label>
+      <input id="add-root" name="root" type="text" placeholder="/data/share">
+      <p class="field-help">服务端绝对路径。只读浏览：可在线看目录、下载单个文件，或把整个目录打包成 ZIP 下载。</p>
+      <label class="checkbox-row">
+        <input id="add-show-hidden" name="show_hidden" type="checkbox">
+        <span>显示隐藏文件（以 . 开头）</span>
+      </label>
+    </div>
     <label for="add-category">分类</label>
     <input id="add-category" name="category" type="text" list="category-options" autocomplete="off" placeholder="选择已有分类，或输入新分类">
     <details class="advanced" id="add-advanced">
@@ -483,10 +499,26 @@
     <input id="edit-name" name="name" type="text" required>
     <label for="edit-description">说明</label>
     <input id="edit-description" name="description" type="text">
-    <label for="edit-host">后端地址</label>
-    <input id="edit-host" name="host" type="text" required>
-    <label for="edit-port">端口</label>
-    <input id="edit-port" name="port" type="number" min="1" max="65535" required>
+    <label for="edit-kind">服务类型</label>
+    <select id="edit-kind" name="kind">
+      <option value="proxy">代理后端服务（host:port）</option>
+      <option value="files">文件浏览（本机目录，只读）</option>
+    </select>
+    <div id="edit-proxy-fields">
+      <label for="edit-host">后端地址</label>
+      <input id="edit-host" name="host" type="text">
+      <label for="edit-port">端口</label>
+      <input id="edit-port" name="port" type="number" min="1" max="65535">
+    </div>
+    <div id="edit-files-fields" hidden>
+      <label for="edit-root">目录路径</label>
+      <input id="edit-root" name="root" type="text" placeholder="/data/share">
+      <p class="field-help">服务端绝对路径。只读浏览：可在线看目录、下载单个文件，或把整个目录打包成 ZIP 下载。</p>
+      <label class="checkbox-row">
+        <input id="edit-show-hidden" name="show_hidden" type="checkbox">
+        <span>显示隐藏文件（以 . 开头）</span>
+      </label>
+    </div>
     <label for="edit-category">分类</label>
     <input id="edit-category" name="category" type="text" list="category-options" autocomplete="off" placeholder="选择已有分类，或输入新分类">
     <details class="advanced" id="edit-advanced">

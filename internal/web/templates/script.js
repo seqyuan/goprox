@@ -446,10 +446,40 @@
   var modal = $("#add-modal");
   var form = $("#add-form");
   var fab = $("#fab-add");
+  // A files service has no backend: hide host/port and show the directory
+  // fields instead. Hidden inputs are also made non-required so the browser
+  // never blocks a submit on a field the user cannot see.
+  function syncKindFields(prefix) {
+    var kindEl = $("#" + prefix + "-kind");
+    var kind = kindEl ? kindEl.value : "proxy";
+    var isFiles = kind === "files";
+    var proxyRow = $("#" + prefix + "-proxy-fields");
+    var filesRow = $("#" + prefix + "-files-fields");
+    if (proxyRow) proxyRow.hidden = isFiles;
+    if (filesRow) filesRow.hidden = !isFiles;
+    // Proxy-only advanced fields: backend path, and the WebSocket toggle with
+    // the help text directly after it.
+    var bp = $("#" + prefix + "-backend-path");
+    if (bp) bp.hidden = isFiles;
+    var bpLabel = document.querySelector("label[for='" + prefix + "-backend-path']");
+    if (bpLabel) bpLabel.hidden = isFiles;
+    var ws = $("#" + prefix + "-ws");
+    if (ws) {
+      var row = ws.closest ? ws.closest(".checkbox-row") : ws.parentNode;
+      if (row) {
+        row.hidden = isFiles;
+        var help = row.nextElementSibling;
+        if (help && help.classList && help.classList.contains("field-help")) help.hidden = isFiles;
+      }
+    }
+  }
   function resetAddForm() {
     if (!form) return;
     form.reset();
     $("#add-host").value = "127.0.0.1";
+    $("#add-kind").value = "proxy";
+    $("#add-root").value = "";
+    $("#add-show-hidden").checked = false;
     $("#add-ws").checked = true;
     $("#add-root-absolute").checked = false;
     $("#add-hostnames").value = "";
@@ -457,6 +487,7 @@
     if (adv) adv.open = false;
     setFormError("#add-error", "");
     setBusy(form, false);
+    syncKindFields("add");
     updatePathPreview();
   }
   function applyAddDraft(d) {
@@ -465,6 +496,9 @@
     $("#add-description").value = d.description || "";
     $("#add-host").value = d.host || "127.0.0.1";
     $("#add-port").value = d.port || "";
+    $("#add-kind").value = d.kind === "files" ? "files" : "proxy";
+    $("#add-root").value = d.root || "";
+    $("#add-show-hidden").checked = !!d.show_hidden;
     $("#add-category").value = d.category || "";
     $("#add-path").value = d.path || "";
     $("#add-backend-path").value = d.backend_path || "";
@@ -474,6 +508,7 @@
     $("#add-hostnames").value = d.hostnames || "";
     var adv = $("#add-advanced");
     if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.root_absolute || d.hostnames || d.websocket === false);
+    syncKindFields("add");
     updatePathPreview();
   }
   function openAddModal(draft) {
@@ -491,6 +526,8 @@
   }
   var cancel = $("#add-cancel");
   if (cancel) cancel.addEventListener("click", function() { modal.classList.remove("open"); clearDraft(ADD_DRAFT_KEY); resetAddForm(); });
+  if ($("#add-kind")) $("#add-kind").addEventListener("change", function() { syncKindFields("add"); });
+  if ($("#edit-kind")) $("#edit-kind").addEventListener("change", function() { syncKindFields("edit"); });
   if ($("#add-name")) $("#add-name").addEventListener("input", updatePathPreview);
   if ($("#add-path")) $("#add-path").addEventListener("input", updatePathPreview);
   if (form) {
@@ -507,19 +544,37 @@
       var path = ($("#add-path").value || "").trim();
       var backendPath = ($("#add-backend-path").value || "").trim();
       var hostnames = parseHostnames($("#add-hostnames").value);
+      var kind = $("#add-kind").value === "files" ? "files" : "proxy";
+      var root = ($("#add-root").value || "").trim();
+      if (kind === "files" && !root) {
+        setBusy(form, false);
+        setFormError("#add-error", "文件浏览服务需要填写服务端目录路径");
+        return;
+      }
+      if (kind === "proxy" && !(parseInt($("#add-port").value, 10) > 0)) {
+        setBusy(form, false);
+        setFormError("#add-error", "请填写后端端口");
+        return;
+      }
       var payload = {
         name: $("#add-name").value.trim(),
         description: ($("#add-description").value || "").trim() || undefined,
-        host: ($("#add-host").value || "").trim() || "127.0.0.1",
-        port: parseInt($("#add-port").value, 10),
+        kind: kind,
         path: path || undefined,
-        backend_path: backendPath || undefined,
         bwlimit: bw > 0 ? bw : undefined,
         category: categoryValue("#add-category") || undefined,
-        websocket: $("#add-ws").checked,
         root_absolute: $("#add-root-absolute").checked,
         hostnames: hostnames.length ? hostnames : undefined
       };
+      if (kind === "files") {
+        payload.root = root;
+        payload.show_hidden = $("#add-show-hidden").checked;
+      } else {
+        payload.host = ($("#add-host").value || "").trim() || "127.0.0.1";
+        payload.port = parseInt($("#add-port").value, 10);
+        payload.backend_path = backendPath || undefined;
+        payload.websocket = $("#add-ws").checked;
+      }
       jsonFetch("/api/services", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -548,7 +603,10 @@
     $("#edit-name").value = svc.name || "";
     $("#edit-description").value = svc.description || "";
     $("#edit-host").value = svc.host || "127.0.0.1";
-    $("#edit-port").value = svc.port;
+    $("#edit-port").value = svc.port || "";
+    $("#edit-kind").value = svc.kind === "files" ? "files" : "proxy";
+    $("#edit-root").value = svc.root || "";
+    $("#edit-show-hidden").checked = !!svc.show_hidden;
     $("#edit-path").value = svc.path || "";
     $("#edit-backend-path").value = svc.backend_path || "";
     editBwOriginalBytes = svc.bwlimit || 0;
@@ -560,6 +618,7 @@
     $("#edit-hostnames").value = (svc.hostnames || []).join("\n");
     var adv = $("#edit-advanced");
     if (adv) adv.open = !!(svc.backend_path || svc.bwlimit || svc.root_absolute || (svc.hostnames && svc.hostnames.length) || !svc.websocket);
+    syncKindFields("edit");
     setFormError("#edit-error", "");
     setBusy(editForm, false);
     updateEditPathPreview();
@@ -591,19 +650,37 @@
       setFormError("#edit-error", "");
       if (!setBusy(editForm, true)) return;
       var id = $("#edit-id").value;
+      var kind = $("#edit-kind").value === "files" ? "files" : "proxy";
+      var root = ($("#edit-root").value || "").trim();
+      if (kind === "files" && !root) {
+        setBusy(editForm, false);
+        setFormError("#edit-error", "文件浏览服务需要填写服务端目录路径");
+        return;
+      }
+      if (kind === "proxy" && !(parseInt($("#edit-port").value, 10) > 0)) {
+        setBusy(editForm, false);
+        setFormError("#edit-error", "请填写后端端口");
+        return;
+      }
       var payload = {};
       payload.name = ($("#edit-name").value || "").trim();
       payload.description = ($("#edit-description").value || "").trim();
-      payload.host = ($("#edit-host").value || "").trim() || "127.0.0.1";
-      payload.port = parseInt($("#edit-port").value, 10);
+      payload.kind = kind;
       payload.path = ($("#edit-path").value || "").trim();
-      payload.backend_path = ($("#edit-backend-path").value || "").trim();
       payload.bwlimit = bw;
       payload.category = categoryValue("#edit-category");
-      payload.websocket = $("#edit-ws").checked;
       payload.root_absolute = $("#edit-root-absolute").checked;
       // Always send the array so emptying the textarea clears hostnames.
       payload.hostnames = parseHostnames($("#edit-hostnames").value);
+      if (kind === "files") {
+        payload.root = root;
+        payload.show_hidden = $("#edit-show-hidden").checked;
+      } else {
+        payload.host = ($("#edit-host").value || "").trim() || "127.0.0.1";
+        payload.port = parseInt($("#edit-port").value, 10);
+        payload.backend_path = ($("#edit-backend-path").value || "").trim();
+        payload.websocket = $("#edit-ws").checked;
+      }
 
       jsonFetch("/api/services/" + encodeURIComponent(id), {
         method: "PUT",
@@ -652,6 +729,9 @@
       description: $("#add-description").value,
       host: $("#add-host").value,
       port: $("#add-port").value,
+      kind: $("#add-kind").value,
+      root: $("#add-root").value,
+      show_hidden: $("#add-show-hidden").checked,
       category: $("#add-category").value,
       path: $("#add-path").value,
       backend_path: $("#add-backend-path").value,
@@ -668,6 +748,9 @@
       description: $("#edit-description").value,
       host: $("#edit-host").value,
       port: $("#edit-port").value,
+      kind: $("#edit-kind").value,
+      root: $("#edit-root").value,
+      show_hidden: $("#edit-show-hidden").checked,
       category: $("#edit-category").value,
       path: $("#edit-path").value,
       backend_path: $("#edit-backend-path").value,
@@ -690,6 +773,9 @@
     $("#edit-description").value = d.description || "";
     $("#edit-host").value = d.host || "127.0.0.1";
     $("#edit-port").value = d.port || "";
+    $("#edit-kind").value = d.kind === "files" ? "files" : "proxy";
+    $("#edit-root").value = d.root || "";
+    $("#edit-show-hidden").checked = !!d.show_hidden;
     $("#edit-category").value = d.category || "";
     $("#edit-path").value = d.path || "";
     $("#edit-backend-path").value = d.backend_path || "";
@@ -699,6 +785,7 @@
     $("#edit-hostnames").value = d.hostnames || "";
     var adv = $("#edit-advanced");
     if (adv) adv.open = !!(d.path || d.backend_path || d.bwlimit || d.root_absolute || d.hostnames || d.websocket === false);
+    syncKindFields("edit");
     updateEditPathPreview();
   }
   function restoreDraft() {

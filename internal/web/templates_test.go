@@ -379,3 +379,18 @@ func TestLogoutConfirmPageUsesPost(t *testing.T) {
 		t.Fatalf("logout confirmation page missing POST form: %s", page)
 	}
 }
+
+// The dashboard form must expose the files-service fields (kind / root /
+// show_hidden) and the kind toggle that reveals them.
+func TestDashboardExposesFilesServiceFields(t *testing.T) {
+	page := DashboardPage("GoProx", "alice", nil, true, false, "http", "")
+	for _, want := range []string{
+		`id="add-kind"`, `id="add-root"`, `id="add-show-hidden"`,
+		`id="edit-kind"`, `id="edit-root"`, `id="edit-show-hidden"`,
+		`value="files"`, `syncKindFields("add")`, `syncKindFields("edit")`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
+}

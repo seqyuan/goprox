@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,57 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
+
+// Service kinds. A service is either a proxy to a backend host:port or a
+// built-in read-only file browser over a local directory.
+const (
+	ServiceKindProxy = "proxy"
+	ServiceKindFiles = "files"
+)
+
+// NormalizeServiceKind validates a service kind. An empty value means the
+// default (proxy); ok is false for an unrecognized kind.
+func NormalizeServiceKind(kind string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", ServiceKindProxy:
+		return ServiceKindProxy, true
+	case ServiceKindFiles:
+		return ServiceKindFiles, true
+	}
+	return "", false
+}
+
+// ValidateFileRoot normalizes and checks the directory of a files service: it
+// must be an absolute path to an existing, readable directory.
+func ValidateFileRoot(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", fmt.Errorf("目录路径不能为空（填写服务端绝对路径，例如 /data/share）")
+	}
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("目录必须是绝对路径，例如 /data/share")
+	}
+	clean := filepath.Clean(root)
+	st, err := os.Stat(clean)
+	if err != nil {
+		return "", fmt.Errorf("目录不可用：%v", err)
+	}
+	if !st.IsDir() {
+		return "", fmt.Errorf("%s 不是目录", clean)
+	}
+	f, err := os.Open(clean)
+	if err != nil {
+		return "", fmt.Errorf("目录无法读取：%v", err)
+	}
+	// Probe an actual directory read: permission bits alone do not prove the
+	// gateway account can list it.
+	if _, err := f.ReadDir(1); err != nil && err != io.EOF {
+		f.Close()
+		return "", fmt.Errorf("目录无法读取：%v", err)
+	}
+	f.Close()
+	return clean, nil
+}
 
 // ServiceConfig represents a single backend service.
 type ServiceConfig struct {
@@ -31,6 +83,14 @@ type ServiceConfig struct {
 	// root-absolute URLs (/docs/, /static/...); default_service remains the
 	// fallback for requests without this context.
 	RootAbsolute bool `yaml:"root_absolute,omitempty" json:"root_absolute,omitempty"`
+	// Kind selects what the card serves: "" / "proxy" (default) proxies to
+	// Host:Port, "files" serves the local directory Root as a read-only,
+	// browsable tree (the gateway is the backend).
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+	// Root is the directory exposed by Kind == "files".
+	Root string `yaml:"root,omitempty" json:"root,omitempty"`
+	// ShowHidden lists dotfiles in a files service (default: hidden).
+	ShowHidden bool `yaml:"show_hidden,omitempty" json:"show_hidden,omitempty"`
 	// Hostnames gives this service one or more dedicated virtual hosts (for
 	// example hugo.gw.example.com). A request whose Host matches is proxied to
 	// this service at the root path, bypassing /proxy and default_service.
@@ -342,6 +402,51 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		if cfg.Services[i].Host == "" {
 			cfg.Services[i].Host = "127.0.0.1"
 		}
+		// A service is either a proxy to host:port or a built-in read-only file
+		// browser over a local directory. Normalize the kind first: an unknown
+		// kind must not silently turn into a proxy target with an empty host.
+		kind, ok := NormalizeServiceKind(cfg.Services[i].Kind)
+		if !ok {
+			key := path + "\x00" + cfg.Services[i].ID + "\x00kind"
+			if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+				log.Printf("[goprox] service %q of %s: unknown kind %q ignored; treating it as %q",
+					cfg.Services[i].ID, path, cfg.Services[i].Kind, ServiceKindProxy)
+			}
+			kind = ServiceKindProxy
+		}
+		cfg.Services[i].Kind = kind
+		if kind == ServiceKindFiles {
+			root, err := ValidateFileRoot(cfg.Services[i].Root)
+			if err != nil {
+				key := path + "\x00" + cfg.Services[i].ID + "\x00root"
+				if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+					log.Printf("[goprox] skip files service %q of %s: %v", cfg.Services[i].ID, path, err)
+				}
+				cfg.Services = append(cfg.Services[:i], cfg.Services[i+1:]...)
+				continue
+			}
+			cfg.Services[i].Root = root
+			// A files service has no backend: drop proxy-only settings so a
+			// later kind switch cannot resurrect a stale host/port/bootstrap.
+			cfg.Services[i].BackendPath = ""
+			cfg.Services[i].WebSocket = false
+			cfg.Services[i].AuthBootstrap = nil
+		} else {
+			cfg.Services[i].Root = ""
+			cfg.Services[i].ShowHidden = false
+			// A backend that runs on this machine is often addressed the way the
+			// operator opens it in a browser (its LAN IP). Collapse that to loopback
+			// when the backend also listens there, so hairpin routing/firewalls
+			// cannot break the card and every component agrees on one spelling.
+			if normalized := NormalizeBackendHost(cfg.Services[i].Host, cfg.Services[i].Port); normalized != cfg.Services[i].Host {
+				key := path + "\x00" + cfg.Services[i].ID + "\x00backendhost"
+				if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+					log.Printf("[goprox] service %q of %s: backend host %q is this machine; using %s:%d",
+						cfg.Services[i].ID, path, cfg.Services[i].Host, normalized, cfg.Services[i].Port)
+				}
+				cfg.Services[i].Host = normalized
+			}
+		}
 		// Normalize/validate auth_bootstrap. A block that names no usable token
 		// source is dropped (with a one-time warning) rather than half-applied:
 		// with no token the gateway would just leave the backend's 401 in place,
@@ -489,17 +594,36 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 		if svc.Host == "" {
 			svc.Host = "127.0.0.1"
 		}
-		if err := AssertAllowedHost(svc.Host); err != nil {
-			return err
+		kind, ok := NormalizeServiceKind(svc.Kind)
+		if !ok {
+			return fmt.Errorf("未知的服务类型 %q（可选 proxy / files）", svc.Kind)
 		}
-		if svc.Port < 1 || svc.Port > 65535 {
-			return fmt.Errorf("port must be between 1 and 65535, got %d", svc.Port)
-		}
-		if svc.BWLimit < 0 {
-			return fmt.Errorf("bwlimit must be >= 0 (bytes/sec), got %d", svc.BWLimit)
-		}
-		if err := AssertNotSelfTarget(svc.Host, svc.Port); err != nil {
-			return err
+		svc.Kind = kind
+		if kind == ServiceKindFiles {
+			root, err := ValidateFileRoot(svc.Root)
+			if err != nil {
+				return err
+			}
+			svc.Root = root
+			svc.Port = 0 // a files service has no backend; port stays unused
+			svc.BackendPath = ""
+			svc.WebSocket = false
+			svc.AuthBootstrap = nil
+		} else {
+			if err := AssertAllowedHost(svc.Host); err != nil {
+				return err
+			}
+			if svc.Port < 1 || svc.Port > 65535 {
+				return fmt.Errorf("port must be between 1 and 65535, got %d", svc.Port)
+			}
+			if svc.BWLimit < 0 {
+				return fmt.Errorf("bwlimit must be >= 0 (bytes/sec), got %d", svc.BWLimit)
+			}
+			if err := AssertNotSelfTarget(svc.Host, svc.Port); err != nil {
+				return err
+			}
+			svc.Root = ""
+			svc.ShowHidden = false
 		}
 
 		// Guarantee a unique ID. Non-ASCII names all slugify to the same base
@@ -639,6 +763,9 @@ type ServiceUpdate struct {
 	BWLimit      *int64    `json:"bwlimit,omitempty"`
 	RootAbsolute *bool     `json:"root_absolute,omitempty"`
 	Hostnames    *[]string `json:"hostnames,omitempty"`
+	Kind         *string   `json:"kind,omitempty"`
+	Root         *string   `json:"root,omitempty"`
+	ShowHidden   *bool     `json:"show_hidden,omitempty"`
 }
 
 // ValidateHostnamesForUser normalizes hostnames and rejects invalid entries or
@@ -731,10 +858,51 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 					}
 					cfg.Services[i].Hostnames = hostnames
 				}
-				// Validate the final host:port pair (both may have changed in
-				// this same update) against routing back into the gateway.
-				if err := AssertNotSelfTarget(cfg.Services[i].Host, cfg.Services[i].Port); err != nil {
-					return err
+				if update.Kind != nil {
+					kind, ok := NormalizeServiceKind(*update.Kind)
+					if !ok {
+						return fmt.Errorf("未知的服务类型 %q（可选 proxy / files）", *update.Kind)
+					}
+					cfg.Services[i].Kind = kind
+				}
+				if update.Root != nil {
+					cfg.Services[i].Root = *update.Root
+				}
+				if update.ShowHidden != nil {
+					cfg.Services[i].ShowHidden = *update.ShowHidden
+				}
+				// Resolve the kind last: it decides whether host:port or root is
+				// authoritative, and a switch between them must leave the card in a
+				// self-consistent state.
+				kind, ok := NormalizeServiceKind(cfg.Services[i].Kind)
+				if !ok {
+					kind = ServiceKindProxy
+				}
+				cfg.Services[i].Kind = kind
+				if kind == ServiceKindFiles {
+					root, err := ValidateFileRoot(cfg.Services[i].Root)
+					if err != nil {
+						return err
+					}
+					cfg.Services[i].Root = root
+					cfg.Services[i].Port = 0
+					cfg.Services[i].BackendPath = ""
+					cfg.Services[i].WebSocket = false
+					cfg.Services[i].AuthBootstrap = nil
+				} else {
+					if err := AssertAllowedHost(cfg.Services[i].Host); err != nil {
+						return err
+					}
+					if cfg.Services[i].Port < 1 || cfg.Services[i].Port > 65535 {
+						return fmt.Errorf("port must be between 1 and 65535, got %d", cfg.Services[i].Port)
+					}
+					cfg.Services[i].Root = ""
+					cfg.Services[i].ShowHidden = false
+					// Validate the final host:port pair (both may have changed in
+					// this same update) against routing back into the gateway.
+					if err := AssertNotSelfTarget(cfg.Services[i].Host, cfg.Services[i].Port); err != nil {
+						return err
+					}
 				}
 				break
 			}
@@ -823,6 +991,13 @@ func serializeServices(services []ServiceConfig) []map[string]interface{} {
 		}
 		if len(s.Hostnames) > 0 {
 			m["hostnames"] = s.Hostnames
+		}
+		if s.Kind == ServiceKindFiles {
+			m["kind"] = ServiceKindFiles
+			m["root"] = s.Root
+			if s.ShowHidden {
+				m["show_hidden"] = true
+			}
 		}
 		m["websocket"] = s.WebSocket
 		m["order"] = s.Order

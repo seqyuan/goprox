@@ -261,6 +261,9 @@ func (h *Handler) handleAddService(w http.ResponseWriter, r *http.Request, usern
 		BWLimit:      body.BWLimit,
 		RootAbsolute: body.RootAbsolute,
 		Hostnames:    hostnames,
+		Kind:         body.Kind,
+		Root:         body.Root,
+		ShowHidden:   body.ShowHidden,
 	}
 	if body.Path != "" {
 		svc.Path = config.NormalizePath(body.Path)
@@ -406,6 +409,9 @@ func (h *Handler) handleUpdateService(w http.ResponseWriter, r *http.Request, us
 		BWLimit:      body.BWLimit,
 		RootAbsolute: body.RootAbsolute,
 		Hostnames:    hostnames,
+		Kind:         body.Kind,
+		Root:         body.Root,
+		ShowHidden:   body.ShowHidden,
 	}
 
 	if err := config.UpdateService(configPath, id, update); err != nil {
@@ -441,6 +447,9 @@ type addServiceBody struct {
 	BWLimit      int64    `json:"bwlimit,omitempty"`
 	RootAbsolute bool     `json:"root_absolute,omitempty"`
 	Hostnames    []string `json:"hostnames,omitempty"`
+	Kind         string   `json:"kind,omitempty"`
+	Root         string   `json:"root,omitempty"`
+	ShowHidden   bool     `json:"show_hidden,omitempty"`
 }
 
 type layoutBody struct {
@@ -465,6 +474,9 @@ type updateBody struct {
 	BWLimit      *int64    `json:"bwlimit,omitempty"`
 	RootAbsolute *bool     `json:"root_absolute,omitempty"`
 	Hostnames    *[]string `json:"hostnames,omitempty"`
+	Kind         *string   `json:"kind,omitempty"`
+	Root         *string   `json:"root,omitempty"`
+	ShowHidden   *bool     `json:"show_hidden,omitempty"`
 }
 
 // Helpers

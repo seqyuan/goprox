@@ -499,3 +499,78 @@ func TestUnknownServicesSubpathNotClaimed(t *testing.T) {
 		}
 	}
 }
+
+// A files service is created from the dashboard form with kind=files and a
+// directory, without any host/port, and persists those fields.
+func TestAddFilesService(t *testing.T) {
+	h := newTestHandler(t)
+	root := t.TempDir()
+	body := `{"name":"数据盘","kind":"files","root":"` + root + `","path":"/data"}`
+	rr := apiPost(t, h, "/api/services", body, "http://gw:30152")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Service config.ServiceConfig `json:"service"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Service.Kind != config.ServiceKindFiles || resp.Service.Root != root || resp.Service.Port != 0 {
+		t.Fatalf("unexpected service: %+v", resp.Service)
+	}
+
+	// Persisted YAML must round-trip through the registry.
+	user := h.Registry.GetUser("alice")
+	if user == nil || len(user.Config.Services) != 1 {
+		t.Fatalf("registry did not reload the new service")
+	}
+	got := user.Config.Services[0]
+	if got.Kind != config.ServiceKindFiles || got.Root != root || got.Path != "/data" {
+		t.Fatalf("reloaded service = %+v", got)
+	}
+}
+
+func TestAddFilesServiceRejectsBadRoot(t *testing.T) {
+	h := newTestHandler(t)
+	for _, root := range []string{"", "relative/path", "/definitely/not/here-9f3a"} {
+		body := `{"name":"数据盘","kind":"files","root":"` + root + `"}`
+		rr := apiPost(t, h, "/api/services", body, "http://gw:30152")
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("root=%q: status = %d, want 400 (body %s)", root, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestSwitchKindBetweenProxyAndFiles(t *testing.T) {
+	h := newTestHandler(t)
+	root := t.TempDir()
+
+	// proxy -> files needs a root.
+	body := `{"name":"app","host":"127.0.0.1","port":8080,"path":"/app"}`
+	if rr := apiPost(t, h, "/api/services", body, "http://gw:30152"); rr.Code != http.StatusCreated {
+		t.Fatalf("add: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := apiPut(t, h, "/api/services/app", `{"kind":"files"}`, "http://gw:30152"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("switch without root: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := apiPut(t, h, "/api/services/app", `{"kind":"files","root":"`+root+`"}`, "http://gw:30152"); rr.Code != http.StatusOK {
+		t.Fatalf("switch to files: %d %s", rr.Code, rr.Body.String())
+	}
+	svc := config.ServiceByID(h.Registry.GetUser("alice").Config.Services, "app")
+	if svc == nil || svc.Kind != config.ServiceKindFiles || svc.Root != root || svc.Port != 0 {
+		t.Fatalf("after switch: %+v", svc)
+	}
+
+	// files -> proxy needs a port again.
+	if rr := apiPut(t, h, "/api/services/app", `{"kind":"proxy"}`, "http://gw:30152"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("switch back without port: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := apiPut(t, h, "/api/services/app", `{"kind":"proxy","host":"127.0.0.1","port":8080}`, "http://gw:30152"); rr.Code != http.StatusOK {
+		t.Fatalf("switch to proxy: %d %s", rr.Code, rr.Body.String())
+	}
+	svc = config.ServiceByID(h.Registry.GetUser("alice").Config.Services, "app")
+	if svc == nil || svc.Kind != config.ServiceKindProxy || svc.Port != 8080 || svc.Root != "" {
+		t.Fatalf("after switch back: %+v", svc)
+	}
+}

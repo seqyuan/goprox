@@ -105,6 +105,108 @@ func TestRewriteLocationAbsoluteLoopbackSpelling(t *testing.T) {
 	}
 }
 
+// A backend started on a LAN address (e.g. a Next.js app that derives absolute
+// URLs from http://192.168.0.106:8080) while the gateway dials it over 127.0.0.1
+// must still have its redirects rewritten: otherwise the browser is sent to the
+// backend origin, outside the gateway session and unreachable from another host.
+func TestRewriteLocationAbsoluteLANSpelling(t *testing.T) {
+	lan := firstNonLoopbackIPv4(t)
+	cases := []struct{ redirect, backend, want string }{
+		{"http://" + lan + ":8888/lab", "127.0.0.1:8888", "/proxy/alice/jupyter/lab"},
+		{"http://127.0.0.1:8888/lab", lan + ":8888", "/proxy/alice/jupyter/lab"},
+	}
+	for _, c := range cases {
+		got, ok := rewriteLocation(c.redirect, "", testFwdCtx(), c.backend)
+		if !ok || got != c.want {
+			t.Errorf("rewriteLocation(%q, backend=%q) = %q, %v; want %q", c.redirect, c.backend, got, ok, c.want)
+		}
+	}
+}
+
+// A redirect to the backend's bare origin carries no path; it must map to the
+// service root instead of being passed through as the backend address.
+func TestRewriteLocationAbsoluteBackendOrigin(t *testing.T) {
+	cases := []struct{ redirect, want string }{
+		{"http://127.0.0.1:8888", "/proxy/alice/jupyter/"},
+		{"http://127.0.0.1:8888?x=1", "/proxy/alice/jupyter/?x=1"},
+	}
+	for _, c := range cases {
+		got, ok := rewriteLocation(c.redirect, "", testFwdCtx(), "127.0.0.1:8888")
+		if !ok || got != c.want {
+			t.Errorf("rewriteLocation(%q) = %q, %v; want %q", c.redirect, got, ok, c.want)
+		}
+	}
+}
+
+// Hash routers keep the view in the fragment; an absolute backend redirect
+// must not drop it.
+func TestRewriteLocationAbsoluteFragmentKept(t *testing.T) {
+	cases := []struct{ redirect, want string }{
+		{"http://127.0.0.1:8888/lab#/tree", "/proxy/alice/jupyter/lab#/tree"},
+		{"http://127.0.0.1:8888/#/route", "/proxy/alice/jupyter/#/route"},
+	}
+	for _, c := range cases {
+		got, ok := rewriteLocation(c.redirect, "", testFwdCtx(), "127.0.0.1:8888")
+		if !ok || got != c.want {
+			t.Errorf("rewriteLocation(%q) = %q, %v; want %q", c.redirect, got, ok, c.want)
+		}
+	}
+}
+
+// A public hostname that merely resolves to this machine must not be treated as
+// a backend spelling (an SSO redirect to it has to pass through untouched).
+func TestSameBackendHostRejectsPublicHostname(t *testing.T) {
+	if sameBackendHost("sso.example.com:8888", "127.0.0.1:8888") {
+		t.Fatal("a public hostname must not be considered the backend")
+	}
+	if sameBackendHost("127.0.0.1:9999", "127.0.0.1:8888") {
+		t.Fatal("a different port must not be considered the backend")
+	}
+}
+
+// End-to-end: a backend reached over 127.0.0.1 that answers with an absolute
+// redirect to its LAN address (the annovibe case: the app derives URLs from
+// http://192.168.0.106:port while the gateway dials 127.0.0.1) must be rewritten
+// into the /proxy/ prefix instead of kicking the browser out of the gateway.
+func TestReverseProxyRewritesLANAbsoluteRedirect(t *testing.T) {
+	lan := firstNonLoopbackIPv4(t)
+	var backendPort string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+lan+":"+backendPort+"/dashboard", http.StatusFound)
+	}))
+	defer backend.Close()
+	_, backendPort = splitHostPort(backend.Listener.Addr().String())
+
+	svc := &config.ServiceConfig{Host: "127.0.0.1", Port: mustAtoi(t, backendPort), Path: "/annovibe"}
+	rp := NewReverseProxy(svc, testFwdCtx())
+	req := httptest.NewRequest("GET", "/annovibe/", nil)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	if loc := rec.Header().Get("Location"); loc != "/proxy/alice/jupyter/dashboard" {
+		t.Fatalf("Location = %q, want it rewritten into the gateway prefix", loc)
+	}
+}
+
+func firstNonLoopbackIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skipf("InterfaceAddrs: %v", err)
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() {
+			continue
+		}
+		if v4 := ipNet.IP.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	t.Skip("no non-loopback IPv4 address on this host")
+	return ""
+}
+
 func TestRewriteLocationExternalURLUntouched(t *testing.T) {
 	// SSO / external redirects must pass through exactly as-is.
 	got, ok := rewriteLocation("https://sso.example.com/auth?next=x", "", testFwdCtx(), "127.0.0.1:8888")

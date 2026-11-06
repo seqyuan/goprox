@@ -17,6 +17,7 @@ import (
 	"github.com/seqyuan/goprox/internal/api"
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/files"
 	"github.com/seqyuan/goprox/internal/proxy"
 	"github.com/seqyuan/goprox/internal/rate"
 	"github.com/seqyuan/goprox/internal/web"
@@ -1090,6 +1091,12 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 }
 
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
+	// A kind:"files" service has no backend: the gateway serves the configured
+	// directory itself (read-only listing, file download, zip export).
+	if svc.Kind == config.ServiceKindFiles {
+		s.serveFilesService(w, r, svc, fc)
+		return
+	}
 	// Go's http.Server.ReadTimeout caps the whole request body, which would
 	// abort any upload taking longer than 60s. For proxied requests reset the
 	// deadline to an idle timeout before every body read: a continuously
@@ -1130,6 +1137,36 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 		}
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// serveFilesService answers a request for a kind:"files" service from the
+// local filesystem. The service owner (the session user) is already enforced by
+// the routing that got here; the path itself is confined to Root by the files
+// package (os.Root: no "..", no root-escaping symlinks).
+func (s *Server) serveFilesService(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
+	// The browser-visible prefix the listing's links must be built from: the
+	// canonical /proxy/<user>/<svc> in prefix mode, the host root otherwise
+	// (vhost and bare-path as-is routing both live at the gateway root).
+	base := ""
+	rel := r.URL.Path
+	if fc.Mode == proxy.ForwardPrefix {
+		base = fc.Prefix
+	} else if svc.Path != "" && svc.Path != "/" {
+		// A bare request that arrived with the service path attached (typed
+		// URL, or a root-absolute link from a proxied page) still maps onto the
+		// directory root rather than into a subdirectory named like the path.
+		if r.URL.Path == svc.Path || strings.HasPrefix(r.URL.Path, svc.Path+"/") {
+			rel = strings.TrimPrefix(r.URL.Path, svc.Path)
+		}
+	}
+	files.Serve(w, r, files.Options{
+		Root:       svc.Root,
+		RelPath:    rel,
+		LinkBase:   base,
+		ShowHidden: svc.ShowHidden,
+		Name:       svc.Name,
+		BWLimit:    svc.BWLimit,
+	})
 }
 
 func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool {

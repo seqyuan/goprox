@@ -15,6 +15,7 @@ import (
 	pathpkg "path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
@@ -485,9 +486,21 @@ func rewriteLocation(loc, backendPath string, fc ProxyForwardContext, backendHos
 		if !sameBackendHost(u.Host, backendHost) {
 			return loc, false
 		}
-		loc = u.EscapedPath()
+		// A backend that redirects to its bare origin (no path) must map to
+		// the service root, not fall through the leading-slash check below:
+		// the browser would otherwise be sent to the backend address itself.
+		path := u.EscapedPath()
+		if path == "" {
+			path = "/"
+		}
+		loc = path
 		if u.RawQuery != "" {
 			loc += "?" + u.RawQuery
+		}
+		// Hash routers keep their view in the fragment; dropping it would
+		// land the browser on an unrelated page.
+		if frag := u.EscapedFragment(); frag != "" {
+			loc += "#" + frag
 		}
 	}
 
@@ -579,9 +592,13 @@ func isGatewayCookie(raw string) bool {
 }
 
 // sameBackendHost reports whether a redirect target host refers to the same
-// backend endpoint as the proxied host, tolerating localhost/127.0.0.1/::1
-// spelling differences (backends often emit the loopback spelling they were
-// started with).
+// backend endpoint as the proxied host, tolerating spelling differences for
+// addresses of this host. A backend commonly derives absolute URLs from the
+// address it was started with — its LAN IP (http://192.168.0.106:8080/…) —
+// while the gateway dials it over another local spelling (127.0.0.1). Without
+// this equivalence such a redirect leaks the backend address to the browser:
+// from outside the LAN it is unreachable, and inside it leaves the gateway
+// origin, so the gateway session cookies no longer apply.
 func sameBackendHost(redirectHost, backendHost string) bool {
 	if strings.EqualFold(redirectHost, backendHost) {
 		return true
@@ -591,9 +608,36 @@ func sameBackendHost(redirectHost, backendHost string) bool {
 	if rp != bp {
 		return false
 	}
-	loopback := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
-	return loopback[strings.ToLower(rh)] && loopback[strings.ToLower(bh)]
+	local := localHostNames()
+	return local[strings.ToLower(rh)] && local[strings.ToLower(bh)]
 }
+
+// localHostNames returns the lowercase host spellings that refer to this host:
+// loopback names plus every address bound to a local interface. Hostnames with
+// a DNS answer are deliberately NOT resolved: an external redirect target (SSO,
+// CDN) must never be rewritten just because it resolves locally.
+//
+// The set is computed once: deployments are long-lived, and an interface change
+// (laptop Wi-Fi) only means a stale extra spelling, which costs a rewrite the
+// gateway would have done anyway.
+var localHostNames = sync.OnceValue(func() map[string]bool {
+	hosts := map[string]bool{
+		"localhost": true, "127.0.0.1": true, "::1": true,
+		// Wildcard binds are not dialable, but a misconfigured backend can
+		// still echo them in a redirect.
+		"0.0.0.0": true, "::": true,
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return hosts
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok {
+			hosts[strings.ToLower(ipNet.IP.String())] = true
+		}
+	}
+	return hosts
+})
 
 func splitHostPort(h string) (host, port string) {
 	if host, port, err := net.SplitHostPort(h); err == nil {
