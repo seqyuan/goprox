@@ -27,6 +27,19 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.9.0 — 2026-11-07（内置文件浏览服务）</h2>
+    <ul>
+      <li><strong>新服务类型 <code>kind: files</code></strong>：卡片只填一个本机目录，网关自己当后端——目录列表、单文件内联预览（图片/PDF/音视频/纯文本）或附件下载，无需再起静态服务。</li>
+      <li><strong>目录 ZIP 打包下载</strong>：列表页「下载全部（ZIP）」（<code>?zip=1</code>）流式生成，不留临时文件；单文件支持 Range 续传与 <code>bwlimit</code> 限速。</li>
+      <li><strong>只读与隔离</strong>：无上传/删除/重命名，写方法一律 405；<code>os.Root</code> 拒绝 <code>..</code> 与逃逸符号链接；内联响应统一 <code>CSP: sandbox</code> + <code>nosniff</code>，HTML/SVG 只能下载；跨用户 404。</li>
+      <li><strong>仪表盘与 API</strong>：「服务类型」下拉 + 目录路径 / 显示隐藏文件；<code>/api/services</code> 支持 <code>kind</code> / <code>root</code> / <code>show_hidden</code>，<code>proxy ⇄ files</code> 切换带校验。</li>
+      <li><strong>重定向修复</strong>：<code>Location</code> 指向本机任意地址写法（局域网 IP / 回环 / 通配）且端口一致时视为同一后端；无路径的绝对重定向映射到服务根；保留 <code>#fragment</code>。修复「跳转后地址栏变成 192.168.x.x:端口」。</li>
+      <li><strong>本机后端地址归并</strong>：<code>host</code> 填本机局域网 IP / <code>0.0.0.0</code> / <code>localhost</code> 且回环可连时统一按 <code>127.0.0.1</code> 处理，避免发夹路由；只绑局域网网卡时保留原值，YAML 不改写。</li>
+      <li><strong>文档</strong>：README 新增「<code>host</code> 到底填哪个地址」「配置模式怎么选（含排障速查）」「文件浏览服务」三节。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.8.2 — 2026-10-24（安全与稳定性修复）</h2>
     <ul>
       <li><strong>网关 Cookie 命名空间隔离</strong>：转发前剥离所有 <code>goprox_*</code> Cookie，后端也不能再设置该命名空间；修复 2FA setup Cookie 携带明文 TOTP 密钥泄漏、default_service 裸路径下后端覆盖 session/route Cookie。</li>

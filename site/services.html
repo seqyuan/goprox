@@ -79,8 +79,11 @@ services:
     <table>
       <tr><th>参数</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr>
       <tr><td><code>name</code></td><td>string</td><td>✅</td><td>—</td><td>卡片显示名称（≤200 字符）</td></tr>
-      <tr><td><code>host</code></td><td>string</td><td>—</td><td><code>127.0.0.1</code></td><td>后端地址，仅允许回环/私网 IP 或主机名</td></tr>
-      <tr><td><code>port</code></td><td>int</td><td>✅</td><td>—</td><td>后端端口（1–65535）</td></tr>
+      <tr><td><code>kind</code></td><td>string</td><td>—</td><td><code>proxy</code></td><td>服务类型：<code>proxy</code> 代理后端 <code>host:port</code>；<code>files</code> 内置只读文件浏览（见下方「文件浏览」）</td></tr>
+      <tr><td><code>root</code></td><td>string</td><td>—</td><td>空</td><td><code>kind: files</code> 的目录绝对路径，如 <code>/data/share</code></td></tr>
+      <tr><td><code>show_hidden</code></td><td>bool</td><td>—</td><td><code>false</code></td><td><code>kind: files</code> 时是否显示 <code>.</code> 开头的隐藏文件</td></tr>
+      <tr><td><code>host</code></td><td>string</td><td>—</td><td><code>127.0.0.1</code></td><td>后端地址，仅允许回环/私网 IP 或主机名；<code>kind: files</code> 时忽略</td></tr>
+      <tr><td><code>port</code></td><td>int</td><td>✅</td><td>—</td><td>后端端口（1–65535）；<code>kind: files</code> 时忽略</td></tr>
       <tr><td><code>path</code></td><td>string</td><td>—</td><td>按 <code>id</code> 自动生成</td><td>前端访问路径，如 <code>/jupyter</code>；仅允许 <code>A-Za-z0-9._~-</code> 与 <code>/</code>，同用户内唯一</td></tr>
       <tr><td><code>backend_path</code></td><td>string</td><td>—</td><td>空</td><td>后端实际监听子路径/文件（见 BackendPath 详解）</td></tr>
       <tr><td><code>websocket</code></td><td>bool</td><td>—</td><td><code>true</code></td><td>是否允许 WebSocket 升级（Jupyter/RStudio 需开启）</td></tr>
@@ -152,6 +155,25 @@ services:
       vhost 下所有路径（包括 <code>/login</code>、<code>/api</code>、<code>/logout</code>）都归应用。
       需要 DNS 与 HTTPS；父域 Cookie、跨用户 Host 冲突和排障详见
       <a href="https://github.com/seqyuan/goprox/blob/main/docs/vhost.md" target="_blank" rel="noopener">docs/vhost.md</a>。</p>
+  </div>
+
+  <div class="card">
+    <h2>文件浏览（kind: files，只读）</h2>
+    <p>只想在线看看服务器上的数据目录？不用另起静态服务，把卡片类型设成 <code>files</code>，只填目录路径：</p>
+    <pre>services:
+  - id: data
+    name: "数据盘"
+    kind: files            # 缺省 proxy（代理 host:port）
+    path: "/data"
+    root: "/data/share"    # 服务端绝对目录
+    # show_hidden: true    # 可选：显示 . 开头的隐藏文件
+    # bwlimit: 10485760    # 可选：限速（字节/秒）</pre>
+    <p>访问 <code>/proxy/alice/data/</code> 即可浏览：目录列表带面包屑，图片/PDF/音视频/纯文本内联预览，
+      其余类型直接下载；「下载全部（ZIP）」把整个目录流式打包下载（<code>?zip=1</code>）。</p>
+    <div class="note"><strong>只读</strong>：没有上传/删除/重命名，<code>POST/PUT/DELETE</code> 返回 405；
+      目录穿越与逃逸符号链接由 <code>os.Root</code> 拦截；内联内容统一 <code>CSP: sandbox</code> + <code>nosniff</code>，
+      HTML/SVG 只能下载；别人访问你的卡片得到 404。三种入口（<code>/proxy</code> 前缀、<code>default_service</code> 裸路径、
+      <code>hostnames</code> 独立域名）都适用。仪表盘「服务类型」下拉即可配置。</div>
   </div>
 
   <div class="card">
