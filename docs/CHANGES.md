@@ -13,6 +13,11 @@
 - **旧版 SHA-256 哈希在登录成功时静默升级为 bcrypt**：升级后的 session / pending-2FA 令牌
   使用新哈希派生的 revision，登录与会话续期行为不变；配置不可写时只记日志，不阻塞登录
 
+## 文档
+
+- 四份 2026-07「闪回问题」历史报告移入 `docs/archive/` 并加归档索引；2026-11-07 项目
+  审查报告收入 `docs/reviews/`，附维护者核验结论与处理状态
+
 ## CI
 
 - 新增 `.github/workflows/ci.yml`：`push` 到 `main` 与所有 PR 跑 `gofmt -l` + `go vet` +
@@ -553,9 +558,9 @@ pkill goprox
 
 ## 📚 文档
 
-- [修复文档索引.md](./修复文档索引.md) - 文档导航（推荐从这里开始）
-- [闪回问题审核报告.md](./闪回问题审核报告.md) - 问题分析
-- [修复完成报告.md](./修复完成报告.md) - 技术细节
+- [archive/修复文档索引.md](./archive/修复文档索引.md) - 历史文档导航
+- [archive/闪回问题审核报告.md](./archive/闪回问题审核报告.md) - 问题分析
+- [archive/修复完成报告.md](./archive/修复完成报告.md) - 技术细节
 - [BackendPath功能说明.md](./BackendPath功能说明.md) - 新功能说明
 - [快速升级指南.md](./快速升级指南.md) - 部署指南
 
