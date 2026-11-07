@@ -31,7 +31,7 @@ func newTestHandler(t *testing.T, ttl ...int) *Handler {
 	if len(ttl) > 0 {
 		sessionTTL = ttl[0]
 	}
-	return NewHandler(reg, "testsecret", sessionTTL, "", "")
+	return NewHandler(reg, "testsecret", sessionTTL, "", "", auth.DefaultCookieNames())
 }
 
 func newVHostTestHandler(t *testing.T) (*Handler, string) {
@@ -47,7 +47,7 @@ func newVHostTestHandler(t *testing.T) (*Handler, string) {
 	}
 	reg := config.NewUserRegistry(configDir)
 	reg.Reload()
-	return NewHandler(reg, "testsecret", 86400, ".example.test", "gw.example.test"), configDir
+	return NewHandler(reg, "testsecret", 86400, ".example.test", "gw.example.test", auth.DefaultCookieNames()), configDir
 }
 
 func apiPut(t *testing.T, h *Handler, url, body, origin string) *httptest.ResponseRecorder {
@@ -572,5 +572,48 @@ func TestSwitchKindBetweenProxyAndFiles(t *testing.T) {
 	svc = config.ServiceByID(h.Registry.GetUser("alice").Config.Services, "app")
 	if svc == nil || svc.Kind != config.ServiceKindProxy || svc.Port != 8080 || svc.Root != "" {
 		t.Fatalf("after switch back: %+v", svc)
+	}
+}
+
+// Session refresh from the API must use this instance's cookie names.
+func TestRefreshSessionUsesSuffix(t *testing.T) {
+	configDir := t.TempDir()
+	cfgPath := config.UserConfigPath(configDir, "alice")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("auth:\n  password_hash: \""+strings.Repeat("1", 64)+"\"\nservices: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := config.NewUserRegistry(configDir)
+	reg.Reload()
+	// Short TTL so the session is already inside the refresh window.
+	h := NewHandler(reg, "testsecret", 60, "", "", auth.CookieNamesForSuffix("1908"))
+
+	// Issued with a 10s TTL against a 60s policy: inside the refresh window.
+	token := auth.CreateSessionToken("alice", "testsecret", 10, auth.SessionRev(strings.Repeat("1", 64)))
+	req := httptest.NewRequest("GET", "/api/services", nil)
+	req.Host = "gw:30152"
+	req.Header.Set("Cookie", "goprox_session_1908="+token)
+	rr := httptest.NewRecorder()
+	if !h.ServeHTTP(rr, req) {
+		t.Fatal("request not claimed")
+	}
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	setCookie := strings.Join(rr.Header().Values("Set-Cookie"), "\n")
+	if !strings.Contains(setCookie, "goprox_session_1908=") {
+		t.Fatalf("refresh must use the suffixed name, got %q", setCookie)
+	}
+
+	// The default-named token must be rejected by a suffixed instance.
+	req = httptest.NewRequest("GET", "/api/services", nil)
+	req.Host = "gw:30152"
+	req.Header.Set("Cookie", "goprox_session="+token)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 401 {
+		t.Fatalf("default-named session accepted by suffixed instance: %d", rr.Code)
 	}
 }

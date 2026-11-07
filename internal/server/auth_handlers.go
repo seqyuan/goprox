@@ -137,7 +137,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// a real session.
 		if userConfig != nil && userConfig.Auth.TOTPSecret != "" {
 			rev := auth.SessionRev(passwordHash)
-			w.Header().Set("Set-Cookie", auth.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, rev, secure))
+			w.Header().Set("Set-Cookie", s.cookieNames.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, rev, secure))
 			http.Redirect(w, r, "/login/2fa?next="+url.QueryEscape(next), http.StatusFound)
 			return
 		}
@@ -201,20 +201,20 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Set-Cookie", auth.ClearSessionCookieWithDomain(s.cookieDomain))
+	w.Header().Set("Set-Cookie", s.cookieNames.ClearSessionCookieWithDomain(s.cookieDomain))
 	// A pre-vhost (or pre-cookie-domain) host-only session cookie can coexist
 	// with the parent-domain one. Clearing only the Domain variant leaves that
 	// host-only cookie valid, so logout would not actually log the user out.
 	if s.cookieDomain != "" {
-		w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
+		w.Header().Add("Set-Cookie", s.cookieNames.ClearSessionCookie())
 	}
 	// Temporary 2FA state must not survive logout (the setup cookie also
 	// carries a plaintext pending TOTP secret).
-	w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
-	w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
+	w.Header().Add("Set-Cookie", s.cookieNames.ClearPendingCookie())
+	w.Header().Add("Set-Cookie", s.cookieNames.ClearSetupCookie())
 	// Route cookies outlive the session and would keep forwarding bare paths to
 	// backends after logout; clear every one the browser holds.
-	for _, c := range auth.ClearRouteCookies(r.Header.Get("Cookie")) {
+	for _, c := range s.cookieNames.ClearRouteCookies(r.Header.Get("Cookie")) {
 		w.Header().Add("Set-Cookie", c)
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
@@ -247,7 +247,7 @@ func (s *Server) handleTwoFA(w http.ResponseWriter, r *http.Request) {
 // in-flight password step, not only already-issued sessions.
 
 func (s *Server) pendingTwoFAUser(cookieHeader string) (string, bool) {
-	token := auth.ParseCookies(cookieHeader)[auth.TOTACookieName]
+	token := auth.ParseCookies(cookieHeader)[s.cookieNames.TOTAPending()]
 	if token == "" {
 		return "", false
 	}
@@ -299,7 +299,7 @@ func (s *Server) handleTwoFAPost(w http.ResponseWriter, r *http.Request) {
 	s.totpLimiter.Reset(rateKey)
 	secure := auth.IsSecureRequest(r)
 	s.setLoginSessionCookie(w, userID, secure)
-	w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
+	w.Header().Add("Set-Cookie", s.cookieNames.ClearPendingCookie())
 	if next == "" {
 		next = "/"
 	}
@@ -331,7 +331,7 @@ func (s *Server) handleTwoFASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secure := auth.IsSecureRequest(r)
-	w.Header().Set("Set-Cookie", auth.SetSetupCookie(session.UserID, secret, s.sessionSecret, pendingTTLSeconds, secure))
+	w.Header().Set("Set-Cookie", s.cookieNames.SetSetupCookie(session.UserID, secret, s.sessionSecret, pendingTTLSeconds, secure))
 	sendHTML(w, 200, web.TwoFASetupPage(s.siteTitle, "", secret, enabled))
 }
 
@@ -343,7 +343,7 @@ func (s *Server) handleTwoFASetupPost(w http.ResponseWriter, r *http.Request, us
 	}
 
 	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	setupUser, secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
+	setupUser, secret, ok := auth.ValidateSetupToken(cookies[s.cookieNames.TOTASetup()], s.sessionSecret)
 	if !ok || setupUser != username {
 		sendHTML(w, 401, web.TwoFASetupPage(s.siteTitle, "设置会话已过期，请重新开始", "", enabled))
 		return
@@ -365,7 +365,7 @@ func (s *Server) handleTwoFASetupPost(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	s.registry.Reload()
-	w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
+	w.Header().Add("Set-Cookie", s.cookieNames.ClearSetupCookie())
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -385,7 +385,7 @@ func (s *Server) handleTwoFAQr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	setupUser, secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
+	setupUser, secret, ok := auth.ValidateSetupToken(cookies[s.cookieNames.TOTASetup()], s.sessionSecret)
 	if !ok || setupUser != session.UserID {
 		http.Error(w, "invalid setup", http.StatusBadRequest)
 		return

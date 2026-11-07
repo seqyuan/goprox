@@ -89,6 +89,13 @@ type ServerState struct {
 type AuthState struct {
 	SessionSecret string `yaml:"session_secret"`
 	SessionTTL    int    `yaml:"session_ttl"`
+	// CookieSuffix isolates this instance's cookies from another goprox on the
+	// same host: browsers scope cookies to the host and ignore the port, so
+	// two instances (e.g. :1907 and :1908) would otherwise overwrite each
+	// other's session/2FA/route cookies. Empty keeps the historical names, so
+	// existing deployments are unaffected; setting it once logs everyone out of
+	// this instance (expected, one-time).
+	CookieSuffix string `yaml:"cookie_suffix,omitempty"`
 }
 
 func defaultState() StateConfig {
@@ -160,6 +167,9 @@ func LoadState(path string) (*StateConfig, error) {
 		return nil, fmt.Errorf("server.tls_cert and server.tls_key must be set together")
 	}
 	if s.Server.FilesRoots, err = NormalizeFilesRoots(s.Server.FilesRoots); err != nil {
+		return nil, err
+	}
+	if s.Auth.CookieSuffix, err = NormalizeCookieSuffix(s.Auth.CookieSuffix); err != nil {
 		return nil, err
 	}
 

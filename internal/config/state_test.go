@@ -127,3 +127,58 @@ func TestLoadStateRejectsHalfTLSConfig(t *testing.T) {
 		t.Fatal("LoadState accepted tls_cert without tls_key")
 	}
 }
+
+// auth.cookie_suffix isolates two goprox instances on the same host; it is
+// validated at load time and persisted verbatim (including when the session
+// secret is generated on first run).
+func TestCookieSuffix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.yaml")
+	body := "server:\n  host: 127.0.0.1\n  port: 30152\nauth:\n  session_secret: \"\"\n  session_ttl: 3600\n  cookie_suffix: \"1908\"\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := LoadState(path) // generates + persists the secret
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if state.Auth.CookieSuffix != "1908" {
+		t.Fatalf("cookie_suffix = %q", state.Auth.CookieSuffix)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `cookie_suffix: "1908"`) && !strings.Contains(string(raw), "cookie_suffix: 1908") {
+		t.Fatalf("cookie_suffix not persisted:\n%s", raw)
+	}
+
+	// Invalid suffixes must fail startup rather than silently fall back.
+	for _, bad := range []string{"has space", "with/slash", "abcdefghijklmnopqrstuvwxyz0123456789", "中文"} {
+		if err := os.WriteFile(path, []byte("auth:\n  session_secret: \"x\"\n  cookie_suffix: "+bad+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadState(path); err == nil {
+			t.Errorf("cookie_suffix %q accepted", bad)
+		}
+	}
+}
+
+func TestNormalizeCookieSuffix(t *testing.T) {
+	for _, ok := range []string{"", "1908", "a", "A-b_9", strings.Repeat("x", 32)} {
+		got, err := NormalizeCookieSuffix(ok)
+		if err != nil || got != strings.TrimSpace(ok) {
+			t.Errorf("NormalizeCookieSuffix(%q) = %q, %v", ok, got, err)
+		}
+	}
+	// Whitespace-only trims to the default (empty) suffix, which is valid.
+	if got, err := NormalizeCookieSuffix("  "); err != nil || got != "" {
+		t.Errorf(`NormalizeCookieSuffix("  ") = %q, %v`, got, err)
+	}
+	for _, bad := range []string{"a b", "a/b", strings.Repeat("x", 33), "！"} {
+		if _, err := NormalizeCookieSuffix(bad); err == nil {
+			t.Errorf("NormalizeCookieSuffix(%q) accepted", bad)
+		}
+	}
+}

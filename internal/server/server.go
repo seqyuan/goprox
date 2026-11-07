@@ -34,6 +34,7 @@ type Server struct {
 	state         *config.StateConfig
 	registry      *config.UserRegistry
 	sessionSecret string
+	cookieNames   auth.CookieNames
 	cookieDomain  string
 	publicHost    string
 	publicScheme  string
@@ -76,13 +77,16 @@ func New(state *config.StateConfig, configDir string) *Server {
 		state:         state,
 		registry:      registry,
 		sessionSecret: state.Auth.SessionSecret,
-		cookieDomain:  state.Server.CookieDomain,
-		publicHost:    state.Server.PublicHost,
-		publicScheme:  state.Server.PublicScheme,
-		siteTitle:     siteTitle,
-		loginLimiter:  rate.NewLimiter(10, 15*time.Minute),
-		totpLimiter:   rate.NewLimiter(10, 15*time.Minute),
-		apiHandler:    api.NewHandler(registry, state.Auth.SessionSecret, state.Auth.SessionTTL, state.Server.CookieDomain, state.Server.PublicHost),
+		// Per-instance cookie names (auth.cookie_suffix); default names when the
+		// suffix is empty, so single-instance deployments are unaffected.
+		cookieNames:  auth.CookieNamesForSuffix(state.Auth.CookieSuffix),
+		cookieDomain: state.Server.CookieDomain,
+		publicHost:   state.Server.PublicHost,
+		publicScheme: state.Server.PublicScheme,
+		siteTitle:    siteTitle,
+		loginLimiter: rate.NewLimiter(10, 15*time.Minute),
+		totpLimiter:  rate.NewLimiter(10, 15*time.Minute),
+		apiHandler:   api.NewHandler(registry, state.Auth.SessionSecret, state.Auth.SessionTTL, state.Server.CookieDomain, state.Server.PublicHost, auth.CookieNamesForSuffix(state.Auth.CookieSuffix)),
 		// A shared transport lets connection pools be reused across requests
 		// instead of creating a fresh one per proxy request. SafeDialContext
 		// re-validates backend addresses (and pins the validated IP) at dial
@@ -117,7 +121,7 @@ func (s *Server) currentSessionRev(username string) string {
 // password-hash revision.
 
 func (s *Server) issueSessionCookie(username string, secure bool) string {
-	return auth.SetSessionCookieWithDomain(
+	return s.cookieNames.SetSessionCookieWithDomain(
 		s.sessionSecret,
 		s.state.Auth.SessionTTL,
 		username,
@@ -135,7 +139,7 @@ func (s *Server) issueSessionCookie(username string, secure bool) string {
 func (s *Server) setLoginSessionCookie(w http.ResponseWriter, username string, secure bool) {
 	w.Header().Set("Set-Cookie", s.issueSessionCookie(username, secure))
 	if s.cookieDomain != "" {
-		w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
+		w.Header().Add("Set-Cookie", s.cookieNames.ClearSessionCookie())
 	}
 }
 
@@ -144,7 +148,7 @@ func (s *Server) setLoginSessionCookie(w http.ResponseWriter, username string, s
 
 func (s *Server) sessionFromCookies(cookieHeader string) auth.SessionResult {
 	cookies := auth.ParseCookies(cookieHeader)
-	token := cookies[auth.SessionCookieName]
+	token := cookies[s.cookieNames.Session()]
 	if token == "" {
 		return auth.SessionResult{}
 	}

@@ -77,7 +77,7 @@ func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *con
 	// the service prefix, so relative links in plain HTML files in
 	// subdirectories resolve correctly.
 	forwardCtx.Base = proxy.BaseForPath(forwardCtx.Prefix, match.RemainingPath)
-	setRouteCookies(w, r, forwardCtx.Prefix)
+	s.setRouteCookies(w, r, forwardCtx.Prefix)
 	r.URL.Path = match.RemainingPath
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
 }
@@ -105,7 +105,7 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 	if !strings.HasPrefix(r.URL.Path, "/proxy/") {
 		forwardCtx.Base = proxy.BaseForPath("", r.URL.Path)
 	}
-	setRouteCookies(w, r, forwardCtx.Prefix)
+	s.setRouteCookies(w, r, forwardCtx.Prefix)
 	s.forwardToBackend(w, r, match.Service, forwardCtx)
 }
 
@@ -232,7 +232,7 @@ func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) bool {
-	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
+	route := s.cookieNames.RouteForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
 	if route == "" {
 		return false
 	}
@@ -429,8 +429,8 @@ func isPassiveSubresource(r *http.Request) bool {
 // response, and the global recent-service cookie only for real page/API
 // traffic (not passive image/favicon subresources).
 
-func setRouteCookies(w http.ResponseWriter, r *http.Request, prefix string) {
-	cookies := auth.SetRouteCookies(prefix)
+func (s *Server) setRouteCookies(w http.ResponseWriter, r *http.Request, prefix string) {
+	cookies := s.cookieNames.SetRouteCookies(prefix)
 	if isPassiveSubresource(r) {
 		// SetRouteCookies returns [per-service, global]; keep only the former.
 		cookies = cookies[:1]
@@ -459,7 +459,7 @@ func (s *Server) handleRootAbsoluteService(w http.ResponseWriter, r *http.Reques
 	if match == nil && !canonicalReferer {
 		// No canonical /proxy/... page identified by Referer: a reload or
 		// bookmark can still use the most recent route cookie.
-		route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
+		route := s.cookieNames.RouteForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
 		if route != "" {
 			match = s.matchRouteForUser(route, session.UserID)
 		}
@@ -522,7 +522,7 @@ func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool 
 	if !session.Valid || session.UserID == "" {
 		return false
 	}
-	route := auth.GetRouteCookieForRequest(
+	route := s.cookieNames.RouteForRequest(
 		r.Header.Get("Cookie"), "", s.refererPath(r),
 	)
 	if route == "" || !strings.HasPrefix(route, "/proxy/"+session.UserID+"/") {
@@ -548,7 +548,7 @@ func (s *Server) findBackendService(r *http.Request, username string) *config.Se
 		}
 	}
 
-	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, refPath)
+	route := s.cookieNames.RouteForRequest(r.Header.Get("Cookie"), r.URL.Path, refPath)
 	if route == "" {
 		return nil
 	}

@@ -132,7 +132,7 @@ func (s *Server) redirectToMainLogin(w http.ResponseWriter, r *http.Request) {
 	if s.cookieDomain != "" {
 		// Drop a stale host-only session cookie on this service host; the
 		// parent-domain cookie is unaffected.
-		w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
+		w.Header().Add("Set-Cookie", s.cookieNames.ClearSessionCookie())
 	}
 	http.Redirect(w, r, login, http.StatusFound)
 }

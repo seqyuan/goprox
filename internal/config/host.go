@@ -158,3 +158,22 @@ func HostWithinCookieDomain(host, domain string) bool {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	return h == d || strings.HasSuffix(h, "."+d)
 }
+
+// cookieSuffixRe restricts auth.cookie_suffix to characters that are valid in a
+// cookie name without quoting.
+var cookieSuffixRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// NormalizeCookieSuffix validates auth.cookie_suffix. An empty value means the
+// historical cookie names; anything invalid fails startup rather than silently
+// falling back to the default names (which would make two instances collide
+// again without any visible error).
+func NormalizeCookieSuffix(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if !cookieSuffixRe.MatchString(value) {
+		return "", fmt.Errorf("auth.cookie_suffix %q must match %s", value, cookieSuffixRe.String())
+	}
+	return value, nil
+}

@@ -19,17 +19,20 @@ type Handler struct {
 	SessionTTL    int
 	CookieDomain  string
 	PublicHost    string
+	// CookieNames are this gateway instance's cookie names (auth.cookie_suffix).
+	CookieNames auth.CookieNames
 }
 
 // NewHandler creates a new API handler. cookieDomain/publicHost are used for
 // vhost session refresh and for validating hostnames saved through the API.
-func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int, cookieDomain, publicHost string) *Handler {
+func NewHandler(registry *config.UserRegistry, sessionSecret string, sessionTTL int, cookieDomain, publicHost string, cookieNames auth.CookieNames) *Handler {
 	return &Handler{
 		Registry:      registry,
 		SessionSecret: sessionSecret,
 		SessionTTL:    sessionTTL,
 		CookieDomain:  cookieDomain,
 		PublicHost:    publicHost,
+		CookieNames:   cookieNames,
 	}
 }
 
@@ -148,7 +151,7 @@ func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request, session
 		return
 	}
 	secure := auth.IsSecureRequest(r)
-	w.Header().Add("Set-Cookie", auth.SetSessionCookieWithDomain(
+	w.Header().Add("Set-Cookie", h.CookieNames.SetSessionCookieWithDomain(
 		h.SessionSecret,
 		h.SessionTTL,
 		session.UserID,
@@ -175,7 +178,7 @@ func (h *Handler) currentSessionRev(username string) string {
 // current password-hash revision so password changes revoke old sessions.
 func (h *Handler) sessionFromCookies(cookieHeader string) auth.SessionResult {
 	cookies := auth.ParseCookies(cookieHeader)
-	token := cookies[auth.SessionCookieName]
+	token := cookies[h.CookieNames.Session()]
 	if token == "" {
 		return auth.SessionResult{}
 	}

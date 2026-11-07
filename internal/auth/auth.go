@@ -313,17 +313,62 @@ func IsSecureRequest(r *http.Request) bool {
 	return strings.HasPrefix(strings.ToLower(proto), "https")
 }
 
-// SetSessionCookie creates a Set-Cookie header value for the session, bound
-// to the account's current password-hash revision.
-func SetSessionCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
-	return SetSessionCookieWithDomain(secret, ttlSec, userID, rev, secure, "")
+// CookieNames holds the cookie names one gateway instance owns.
+//
+// Browsers scope cookies to a host, ignoring the port, so two goprox instances
+// on the same machine (e.g. :1907 and :1908) overwrite each other's session,
+// 2FA and route cookies. Each instance can append a distinct suffix
+// (state.yaml: auth.cookie_suffix); the default (empty) keeps the historical
+// names, so upgrading an existing instance changes nothing.
+type CookieNames struct {
+	suffix string
+}
+
+// DefaultCookieNames returns the historical, suffix-less names.
+func DefaultCookieNames() CookieNames { return CookieNames{} }
+
+// CookieNamesForSuffix returns the names for one instance. The suffix must be
+// validated by the caller (config.LoadState enforces [A-Za-z0-9_-]{1,32}).
+func CookieNamesForSuffix(suffix string) CookieNames {
+	return CookieNames{suffix: strings.TrimSpace(suffix)}
+}
+
+// Suffix returns the configured suffix ("" for the default names).
+func (n CookieNames) Suffix() string { return n.suffix }
+
+func (n CookieNames) part() string {
+	if n.suffix == "" {
+		return ""
+	}
+	return "_" + n.suffix
+}
+
+// Session is the session cookie name.
+func (n CookieNames) Session() string { return SessionCookieName + n.part() }
+
+// TOTAPending is the "password step done, second factor pending" cookie name.
+func (n CookieNames) TOTAPending() string { return TOTACookieName + n.part() }
+
+// TOTASetup is the enrollment cookie name (carries the not-yet-saved secret).
+func (n CookieNames) TOTASetup() string { return TOTASetupCookie + n.part() }
+
+// Route is the "most recently visited service" cookie name.
+func (n CookieNames) Route() string { return RouteCookieName + n.part() }
+
+// RoutePrefix prefixes the per-service route cookie names.
+func (n CookieNames) RoutePrefix() string { return "goprox_route" + n.part() + "_" }
+
+// SetSessionCookie creates a Set-Cookie header value for the session, bound to
+// the account's current password-hash revision.
+func (n CookieNames) SetSessionCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+	return n.SetSessionCookieWithDomain(secret, ttlSec, userID, rev, secure, "")
 }
 
 // SetSessionCookieWithDomain is SetSessionCookie with an optional parent
 // Domain, used by virtual-host mode to share the session across service
 // subdomains (e.g. ".gw.example.com"). An empty domain keeps the cookie
 // host-only.
-func SetSessionCookieWithDomain(secret string, ttlSec int, userID, rev string, secure bool, domain string) string {
+func (n CookieNames) SetSessionCookieWithDomain(secret string, ttlSec int, userID, rev string, secure bool, domain string) string {
 	token := CreateSessionToken(userID, secret, ttlSec, rev)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
@@ -335,81 +380,85 @@ func SetSessionCookieWithDomain(secret string, ttlSec int, userID, rev string, s
 		domainFlag = "; Domain=" + domain
 	}
 	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax%s; Expires=%s%s",
-		SessionCookieName, token, domainFlag, expires, secureFlag)
+		n.Session(), token, domainFlag, expires, secureFlag)
 }
 
-// ClearSessionCookie creates a Set-Cookie header to clear the session.
-func ClearSessionCookie() string {
-	return ClearSessionCookieWithDomain("")
+// ClearSessionCookie creates a Set-Cookie header to clear this instance's
+// session cookie.
+func (n CookieNames) ClearSessionCookie() string {
+	return n.ClearSessionCookieWithDomain("")
 }
 
 // ClearSessionCookieWithDomain clears a session cookie that was set with the
 // given parent Domain. The Domain attribute must match the original cookie or
 // the browser will keep the parent-domain cookie.
-func ClearSessionCookieWithDomain(domain string) string {
+func (n CookieNames) ClearSessionCookieWithDomain(domain string) string {
 	domainFlag := ""
 	if domain != "" {
 		domainFlag = "; Domain=" + domain
 	}
 	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax%s; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-		SessionCookieName, domainFlag)
+		n.Session(), domainFlag)
 }
 
-// ClearRouteCookies returns the Set-Cookie headers needed to clear every
-// route cookie present in the request's Cookie header. Route cookies persist
-// beyond logout and would otherwise keep forwarding bare paths to backends.
-func ClearRouteCookies(cookieHeader string) []string {
+// ClearRouteCookies returns the Set-Cookie headers needed to clear every route
+// cookie of THIS instance present in the request's Cookie header. Route cookies
+// persist beyond logout and would otherwise keep forwarding bare paths to
+// backends. Cookies belonging to another instance (a different suffix) are left
+// alone: clearing them would log that instance's users out.
+func (n CookieNames) ClearRouteCookies(cookieHeader string) []string {
+	route := n.Route()
+	prefix := n.RoutePrefix()
 	var out []string
 	for name := range ParseCookies(cookieHeader) {
-		if name == RouteCookieName || strings.HasPrefix(name, RouteCookiePrefix) {
+		if name == route || strings.HasPrefix(name, prefix) {
 			out = append(out, fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT", name))
 		}
 	}
 	return out
 }
 
-// SetRouteCookie creates a Set-Cookie for tracking proxy route.
-// Uses a service-specific cookie name to avoid conflicts between services.
-// The cookie is scoped to "/" so it's available for all request paths.
-func SetRouteCookie(prefix string) string {
-	// Create a unique cookie name based on the service prefix
-	// This prevents cookie conflicts when using multiple services
-	cookieName := RouteCookieNameForPrefix(prefix)
+// SetRouteCookie creates a Set-Cookie for tracking the proxy route of one
+// service. The name is service-specific so multiple services coexist without
+// clobbering each other; the cookie is scoped to "/" so every request path
+// carries it.
+func (n CookieNames) SetRouteCookie(prefix string) string {
 	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax",
-		cookieName, prefix)
+		n.RouteCookieNameForPrefix(prefix), prefix)
 }
 
 // SetRouteCookies returns the Set-Cookie headers written when a service is
 // visited: a service-specific cookie (so multiple services coexist without
-// clobbering each other) plus the global route cookie, which records the most
-// recently visited service and serves as the fallback when the specific
+// clobbering each other) plus this instance's global route cookie, which records
+// the most recently visited service and serves as the fallback when the specific
 // cookies cannot disambiguate a bare request.
-func SetRouteCookies(prefix string) []string {
+func (n CookieNames) SetRouteCookies(prefix string) []string {
 	return []string{
-		SetRouteCookie(prefix),
-		fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax", RouteCookieName, prefix),
+		n.SetRouteCookie(prefix),
+		fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax", n.Route(), prefix),
 	}
 }
 
 // RouteCookieNameForPrefix generates a cookie name for a specific service prefix.
-func RouteCookieNameForPrefix(prefix string) string {
+func (n CookieNames) RouteCookieNameForPrefix(prefix string) string {
 	if prefix == "" {
-		return RouteCookieName
+		return n.Route()
 	}
-	// Use hash to create a stable, short identifier
+	// Use a hash to create a stable, short identifier.
 	h := sha256.Sum256([]byte(prefix))
-	return RouteCookiePrefix + hex.EncodeToString(h[:4]) // 8 chars
+	return n.RoutePrefix() + hex.EncodeToString(h[:4]) // 8 chars
 }
 
-// GetRouteCookieForRequest extracts the route prefix that belongs to this request.
-// Global route cookies are intentionally not used for "/" because that is the dashboard.
-// If multiple service cookies exist, the request or referer must disambiguate them.
-func GetRouteCookieForRequest(cookieHeader, requestPath, referer string) string {
+// RouteForRequest extracts the route prefix that belongs to this request.
+// The global route cookie is intentionally not used for "/" because that is the
+// dashboard. If multiple service cookies exist, the request or referer must
+// disambiguate them.
+func (n CookieNames) RouteForRequest(cookieHeader, requestPath, referer string) string {
 	if requestPath == "/" {
 		return ""
 	}
 
-	routes := routeCookieValues(cookieHeader)
+	routes := n.routeCookieValues(cookieHeader)
 	if len(routes) == 0 {
 		return ""
 	}
@@ -437,13 +486,13 @@ func GetRouteCookieForRequest(cookieHeader, requestPath, referer string) string 
 	// or /api/… fetched without a Referer). Fall back to the most recently
 	// visited service (the global route cookie) instead of returning "" and
 	// 404ing the page.
-	if recent := ParseCookies(cookieHeader)[RouteCookieName]; recent != "" {
+	if recent := ParseCookies(cookieHeader)[n.Route()]; recent != "" {
 		return recent
 	}
 	return ""
 }
 
-func routeCookieValues(cookieHeader string) []string {
+func (n CookieNames) routeCookieValues(cookieHeader string) []string {
 	cookies := ParseCookies(cookieHeader)
 	seen := make(map[string]bool)
 	routes := make([]string, 0, len(cookies))
@@ -456,9 +505,9 @@ func routeCookieValues(cookieHeader string) []string {
 		routes = append(routes, route)
 	}
 
-	addRoute(cookies[RouteCookieName])
+	addRoute(cookies[n.Route()])
 	for name, value := range cookies {
-		if strings.HasPrefix(name, RouteCookiePrefix) {
+		if strings.HasPrefix(name, n.RoutePrefix()) {
 			addRoute(value)
 		}
 	}
@@ -479,6 +528,47 @@ func bestRouteForPath(routes []string, requestPath string) string {
 		}
 	}
 	return best
+}
+
+// ---- package-level wrappers (default, suffix-less names) ----
+
+// SetSessionCookie creates a session cookie with the default name.
+func SetSessionCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+	return DefaultCookieNames().SetSessionCookie(secret, ttlSec, userID, rev, secure)
+}
+
+// SetSessionCookieWithDomain is SetSessionCookie with a parent Domain.
+func SetSessionCookieWithDomain(secret string, ttlSec int, userID, rev string, secure bool, domain string) string {
+	return DefaultCookieNames().SetSessionCookieWithDomain(secret, ttlSec, userID, rev, secure, domain)
+}
+
+// ClearSessionCookie clears the default session cookie.
+func ClearSessionCookie() string { return DefaultCookieNames().ClearSessionCookie() }
+
+// ClearSessionCookieWithDomain clears the default session cookie (parent Domain).
+func ClearSessionCookieWithDomain(domain string) string {
+	return DefaultCookieNames().ClearSessionCookieWithDomain(domain)
+}
+
+// ClearRouteCookies clears the default route cookies.
+func ClearRouteCookies(cookieHeader string) []string {
+	return DefaultCookieNames().ClearRouteCookies(cookieHeader)
+}
+
+// SetRouteCookie writes one default per-service route cookie.
+func SetRouteCookie(prefix string) string { return DefaultCookieNames().SetRouteCookie(prefix) }
+
+// SetRouteCookies writes the default per-service and global route cookies.
+func SetRouteCookies(prefix string) []string { return DefaultCookieNames().SetRouteCookies(prefix) }
+
+// RouteCookieNameForPrefix returns the default per-service route cookie name.
+func RouteCookieNameForPrefix(prefix string) string {
+	return DefaultCookieNames().RouteCookieNameForPrefix(prefix)
+}
+
+// GetRouteCookieForRequest resolves the route from the default route cookies.
+func GetRouteCookieForRequest(cookieHeader, requestPath, referer string) string {
+	return DefaultCookieNames().RouteForRequest(cookieHeader, requestPath, referer)
 }
 
 // ShouldRefreshSession checks if a session should be refreshed.
@@ -687,7 +777,7 @@ func ValidatePendingToken(token, secret, currentRev string) (string, bool) {
 }
 
 // SetPendingCookie creates a Set-Cookie header for the pending 2FA token.
-func SetPendingCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+func (n CookieNames) SetPendingCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
 	token := CreatePendingToken(userID, secret, ttlSec, rev)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
@@ -695,14 +785,22 @@ func SetPendingCookie(secret string, ttlSec int, userID, rev string, secure bool
 		secureFlag = "; Secure"
 	}
 	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax; Expires=%s%s",
-		TOTACookieName, token, expires, secureFlag)
+		n.TOTAPending(), token, expires, secureFlag)
 }
 
-// ClearPendingCookie creates a Set-Cookie header to clear the pending token.
-func ClearPendingCookie() string {
+// ClearPendingCookie clears this instance's pending 2FA cookie.
+func (n CookieNames) ClearPendingCookie() string {
 	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-		TOTACookieName)
+		n.TOTAPending())
 }
+
+// SetPendingCookie writes the default pending-2FA cookie.
+func SetPendingCookie(secret string, ttlSec int, userID, rev string, secure bool) string {
+	return DefaultCookieNames().SetPendingCookie(secret, ttlSec, userID, rev, secure)
+}
+
+// ClearPendingCookie clears the default pending-2FA cookie.
+func ClearPendingCookie() string { return DefaultCookieNames().ClearPendingCookie() }
 
 // ---- pending TOTP secret (held during enrollment, not yet persisted) ----
 
@@ -747,7 +845,7 @@ func ValidateSetupToken(token, sessionSecret string) (userID, secret string, ok 
 }
 
 // SetSetupCookie creates a Set-Cookie header for the pending setup secret.
-func SetSetupCookie(userID, secret, sessionSecret string, ttlSec int, secure bool) string {
+func (n CookieNames) SetSetupCookie(userID, secret, sessionSecret string, ttlSec int, secure bool) string {
 	token := CreateSetupToken(userID, secret, sessionSecret, ttlSec)
 	expires := time.Now().Add(time.Duration(ttlSec) * time.Second).UTC().Format(time.RFC1123)
 	secureFlag := ""
@@ -755,11 +853,19 @@ func SetSetupCookie(userID, secret, sessionSecret string, ttlSec int, secure boo
 		secureFlag = "; Secure"
 	}
 	return fmt.Sprintf("%s=%s; HttpOnly; Path=/; SameSite=Lax; Expires=%s%s",
-		TOTASetupCookie, token, expires, secureFlag)
+		n.TOTASetup(), token, expires, secureFlag)
 }
 
-// ClearSetupCookie creates a Set-Cookie header to clear the pending secret.
-func ClearSetupCookie() string {
+// ClearSetupCookie clears this instance's setup cookie.
+func (n CookieNames) ClearSetupCookie() string {
 	return fmt.Sprintf("%s=; HttpOnly; Path=/; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-		TOTASetupCookie)
+		n.TOTASetup())
 }
+
+// SetSetupCookie writes the default setup cookie.
+func SetSetupCookie(userID, secret, sessionSecret string, ttlSec int, secure bool) string {
+	return DefaultCookieNames().SetSetupCookie(userID, secret, sessionSecret, ttlSec, secure)
+}
+
+// ClearSetupCookie clears the default setup cookie.
+func ClearSetupCookie() string { return DefaultCookieNames().ClearSetupCookie() }
