@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -114,6 +115,13 @@ func runServer(opts options) {
 		// deadlines when the handler hijacks the connection for the upgrade.
 	}
 
+	// A gateway bound to all interfaces without TLS is the "just works on the
+	// LAN" default; on anything reachable from a public network it exposes
+	// sessions and backends in plaintext. Say so once, loudly, at startup.
+	if warn := listenExposureWarning(state.Server.Host, tlsEnabled, state.Server.TrustedProxy); warn != "" {
+		log.Printf("WARNING: %s", warn)
+	}
+
 	// Bind the listener before writing the pidfile so that a failed bind
 	// (e.g. port already in use) aborts here instead of leaving a stale pidfile.
 	listener, err := net.Listen("tcp", httpServer.Addr)
@@ -189,6 +197,21 @@ func runServer(opts options) {
 }
 
 // ---- helpers ----
+
+// listenExposureWarning returns a startup warning for the common insecure
+// exposure (all interfaces, plain HTTP, no trusted proxy in front), or "" when
+// the configuration is already safe.
+func listenExposureWarning(host string, tlsEnabled bool, trustedProxy string) string {
+	bare := strings.Trim(host, "[]")
+	ip := net.ParseIP(bare)
+	allInterfaces := host == "" || bare == "" || (ip != nil && ip.IsUnspecified())
+	if !allInterfaces || tlsEnabled || trustedProxy != "" {
+		return ""
+	}
+	return "listening on all interfaces over plain HTTP: anyone who can reach this port can read " +
+		"sessions and proxied traffic. For anything beyond a trusted LAN, terminate TLS in front " +
+		"(docs/reverse-proxy-tls.md) and set --trusted-proxy, or use --tls-selfsigned"
+}
 
 // mustAbsPath resolves a persisted file path (TLS cert/key) to an absolute one,
 // so a later restart from a different working directory still finds it.
