@@ -1,24 +1,17 @@
 package server
 
 import (
-	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
-	pathpkg "path"
 	"runtime/debug"
 	"strings"
 	"time"
 
-	qrcode "github.com/skip2/go-qrcode"
-
 	"github.com/seqyuan/goprox/internal/api"
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
-	"github.com/seqyuan/goprox/internal/files"
-	"github.com/seqyuan/goprox/internal/proxy"
 	"github.com/seqyuan/goprox/internal/rate"
 	"github.com/seqyuan/goprox/internal/web"
 )
@@ -36,6 +29,7 @@ const (
 )
 
 // Server is the main GoProx HTTP server.
+
 type Server struct {
 	state         *config.StateConfig
 	registry      *config.UserRegistry
@@ -52,6 +46,7 @@ type Server struct {
 
 // New creates a new Server from state config. configDir is where the shared
 // user configs live (configDir/users/*.yaml).
+
 func New(state *config.StateConfig, configDir string) *Server {
 	// Forwarded headers are only trusted from the configured proxy; with no
 	// trusted proxy configured, client IPs and HTTPS detection use the TCP
@@ -106,6 +101,7 @@ func New(state *config.StateConfig, configDir string) *Server {
 // currentSessionRev returns the per-account session revision derived from the
 // user's current password hash. Because the revision is embedded in session
 // tokens, changing the password revokes all previously-issued sessions.
+
 func (s *Server) currentSessionRev(username string) string {
 	if !config.IsValidUsername(username) {
 		return ""
@@ -119,6 +115,7 @@ func (s *Server) currentSessionRev(username string) string {
 
 // issueSessionCookie signs a session cookie bound to the user's current
 // password-hash revision.
+
 func (s *Server) issueSessionCookie(username string, secure bool) string {
 	return auth.SetSessionCookieWithDomain(
 		s.sessionSecret,
@@ -134,6 +131,7 @@ func (s *Server) issueSessionCookie(username string, secure bool) string {
 // configured, expires a pre-vhost host-only cookie with the same name. Without
 // this, a browser that upgraded from an older release can send both scopes and
 // the server may read the stale one.
+
 func (s *Server) setLoginSessionCookie(w http.ResponseWriter, username string, secure bool) {
 	w.Header().Set("Set-Cookie", s.issueSessionCookie(username, secure))
 	if s.cookieDomain != "" {
@@ -143,6 +141,7 @@ func (s *Server) setLoginSessionCookie(w http.ResponseWriter, username string, s
 
 // sessionFromCookies validates the session cookie, binding it to the user's
 // current password-hash revision.
+
 func (s *Server) sessionFromCookies(cookieHeader string) auth.SessionResult {
 	cookies := auth.ParseCookies(cookieHeader)
 	token := cookies[auth.SessionCookieName]
@@ -157,6 +156,7 @@ func (s *Server) sessionFromCookies(cookieHeader string) auth.SessionResult {
 }
 
 // Handler returns the HTTP handler for the server.
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -377,272 +377,6 @@ func (s *Server) Handler() http.Handler {
 // ValidateVHosts checks cross-user hostname uniqueness and the configuration
 // required to log in across service subdomains. Call it at startup before
 // serving; tests that do not use vhosts can omit it.
-func (s *Server) ValidateVHosts() error {
-	if err := s.registry.ValidateHosts(); err != nil {
-		return err
-	}
-	if !s.registry.HasHosts() {
-		return nil
-	}
-	if s.publicHost == "" {
-		return fmt.Errorf("server.public_host is required when services declare hostnames")
-	}
-	if s.cookieDomain == "" {
-		return fmt.Errorf("server.cookie_domain is required when services declare hostnames")
-	}
-	publicHost := config.HostFromHostPort(s.publicHost)
-	if target := s.registry.FindByHost(publicHost); target != nil {
-		return fmt.Errorf("server.public_host %q is also configured as a service hostname", s.publicHost)
-	}
-	if !config.HostWithinCookieDomain(publicHost, s.cookieDomain) {
-		return fmt.Errorf("server.public_host %q is not covered by cookie_domain %q", publicHost, s.cookieDomain)
-	}
-	for _, user := range s.registry.ListUsers() {
-		for _, svc := range user.Config.Services {
-			for _, host := range svc.Hostnames {
-				if !config.HostWithinCookieDomain(host, s.cookieDomain) {
-					return fmt.Errorf("service %q hostname %q is not covered by cookie_domain %q", svc.ID, host, s.cookieDomain)
-				}
-			}
-		}
-	}
-	if s.publicScheme != "https" && s.state.Server.TLSCert == "" {
-		log.Printf("[goprox] WARNING: virtual hosts are enabled without HTTPS; parent-domain session cookies will be sent over HTTP")
-	}
-	return nil
-}
-
-// publicSchemeFor returns the scheme used to build absolute login redirects.
-func (s *Server) publicSchemeFor(r *http.Request) string {
-	if s.publicScheme != "" {
-		return s.publicScheme
-	}
-	if s.state.Server.TLSCert != "" || auth.IsSecureRequest(r) {
-		return "https"
-	}
-	return "http"
-}
-
-// publicAuthority returns the main gateway authority for absolute URLs. When
-// public_host has no port, reuse the port the browser used for the service
-// host (nonstandard ports), so local/LAN deployments do not lose it.
-func (s *Server) publicAuthority(r *http.Request) string {
-	if s.publicHost == "" {
-		return ""
-	}
-	if !strings.Contains(s.publicHost, ":") {
-		if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" && port != "80" && port != "443" {
-			return net.JoinHostPort(s.publicHost, port)
-		}
-	}
-	return s.publicHost
-}
-
-// handleVirtualHost serves a request addressed to one of the configured
-// service hostnames. It returns false for unknown hosts so they fall through
-// to the existing path-based mux.
-func (s *Server) handleVirtualHost(w http.ResponseWriter, r *http.Request) bool {
-	host := config.HostFromHostPort(r.Host)
-	if host == "" {
-		return false
-	}
-	target := s.registry.FindByHost(host)
-	if target == nil || target.Service == nil {
-		return false
-	}
-
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		// Browser navigations get the main login redirect; API/XHR clients
-		// get a 401 instead of a 302 to HTML, which they cannot parse.
-		if !wantsHTML(r) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return true
-		}
-		s.redirectToMainLogin(w, r)
-		return true
-	}
-	if session.UserID != target.Username {
-		// Hide the existence of another user's vhost.
-		sendHTML(w, http.StatusNotFound, web.NotFoundPage(s.siteTitle))
-		return true
-	}
-	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-		secure := auth.IsSecureRequest(r)
-		w.Header().Add("Set-Cookie", s.issueSessionCookie(session.UserID, secure))
-	}
-	s.proxyVHost(w, r, target)
-	return true
-}
-
-// redirectToMainLogin sends an unauthenticated service-host request to the
-// main gateway login, preserving the original absolute URL for the return.
-func (s *Server) redirectToMainLogin(w http.ResponseWriter, r *http.Request) {
-	scheme := s.publicSchemeFor(r)
-	main := s.publicAuthority(r)
-	if main == "" {
-		http.Error(w, "virtual-host login is not configured", http.StatusInternalServerError)
-		return
-	}
-	next := scheme + "://" + r.Host + r.URL.RequestURI()
-	login := scheme + "://" + main + "/login?next=" + url.QueryEscape(next)
-	if s.cookieDomain != "" {
-		// Drop a stale host-only session cookie on this service host; the
-		// parent-domain cookie is unaffected.
-		w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
-	}
-	http.Redirect(w, r, login, http.StatusFound)
-}
-
-// proxyVHost forwards a request to a service that owns its hostname. The
-// backend receives the browser path unchanged; no route cookies or /proxy
-// prefix rewriting are involved.
-func (s *Server) proxyVHost(w http.ResponseWriter, r *http.Request, target *config.HostTarget) {
-	if isWebSocketUpgrade(r) && !target.Service.WebSocket {
-		http.Error(w, "WebSocket not enabled for this service", http.StatusForbidden)
-		return
-	}
-	fc := proxy.BuildProxyForwardContext(r, target.Username, target.Service.Path, false)
-	fc.SSO = s.state.SSO
-	fc.Mode = proxy.ForwardVHost
-	fc.Base = proxy.BaseForPath("", r.URL.Path)
-	s.forwardToBackend(w, r, target.Service, fc)
-}
-
-// handleBackendLogin detects POST /login from a proxied backend (e.g. Jupyter login form).
-// If the user already has a valid session and the Referer or route cookie points to a
-// backend service, the request is forwarded there instead of being handled by goprox.
-func (s *Server) handleBackendLogin(w http.ResponseWriter, r *http.Request) bool {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		return false
-	}
-
-	// Try to find target service from referer or route cookie
-	match := s.findBackendService(r, session.UserID)
-	if match == nil {
-		return false
-	}
-
-	// Improved detection: check if this is a GoProx login vs backend login
-	ct := r.Header.Get("Content-Type")
-	referer := r.Header.Get("Referer")
-
-	// GoProx login characteristics:
-	// 1. Path is exactly /login (not /proxy/.../login)
-	// 2. Referer is not inside a proxied service
-	// 3. Content-Type is form data
-	// (Origin is already enforced by the caller's SameOriginRequest guard;
-	// a browser Origin never contains a path, so testing it here was a no-op.)
-	isGoProxLogin := r.URL.Path == "/login" &&
-		strings.Contains(ct, "application/x-www-form-urlencoded") &&
-		!strings.Contains(referer, "/proxy/")
-
-	if isGoProxLogin {
-		// Let GoProx handle this login
-		return false
-	}
-
-	// This appears to be a backend service login form, forward it
-	s.forwardAsIs(w, r, match)
-	return true
-}
-
-// findBackendService tries to locate the target service from Referer or route cookie.
-func (s *Server) findBackendService(r *http.Request, username string) *config.ServiceMatch {
-	// Referer is the strongest signal for backend-originated login posts, but
-	// only when it comes from this same gateway authority: an external page
-	// controls its own path and must not choose a backend.
-	refPath := s.refererPath(r)
-	if refPath != "" {
-		if match := s.matchRouteForUser(refPath, username); match != nil {
-			return match
-		}
-	}
-
-	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, refPath)
-	if route == "" {
-		return nil
-	}
-	return s.matchRouteForUser(route, username)
-}
-
-func (s *Server) matchRouteForUser(route, username string) *config.ServiceMatch {
-	match := s.registry.FindService(route)
-	if match == nil {
-		match = s.registry.FindLegacyService(route, username)
-	}
-	if match == nil {
-		return nil
-	}
-	pathUser := config.UsernameFromProxyPath(route)
-	if pathUser != "" && pathUser != username {
-		return nil
-	}
-	return match
-}
-
-func (s *Server) handleProxyEscape(w http.ResponseWriter, r *http.Request) bool {
-	// When a user lands on /?xxx (e.g. /?refresh=1) after escaping the proxy
-	// prefix, redirect them back to the correct proxy URL via the route cookie.
-	if r.URL.RawQuery == "" {
-		return false
-	}
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		return false
-	}
-	route := auth.GetRouteCookieForRequest(
-		r.Header.Get("Cookie"), "", s.refererPath(r),
-	)
-	if route == "" || !strings.HasPrefix(route, "/proxy/"+session.UserID+"/") {
-		return false
-	}
-	target := route
-	if !strings.HasSuffix(target, "/") {
-		target += "/"
-	}
-	target += "?" + r.URL.RawQuery
-	http.Redirect(w, r, target, http.StatusFound)
-	return true
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead:
-		// Never change state on GET: a cross-site link/image must not be able
-		// to log the user out. Show a confirmation form instead.
-		sendHTML(w, http.StatusOK, web.LogoutConfirmPage(s.siteTitle))
-		return
-	case http.MethodPost:
-		if !auth.SameOriginRequest(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-	default:
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Set-Cookie", auth.ClearSessionCookieWithDomain(s.cookieDomain))
-	// A pre-vhost (or pre-cookie-domain) host-only session cookie can coexist
-	// with the parent-domain one. Clearing only the Domain variant leaves that
-	// host-only cookie valid, so logout would not actually log the user out.
-	if s.cookieDomain != "" {
-		w.Header().Add("Set-Cookie", auth.ClearSessionCookie())
-	}
-	// Temporary 2FA state must not survive logout (the setup cookie also
-	// carries a plaintext pending TOTP secret).
-	w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
-	w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
-	// Route cookies outlive the session and would keep forwarding bare paths to
-	// backends after logout; clear every one the browser holds.
-	for _, c := range auth.ClearRouteCookies(r.Header.Get("Cookie")) {
-		w.Header().Add("Set-Cookie", c)
-	}
-	http.Redirect(w, r, "/", http.StatusFound)
-}
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	session := s.sessionFromCookies(r.Header.Get("Cookie"))
@@ -670,855 +404,6 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	next := r.URL.Query().Get("next")
-	// Pre-auth we only require that an absolute target is one of the
-	// configured service hosts; the post-auth check narrows it to the user.
-	if !s.validLoginNext(r, next, "") {
-		next = ""
-	}
-	sendHTML(w, 200, web.LoginPage(s.siteTitle, "", next))
-}
-
-// validLoginNext restricts post-login redirects to in-site proxy URLs or a
-// service hostname, preventing open-redirect abuse. With username == "" it
-// only checks that an absolute target is a configured vhost; with a username
-// it also requires that the vhost belongs to that user.
-func (s *Server) validLoginNext(r *http.Request, next, username string) bool {
-	if next == "" {
-		return false
-	}
-	if len(next) > 4096 || strings.ContainsAny(next, "\r\n") {
-		return false
-	}
-	if strings.HasPrefix(next, "/proxy/") && !strings.HasPrefix(next, "//") {
-		return true
-	}
-	u, err := url.Parse(next)
-	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
-		return false
-	}
-	if u.Scheme != s.publicSchemeFor(r) {
-		return false
-	}
-	target := s.registry.FindByHost(config.HostFromHostPort(u.Host))
-	if target == nil {
-		return false
-	}
-	if username != "" && target.Username != username {
-		return false
-	}
-	// Do not allow the login redirect to switch ports. The public authority
-	// is authoritative: when it has a non-default port, next must carry it;
-	// when it has no port, next may only use the scheme's default port.
-	expectedPort := ""
-	if _, p, err := net.SplitHostPort(s.publicAuthority(r)); err == nil {
-		expectedPort = p
-	}
-	nextPort := u.Port()
-	if expectedPort != "" {
-		if nextPort == "" {
-			if !((u.Scheme == "http" && expectedPort == "80") || (u.Scheme == "https" && expectedPort == "443")) {
-				return false
-			}
-		} else if nextPort != expectedPort {
-			return false
-		}
-	} else if nextPort != "" {
-		if !((u.Scheme == "http" && nextPort == "80") || (u.Scheme == "https" && nextPort == "443")) {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	// Parse the form before rate limiting: the limit key combines the client
-	// IP with the submitted username so a shared-NAT office/lab does not lock
-	// out everyone on one user's typos, and an attacker cannot freeze a whole
-	// subnet by flooding failures.
-	if err := r.ParseForm(); err != nil {
-		sendHTML(w, 500, web.LoginPage(s.siteTitle, "登录请求处理失败", ""))
-		return
-	}
-
-	ip := auth.ClientIP(r)
-	username := strings.TrimSpace(r.FormValue("username"))
-	// Username matching is case-sensitive, but rate limiting deliberately is
-	// not, so "Alice" and "alice" share a failure budget.
-	rateKey := ip + "|" + strings.ToLower(username)
-
-	if s.loginLimiter.IsBlocked(rateKey) {
-		sendHTML(w, 429, web.LoginPage(s.siteTitle, "登录尝试过多，请 15 分钟后再试", ""))
-		return
-	}
-
-	password := r.FormValue("password")
-	next := r.FormValue("next")
-	// Drop malformed input before reflecting it back on a failed login; the
-	// post-auth check below narrows a valid vhost target to this user.
-	if !s.validLoginNext(r, next, "") {
-		next = ""
-	}
-
-	if !config.IsValidUsername(username) || password == "" {
-		s.loginLimiter.RecordFailure(rateKey)
-		sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
-		return
-	}
-
-	userConfig := s.registry.GetUserConfigForLogin(username)
-	passwordHash := ""
-	if userConfig != nil {
-		passwordHash = userConfig.Auth.PasswordHash
-	}
-	// Timing-safe verify: even for unknown usernames a bcrypt comparison runs,
-	// so login latency cannot be used to enumerate valid accounts.
-	if auth.VerifyPasswordTimingSafe(password, passwordHash) {
-		s.loginLimiter.Reset(rateKey)
-		secure := auth.IsSecureRequest(r)
-		if !s.validLoginNext(r, next, username) {
-			next = "/"
-		}
-		// Migrate a pre-bcrypt hash now that we have the plaintext: the account
-		// stays usable and the weak hash disappears on the next login. The
-		// session revision is derived from the hash, so every token issued
-		// below must use the upgraded one.
-		passwordHash = s.upgradePasswordHash(username, password, passwordHash)
-		// Account has TOTP enabled: hold at the second factor before issuing
-		// a real session.
-		if userConfig != nil && userConfig.Auth.TOTPSecret != "" {
-			rev := auth.SessionRev(passwordHash)
-			w.Header().Set("Set-Cookie", auth.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, rev, secure))
-			http.Redirect(w, r, "/login/2fa?next="+url.QueryEscape(next), http.StatusFound)
-			return
-		}
-		s.setLoginSessionCookie(w, username, secure)
-		http.Redirect(w, r, next, http.StatusFound)
-		return
-	}
-
-	s.loginLimiter.RecordFailure(rateKey)
-	sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
-}
-
-// upgradePasswordHash rewrites a legacy (pre-bcrypt) password hash after a
-// successful login, so existing accounts migrate without a forced reset. It
-// returns the hash that is now authoritative: the upgraded one on success, or
-// the original when the write fails (read-only config) or the hash was already
-// bcrypt.
-func (s *Server) upgradePasswordHash(username, password, current string) string {
-	if !auth.IsLegacyHash(current) {
-		return current
-	}
-	user := s.registry.GetUser(username)
-	if user == nil {
-		return current
-	}
-	upgraded := auth.HashPassword(password)
-	if err := config.UpdatePasswordHash(user.ConfigPath, upgraded); err != nil {
-		// Keep the session flow working: verification already succeeded, so a
-		// read-only config must not block the login.
-		log.Printf("[goprox] password hash upgrade for %s failed: %v", username, err)
-		return current
-	}
-	log.Printf("[goprox] password hash for %s upgraded to bcrypt", username)
-	// Reload so the session-revision cache (mtime/size keyed) sees the new hash
-	// before any cookie is issued.
-	s.registry.Reload()
-	return upgraded
-}
-
-// ---- two-factor authentication (TOTP) ----
-
-// handleTwoFA serves the second login step: GET renders the code form (only
-// when a valid pending token exists); POST verifies the code.
-func (s *Server) handleTwoFA(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "POST" {
-		if !auth.SameOriginRequest(r) {
-			sendHTML(w, 403, web.TwoFAPage(s.siteTitle, "请求被拒绝", ""))
-			return
-		}
-		s.handleTwoFAPost(w, r)
-		return
-	}
-
-	userID, ok := s.pendingTwoFAUser(r.Header.Get("Cookie"))
-	if !ok || userID == "" {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	next := r.URL.Query().Get("next")
-	if !s.validLoginNext(r, next, userID) {
-		next = ""
-	}
-	sendHTML(w, 200, web.TwoFAPage(s.siteTitle, "", next))
-}
-
-// pendingTwoFAUser validates the pending-2FA cookie against the account's
-// current password revision. A password reset therefore invalidates an
-// in-flight password step, not only already-issued sessions.
-func (s *Server) pendingTwoFAUser(cookieHeader string) (string, bool) {
-	token := auth.ParseCookies(cookieHeader)[auth.TOTACookieName]
-	if token == "" {
-		return "", false
-	}
-	userID, err := auth.PendingTokenUser(token)
-	if err != nil || !config.IsValidUsername(userID) {
-		return "", false
-	}
-	return auth.ValidatePendingToken(token, s.sessionSecret, s.currentSessionRev(userID))
-}
-
-func (s *Server) handleTwoFAPost(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		sendHTML(w, 500, web.TwoFAPage(s.siteTitle, "请求处理失败", ""))
-		return
-	}
-
-	userID, ok := s.pendingTwoFAUser(r.Header.Get("Cookie"))
-	if !ok || userID == "" {
-		// Pending token missing/expired: back to the password step.
-		next := r.FormValue("next")
-		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
-		return
-	}
-	next := r.FormValue("next")
-	if !s.validLoginNext(r, next, userID) {
-		next = ""
-	}
-
-	ip := auth.ClientIP(r)
-	rateKey := ip + "|2fa|" + strings.ToLower(userID)
-	if s.totpLimiter.IsBlocked(rateKey) {
-		sendHTML(w, 429, web.TwoFAPage(s.siteTitle, "验证尝试过多，请 15 分钟后再试", next))
-		return
-	}
-
-	uc := s.registry.GetUserConfigForLogin(userID)
-	if uc == nil || uc.Auth.TOTPSecret == "" {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-
-	code := strings.TrimSpace(r.FormValue("code"))
-	if !auth.VerifyTOTP(uc.Auth.TOTPSecret, code, time.Now()) {
-		s.totpLimiter.RecordFailure(rateKey)
-		sendHTML(w, 401, web.TwoFAPage(s.siteTitle, "动态码错误或已过期", next))
-		return
-	}
-
-	s.totpLimiter.Reset(rateKey)
-	secure := auth.IsSecureRequest(r)
-	s.setLoginSessionCookie(w, userID, secure)
-	w.Header().Add("Set-Cookie", auth.ClearPendingCookie())
-	if next == "" {
-		next = "/"
-	}
-	http.Redirect(w, r, next, http.StatusFound)
-}
-
-// handleTwoFASetup enrolls (or rotates) TOTP for the logged-in user.
-func (s *Server) handleTwoFASetup(w http.ResponseWriter, r *http.Request) {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-
-	if r.Method == "POST" {
-		if !auth.SameOriginRequest(r) {
-			sendHTML(w, 403, web.TwoFASetupPage(s.siteTitle, "请求被拒绝", "", s.twoFAEnabled(session.UserID)))
-			return
-		}
-		s.handleTwoFASetupPost(w, r, session.UserID)
-		return
-	}
-
-	enabled := s.twoFAEnabled(session.UserID)
-	secret, err := auth.GenerateTOTPSecret()
-	if err != nil {
-		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "生成密钥失败", "", enabled))
-		return
-	}
-	secure := auth.IsSecureRequest(r)
-	w.Header().Set("Set-Cookie", auth.SetSetupCookie(session.UserID, secret, s.sessionSecret, pendingTTLSeconds, secure))
-	sendHTML(w, 200, web.TwoFASetupPage(s.siteTitle, "", secret, enabled))
-}
-
-func (s *Server) handleTwoFASetupPost(w http.ResponseWriter, r *http.Request, username string) {
-	enabled := s.twoFAEnabled(username)
-	if err := r.ParseForm(); err != nil {
-		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "请求处理失败", "", enabled))
-		return
-	}
-
-	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	setupUser, secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
-	if !ok || setupUser != username {
-		sendHTML(w, 401, web.TwoFASetupPage(s.siteTitle, "设置会话已过期，请重新开始", "", enabled))
-		return
-	}
-
-	code := strings.TrimSpace(r.FormValue("code"))
-	if !auth.VerifyTOTP(secret, code, time.Now()) {
-		sendHTML(w, 401, web.TwoFASetupPage(s.siteTitle, "动态码错误或已过期，请重试", secret, enabled))
-		return
-	}
-
-	user := s.registry.GetUser(username)
-	if user == nil {
-		sendHTML(w, 404, web.NotFoundPage(s.siteTitle))
-		return
-	}
-	if err := config.UpdateTOTPSecret(user.ConfigPath, secret); err != nil {
-		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "保存失败：配置文件不可写", secret, enabled))
-		return
-	}
-	s.registry.Reload()
-	w.Header().Add("Set-Cookie", auth.ClearSetupCookie())
-	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-// twoFAEnabled reports whether the user has a TOTP secret configured.
-func (s *Server) twoFAEnabled(username string) bool {
-	user := s.registry.GetUser(username)
-	return user != nil && user.Config.Auth.TOTPSecret != ""
-}
-
-// handleTwoFAQr renders the provisioning QR code for the pending setup secret.
-func (s *Server) handleTwoFAQr(w http.ResponseWriter, r *http.Request) {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
-	setupUser, secret, ok := auth.ValidateSetupToken(cookies[auth.TOTASetupCookie], s.sessionSecret)
-	if !ok || setupUser != session.UserID {
-		http.Error(w, "invalid setup", http.StatusBadRequest)
-		return
-	}
-	png, err := qrcode.Encode(auth.TOTPURI(session.UserID, secret), qrcode.Medium, 256)
-	if err != nil {
-		http.Error(w, "qr error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write(png)
-}
-
-// handleTwoFADisable turns off TOTP for the logged-in user.
-func (s *Server) handleTwoFADisable(w http.ResponseWriter, r *http.Request) {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	if r.Method != "POST" {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-	if !auth.SameOriginRequest(r) {
-		sendHTML(w, 403, web.NotFoundPage(s.siteTitle))
-		return
-	}
-
-	user := s.registry.GetUser(session.UserID)
-	if user == nil {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-	if err := config.UpdateTOTPSecret(user.ConfigPath, ""); err != nil {
-		sendHTML(w, 500, web.LoginPage(s.siteTitle, "关闭失败：配置文件不可写", ""))
-		return
-	}
-	s.registry.Reload()
-	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		// Send the unauthenticated user to the login page and remember where
-		// they were headed so they land back on their service after login.
-		next := r.URL.RequestURI()
-		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
-		return
-	}
-
-	// Refresh session if needed
-	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-		secure := auth.IsSecureRequest(r)
-		cookie := s.issueSessionCookie(session.UserID, secure)
-		w.Header().Add("Set-Cookie", cookie)
-	}
-
-	path := r.URL.Path
-
-	// Try multi-user path: /proxy/{user}/{service}/...
-	multiMatch := s.registry.FindService(path)
-	if multiMatch != nil {
-		pathUser := config.UsernameFromProxyPath(path)
-		if pathUser == "" || pathUser != session.UserID {
-			// Match vhost behavior: hide other users' services instead of
-			// returning 403, which would confirm that the path exists.
-			sendHTML(w, http.StatusNotFound, web.NotFoundPage(s.siteTitle))
-			return
-		}
-		s.proxyRequest(w, r, multiMatch)
-		return
-	}
-
-	// Try legacy path
-	legacyMatch := s.registry.FindLegacyService(path, session.UserID)
-	if legacyMatch == nil {
-		sendHTML(w, 404, web.NotFoundPage(s.siteTitle))
-		return
-	}
-
-	s.proxyRequest(w, r, legacyMatch)
-}
-
-// proxyRequest forwards a direct /proxy/{user}/{service}/... request, rewriting the path.
-func (s *Server) proxyRequest(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
-	// Check WebSocket upgrade requests
-	if isWebSocketUpgrade(r) && !match.Service.WebSocket {
-		http.Error(w, "WebSocket not enabled for this service", http.StatusForbidden)
-		return
-	}
-
-	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
-	forwardCtx.SSO = s.state.SSO
-	// The injected <base> must point at the directory of the actual document
-	// (e.g. /proxy/user/svc/report/page.html -> /proxy/user/svc/report/), not
-	// the service prefix, so relative links in plain HTML files in
-	// subdirectories resolve correctly.
-	forwardCtx.Base = proxy.BaseForPath(forwardCtx.Prefix, match.RemainingPath)
-	setRouteCookies(w, r, forwardCtx.Prefix)
-	r.URL.Path = match.RemainingPath
-	s.forwardToBackend(w, r, match.Service, forwardCtx)
-}
-
-// forwardAsIs forwards a request to the backend keeping the current request path intact.
-// Used for referer-based, route-cookie-based, and backend-login routing.
-func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *config.ServiceMatch) {
-	// Check WebSocket upgrade requests
-	if isWebSocketUpgrade(r) && !match.Service.WebSocket {
-		http.Error(w, "WebSocket not enabled for this service", http.StatusForbidden)
-		return
-	}
-
-	forwardCtx := proxy.BuildProxyForwardContext(r, match.Username, match.Service.Path, match.Legacy)
-	forwardCtx.SSO = s.state.SSO
-	forwardCtx.Mode = proxy.ForwardAsIs
-	// As-is forwarding (default_service, Referer, route cookie) keeps the
-	// browser path unchanged, so relative links must resolve against that
-	// path, not the canonical /proxy/... prefix. Otherwise a page such as
-	// /vault/project-db that uses ../_app/... would request
-	// /proxy/<user>/_app/... and miss the service. Canonical /proxy/...
-	// requests never reach forwardAsIs; proxyRequest computes their base
-	// from the service prefix.
-	if !strings.HasPrefix(r.URL.Path, "/proxy/") {
-		forwardCtx.Base = proxy.BaseForPath("", r.URL.Path)
-	}
-	setRouteCookies(w, r, forwardCtx.Prefix)
-	s.forwardToBackend(w, r, match.Service, forwardCtx)
-}
-
-func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
-	// A kind:"files" service has no backend: the gateway serves the configured
-	// directory itself (read-only listing, file download, zip export).
-	if svc.Kind == config.ServiceKindFiles {
-		s.serveFilesService(w, r, svc, fc)
-		return
-	}
-	// Go's http.Server.ReadTimeout caps the whole request body, which would
-	// abort any upload taking longer than 60s. For proxied requests reset the
-	// deadline to an idle timeout before every body read: a continuously
-	// uploading client is not cut off, while a stalled upload still fails.
-	if r.Body != nil && r.Body != http.NoBody {
-		r.Body = &idleReadBody{
-			ReadCloser: r.Body,
-			rc:         http.NewResponseController(w),
-			timeout:    proxyBodyIdleTimeout,
-		}
-	}
-
-	rp := proxy.NewReverseProxy(svc, fc)
-	rp.Transport = s.transport
-	// Go's ReverseProxy logs body-copy errors ("unexpected EOF") through its
-	// internal logger whenever the client disconnects mid-stream (SSE tab
-	// close, navigation). Those are expected, not outages, and meaningful
-	// failures are already logged by ErrorHandler below, so silence the
-	// standard-library noise.
-	rp.ErrorLog = log.New(io.Discard, "", 0)
-	// Add error handler: log the full error server-side, reply generically so
-	// backend host/port details are not leaked to clients.
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// The client went away (tab closed / navigation during a stream); the
-		// connection is dead, so there is nothing to write and the "context
-		// canceled" error is expected, not an outage.
-		if r.Context().Err() != nil {
-			return
-		}
-		log.Printf("[goprox] proxy error: service=%s, path=%s, error=%v", svc.ID, r.URL.Path, err)
-		switch {
-		case strings.Contains(err.Error(), "connection refused"):
-			http.Error(w, "Service unavailable: backend not responding", http.StatusBadGateway)
-		case strings.Contains(err.Error(), "timeout"):
-			http.Error(w, "Service timeout: backend took too long to respond", http.StatusGatewayTimeout)
-		default:
-			http.Error(w, "Proxy error", http.StatusBadGateway)
-		}
-	}
-	rp.ServeHTTP(w, r)
-}
-
-// serveFilesService answers a request for a kind:"files" service from the
-// local filesystem. The service owner (the session user) is already enforced by
-// the routing that got here; the path itself is confined to Root by the files
-// package (os.Root: no "..", no root-escaping symlinks).
-func (s *Server) serveFilesService(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
-	// The browser-visible prefix the listing's links must be built from: the
-	// canonical /proxy/<user>/<svc> in prefix mode, the host root otherwise
-	// (vhost and bare-path as-is routing both live at the gateway root).
-	base := ""
-	rel := r.URL.Path
-	if fc.Mode == proxy.ForwardPrefix {
-		base = fc.Prefix
-	} else if svc.Path != "" && svc.Path != "/" {
-		// A bare request that arrived with the service path attached (typed
-		// URL, or a root-absolute link from a proxied page) still maps onto the
-		// directory root rather than into a subdirectory named like the path.
-		if r.URL.Path == svc.Path || strings.HasPrefix(r.URL.Path, svc.Path+"/") {
-			rel = strings.TrimPrefix(r.URL.Path, svc.Path)
-		}
-	}
-	files.Serve(w, r, files.Options{
-		Root:       svc.Root,
-		RelPath:    rel,
-		LinkBase:   base,
-		ShowHidden: svc.ShowHidden,
-		Name:       svc.Name,
-		BWLimit:    svc.BWLimit,
-	})
-}
-
-func (s *Server) handleRefererProxy(w http.ResponseWriter, r *http.Request) bool {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		return false
-	}
-
-	// Refresh session if needed
-	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-		secure := auth.IsSecureRequest(r)
-		cookie := s.issueSessionCookie(session.UserID, secure)
-		w.Header().Add("Set-Cookie", cookie)
-	}
-
-	referer := r.Header.Get("Referer")
-	if referer == "" {
-		return false
-	}
-
-	// Extract the path only when the Referer belongs to this gateway authority.
-	refPath := s.refererPath(r)
-	if refPath == "" {
-		return false
-	}
-
-	match := s.registry.FindService(refPath)
-	if match == nil {
-		match = s.registry.FindLegacyService(refPath, session.UserID)
-	}
-	if match == nil {
-		return false
-	}
-
-	// Verify user matches
-	pathUser := config.UsernameFromProxyPath(refPath)
-	if pathUser != "" && pathUser != session.UserID {
-		return false
-	}
-
-	s.forwardAsIs(w, r, match)
-	return true
-}
-
-func (s *Server) handleRouteCookieProxy(w http.ResponseWriter, r *http.Request) bool {
-	route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
-	if route == "" {
-		return false
-	}
-
-	// Route cookies are context hints, not credentials: without a valid
-	// session they must never grant backend access (the session may have
-	// expired or the user may have logged out).
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		next := r.URL.RequestURI()
-		http.Redirect(w, r, "/login?next="+url.QueryEscape(next), http.StatusFound)
-		return true
-	}
-
-	// Refresh session if needed
-	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-		secure := auth.IsSecureRequest(r)
-		cookie := s.issueSessionCookie(session.UserID, secure)
-		w.Header().Add("Set-Cookie", cookie)
-	}
-
-	match := s.registry.FindService(route)
-	if match == nil {
-		match = s.registry.FindLegacyService(route, session.UserID)
-	}
-	if match == nil {
-		return false
-	}
-
-	pathUser := config.UsernameFromProxyPath(route)
-	if pathUser != "" && pathUser != session.UserID {
-		return false
-	}
-
-	s.forwardAsIs(w, r, match)
-	return true
-}
-
-// handleDefaultServiceProxy forwards unclaimed bare gateway paths to the
-// user's configured default service (DefaultService), so root-routed SPAs
-// (Nuxt / Next / Vite client routers, which match window.location.pathname
-// against root routes and cannot understand a /proxy/<user>/ prefix) work at
-// the gateway root with zero app-side basePath/baseURL changes. It runs only
-// after route-cookie and Referer forwarding have failed; forwardAsIs stamps
-// the route cookies that keep subsequent sub-resource requests on the same
-// service. Without a valid session the request falls through to the 404.
-func (s *Server) handleDefaultServiceProxy(w http.ResponseWriter, r *http.Request) bool {
-	return s.forwardToDefaultService(w, r)
-}
-
-// handleDefaultServicePage deterministically routes page-like bare paths
-// (SPA views like /dashboard, not assets or API calls) to the user's default
-// service, before Referer / route-cookie forwarding. This makes root-based
-// SPA navigation stable regardless of which other services were visited most
-// recently; resource-like paths are left to the Referer/route-cookie chain so
-// they stick to the page that issued them.
-func (s *Server) handleDefaultServicePage(w http.ResponseWriter, r *http.Request) bool {
-	if !barePathIsPage(r.URL.Path) {
-		return false
-	}
-	return s.forwardToDefaultService(w, r)
-}
-
-func (s *Server) forwardToDefaultService(w http.ResponseWriter, r *http.Request) bool {
-	session := s.sessionFromCookies(r.Header.Get("Cookie"))
-	if !session.Valid || session.UserID == "" {
-		return false
-	}
-	user := s.registry.GetUser(session.UserID)
-	if user == nil || user.Config.DefaultService == "" {
-		return false
-	}
-	svc := config.ServiceByID(user.Config.Services, user.Config.DefaultService)
-	if svc == nil {
-		return false
-	}
-	// Keep default-service page navigations on the same sliding-session policy
-	// as dashboard/proxy/API requests; otherwise a root-routed SPA that only
-	// makes page-like requests can expire while actively in use.
-	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-		w.Header().Add("Set-Cookie", s.issueSessionCookie(session.UserID, auth.IsSecureRequest(r)))
-	}
-	match := &config.ServiceMatch{
-		Username:      session.UserID,
-		Service:       svc,
-		RemainingPath: r.URL.Path,
-	}
-	s.forwardAsIs(w, r, match)
-	return true
-}
-
-// barePathIsPage reports whether an unclaimed bare gateway path looks like a
-// page navigation (a client-routed SPA view) rather than a static asset or
-// API call. Page-like paths are routed to the user's default service
-// deterministically; resource-like paths (segments with file extensions, or
-// paths under known asset/API roots) fall back to Referer / route-cookie
-// forwarding so they follow the page that requested them.
-func barePathIsPage(p string) bool {
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		p = p[:i]
-	}
-	lower := strings.ToLower(p)
-	for _, seg := range strings.Split(lower, "/") {
-		if i := strings.LastIndexByte(seg, '.'); i > 0 && i < len(seg)-1 {
-			return false
-		}
-	}
-	for _, root := range []string{
-		"/api/", "/plugins/", "/_nuxt/", "/_next/", "/assets/", "/static/",
-		"/vendors/", "/files/", "/favicon.", "/manifest.webmanifest",
-	} {
-		if strings.HasPrefix(lower, root) {
-			return false
-		}
-	}
-	return true
-}
-
-// bestBareService returns the user's service whose frontend path is the
-// longest prefix of path, or nil when path does not belong to a service path.
-func (s *Server) bestBareService(username, path string) *config.ServiceConfig {
-	user := s.registry.GetUser(username)
-	if user == nil {
-		return nil
-	}
-
-	var bestSvc *config.ServiceConfig
-	bestLen := -1
-	for i := range user.Config.Services {
-		svc := &user.Config.Services[i]
-		if path == svc.Path || strings.HasPrefix(path, svc.Path+"/") {
-			if len(svc.Path) > bestLen {
-				bestLen = len(svc.Path)
-				bestSvc = svc
-			}
-		}
-	}
-	return bestSvc
-}
-
-// forwardBareService proxies a non-GET bare request directly to the service
-// that owns the path. A redirect (used for GET) would lose the method/body, so
-// strip the service prefix and forward instead.
-func (s *Server) forwardBareService(w http.ResponseWriter, r *http.Request, username string) bool {
-	svc := s.bestBareService(username, r.URL.Path)
-	if svc == nil {
-		return false
-	}
-	remaining := r.URL.Path[len(svc.Path):]
-	if remaining == "" {
-		remaining = "/"
-	}
-	s.proxyRequest(w, r, &config.ServiceMatch{
-		Username:      username,
-		Service:       svc,
-		RemainingPath: remaining,
-	})
-	return true
-}
-
-func (s *Server) redirectBareService(w http.ResponseWriter, r *http.Request, username string) bool {
-	bestSvc := s.bestBareService(username, r.URL.Path)
-	if bestSvc == nil {
-		return false
-	}
-
-	rest := r.URL.Path[len(bestSvc.Path):]
-	query := ""
-	if r.URL.RawQuery != "" {
-		query = "?" + r.URL.RawQuery
-	}
-	http.Redirect(w, r, "/proxy/"+username+bestSvc.Path+rest+query, http.StatusFound)
-	return true
-}
-
-// isPassiveSubresource reports whether this is an image/favicon load. Such
-// requests are issued by the dashboard for every card and must not update the
-// global "most recently visited service" marker: otherwise the root-absolute /
-// default-service fallback would point at whichever favicon loaded last.
-func isPassiveSubresource(r *http.Request) bool {
-	if strings.EqualFold(r.Header.Get("Sec-Fetch-Dest"), "image") {
-		return true
-	}
-	return strings.HasPrefix(strings.ToLower(pathpkg.Base(r.URL.Path)), "favicon.")
-}
-
-// setRouteCookies writes the per-service route cookie on every proxied
-// response, and the global recent-service cookie only for real page/API
-// traffic (not passive image/favicon subresources).
-func setRouteCookies(w http.ResponseWriter, r *http.Request, prefix string) {
-	cookies := auth.SetRouteCookies(prefix)
-	if isPassiveSubresource(r) {
-		// SetRouteCookies returns [per-service, global]; keep only the former.
-		cookies = cookies[:1]
-	}
-	for _, c := range cookies {
-		w.Header().Add("Set-Cookie", c)
-	}
-}
-
-// handleRootAbsoluteService routes a bare request back to a service that opted
-// into root_absolute. Such apps emit root-absolute URLs (/docs/, /static/...)
-// while being hosted under /proxy/<user>/<service>/; the current page
-// (Referer) is the most precise owner, with the route cookie as a fallback for
-// reloads/bookmarks after a previous visit.
-//
-// It runs before default_service page routing so an explicit opt-in can
-// override default_service. Requests that match a service path are left alone;
-// redirectBareService/default routing keeps their existing semantics.
-func (s *Server) handleRootAbsoluteService(w http.ResponseWriter, r *http.Request, session auth.SessionResult) bool {
-	if s.bestBareService(session.UserID, r.URL.Path) != nil {
-		return false
-	}
-
-	match, canonicalReferer := s.matchRootAbsoluteReferer(r, session.UserID)
-	if match == nil && !canonicalReferer {
-		// No canonical /proxy/... page identified by Referer: a reload or
-		// bookmark can still use the most recent route cookie.
-		route := auth.GetRouteCookieForRequest(r.Header.Get("Cookie"), r.URL.Path, r.Header.Get("Referer"))
-		if route != "" {
-			match = s.matchRouteForUser(route, session.UserID)
-		}
-	}
-	if match == nil || !match.Service.RootAbsolute {
-		return false
-	}
-
-	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
-		secure := auth.IsSecureRequest(r)
-		w.Header().Add("Set-Cookie", s.issueSessionCookie(session.UserID, secure))
-	}
-	s.forwardAsIs(w, r, match)
-	return true
-}
-
-// matchRootAbsoluteReferer resolves the current page's service from the
-// Referer. The bool reports whether the Referer is a canonical /proxy/...
-// path (whether or not it points at a root_absolute service): a canonical
-// referer is authoritative, so a stale route cookie must not override it.
-func (s *Server) matchRootAbsoluteReferer(r *http.Request, username string) (*config.ServiceMatch, bool) {
-	refPath := s.refererPath(r)
-	if refPath == "" {
-		return nil, false
-	}
-	if !strings.HasPrefix(refPath, "/proxy/") {
-		// Bare/external referer: no canonical page identity, so the caller
-		// may fall back to the route cookie.
-		return nil, false
-	}
-	match := s.registry.FindServiceForUser(refPath, username)
-	if match == nil {
-		// Canonical proxy path with no matching service (deleted/unknown):
-		// authoritative, but not ours.
-		return nil, true
-	}
-	if match.Username != username {
-		// Another user's canonical page: authoritative, but not ours.
-		return nil, true
-	}
-	if match.Service.RootAbsolute {
-		return match, true
-	}
-	// Canonical page of a non-flagged service: do not let a stale route
-	// cookie for a different service steal its bare paths.
-	return nil, true
-}
-
-// wantsHTML reports whether the request looks like a browser document
-// navigation (Accept: text/html), as opposed to an XHR/fetch/API call.
 func wantsHTML(r *http.Request) bool {
 	if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
 		return true
@@ -1531,6 +416,7 @@ func wantsHTML(r *http.Request) bool {
 // external page's URL is attacker-controlled, so it must never be used to
 // choose a backend (a cross-site link/Referer could otherwise drive an
 // authenticated bare-path request into any proxied service).
+
 func (s *Server) refererPath(r *http.Request) string {
 	referer := r.Header.Get("Referer")
 	if referer == "" {
@@ -1547,6 +433,7 @@ func (s *Server) refererPath(r *http.Request) string {
 }
 
 // ScanLoop periodically reloads the user registry.
+
 func (s *Server) ScanLoop(interval time.Duration, stop <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1568,11 +455,13 @@ func (s *Server) ScanLoop(interval time.Duration, stop <-chan struct{}) {
 }
 
 // UserCount returns the number of loaded users.
+
 func (s *Server) UserCount() int {
 	return len(s.registry.ListUsers())
 }
 
 // ServiceCount returns the number of loaded services across all users.
+
 func (s *Server) ServiceCount() int {
 	n := 0
 	for _, user := range s.registry.ListUsers() {
@@ -1582,6 +471,7 @@ func (s *Server) ServiceCount() int {
 }
 
 // HostEntries returns the routable virtual-host index for diagnostics.
+
 func (s *Server) HostEntries() []config.HostEntry {
 	return s.registry.HostEntries()
 }
@@ -1590,6 +480,7 @@ func (s *Server) HostEntries() []config.HostEntry {
 // long upload is bounded by idle time between chunks, not by the total request
 // duration. SetReadDeadline errors (e.g. HTTP/2 or a test ResponseRecorder)
 // are ignored; the original deadline still applies in that case.
+
 type idleReadBody struct {
 	io.ReadCloser
 	rc      *http.ResponseController
@@ -1616,6 +507,7 @@ func sendHTML(w http.ResponseWriter, status int, html string) {
 }
 
 // isWebSocketUpgrade checks if the request is a WebSocket upgrade request.
+
 func isWebSocketUpgrade(r *http.Request) bool {
 	connection := strings.ToLower(r.Header.Get("Connection"))
 	upgrade := strings.ToLower(r.Header.Get("Upgrade"))

@@ -275,7 +275,7 @@ go vet ./...
 |---|---|---|
 | I-1 多租户本机路径权限 | **成立，且比报告更严重** | 已修：`kind: files` 的 `root` 禁止等于/包含/位于网关配置目录内（`EvalSymlinks` 后判断，符号链接无法绕过），加载时跳过并告警、API 返回 400（v0.9.1）。另补 `server.files_roots` 管理员白名单（子目录可、符号链接逃逸拒绝）。**仍保留**：「进程可读即用户可读」的整体模型未变，部署侧仍需最小权限账号 |
 | I-2 缺 PR CI | 成立 | 已修：`.github/workflows/ci.yml`（`push: main` + 所有 PR，`gofmt -l` / `go vet` / `go test -race`） |
-| I-3 超大文件 | 成立 | 部分处理：`server.go` 按领域拆分；`config/user.go` 与 `main.go` 的拆分列在 backlog |
+| I-3 超大文件 | 成立 | 已处理：`server.go`(1586) → 4 个领域文件、`config/user.go`(1051) → 3 个、`main.go`(753) → 5 个；纯搬移不改行为，函数数逐一核对 |
 | M-1 旧 SHA-256 哈希 | 成立 | 已修：登录成功时静默升级为 bcrypt（写失败不阻塞登录；session/pending-2FA 令牌用新 revision） |
 | M-2 默认监听 `0.0.0.0` | 成立 | 保持现状（实验室共享入口的产品选择），README/`--help` 已有公网提示 |
 | M-3 `main` 覆盖偏低 | 成立 | 未处理（backlog） |

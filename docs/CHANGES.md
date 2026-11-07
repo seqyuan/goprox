@@ -13,6 +13,14 @@
 - **旧版 SHA-256 哈希在登录成功时静默升级为 bcrypt**：升级后的 session / pending-2FA 令牌
   使用新哈希派生的 revision，登录与会话续期行为不变；配置不可写时只记日志，不阻塞登录
 
+## 可维护性
+
+- **大文件拆分（纯搬移，不改行为）**：`internal/server/server.go` 1586 行 → `server.go`(515)
+  + `routing.go`(609) + `auth_handlers.go`(431) + `vhost.go`(158)；`internal/config/user.go`
+  1051 行 → `user.go`(447) + `service.go`(594) + `service_kind.go`(107)；`main.go` 753 行 →
+  `main.go`(283) + `cmd_serve.go`(194) + `cmd_sso.go`(143) + `cmd_user.go`(114) + `cmd_check.go`(71)。
+  函数数量逐一核对一致（57 / 31 / 17），`go test -race ./...` 全绿
+
 ## 文档
 
 - 四份 2026-07「闪回问题」历史报告移入 `docs/archive/` 并加归档索引；2026-11-07 项目
