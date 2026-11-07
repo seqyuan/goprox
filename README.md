@@ -418,7 +418,7 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 </details>
 
 > `password_hash` 为新版 `goprox user` / `goprox passwd` 生成的 **bcrypt** 哈希（`$2a$10$...`，示例值是口令 `change-me`）。
-> 旧版遗留的 SHA-256 哈希兼容细节见下方「密码存储」。
+> 旧版遗留的 SHA-256 哈希仍可登录，并会在**下一次登录成功时自动升级为 bcrypt**（写失败时只记日志、不阻塞登录），细节见下方「密码存储」。
 
 ### 文件浏览服务（`kind: files`，只读）
 
@@ -551,7 +551,8 @@ if !hmac.Equal([]byte(sig), []byte(base64.RawURLEncoding.EncodeToString(mac.Sum(
 ### 密码存储
 
 密码使用 **bcrypt** 哈希（`goprox user` / `goprox passwd` 生成）。旧版本遗留的
-SHA-256 哈希仍可正常登录（自动兼容），建议在方便时用 `goprox passwd` 重置一遍。
+SHA-256 哈希仍可正常登录，并会在下一次登录成功时**自动就地升级为 bcrypt**
+（`$2a$10$...`，配置文件不可写时只记日志、不影响登录），因此无需强制重置。
 
 ### 两步验证（TOTP，可选）
 

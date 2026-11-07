@@ -8,6 +8,11 @@
   避免静默放宽权限；`goprox check` 输出生效的白名单
 - 配套单元/集成测试：白名单内子目录放行、外部拒绝、符号链接逃逸拒绝、留空保持宽松
 
+## 认证
+
+- **旧版 SHA-256 哈希在登录成功时静默升级为 bcrypt**：升级后的 session / pending-2FA 令牌
+  使用新哈希派生的 revision，登录与会话续期行为不变；配置不可写时只记日志，不阻塞登录
+
 ## CI
 
 - 新增 `.github/workflows/ci.yml`：`push` 到 `main` 与所有 PR 跑 `gofmt -l` + `go vet` +

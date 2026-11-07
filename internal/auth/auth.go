@@ -116,6 +116,18 @@ func VerifyPassword(password, expectedHash string) bool {
 	return subtle.ConstantTimeCompare(expected, actual) == 1
 }
 
+// IsLegacyHash reports whether hash is the pre-bcrypt unsalted SHA-256 format
+// (64 hex characters). Such hashes still verify, and are upgraded to bcrypt on
+// the next successful login (see server.upgradePasswordHash).
+func IsLegacyHash(hash string) bool {
+	hash = strings.TrimSpace(hash)
+	if len(hash) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(hash)
+	return err == nil
+}
+
 // dummyPasswordHash is a bcrypt hash of a fixed string, used only to equalize
 // login latency for unknown usernames. Verifying against it costs the same as
 // verifying a real account, so response timing cannot be used to enumerate

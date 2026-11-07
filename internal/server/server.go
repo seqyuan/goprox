@@ -780,10 +780,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if !s.validLoginNext(r, next, username) {
 			next = "/"
 		}
+		// Migrate a pre-bcrypt hash now that we have the plaintext: the account
+		// stays usable and the weak hash disappears on the next login. The
+		// session revision is derived from the hash, so every token issued
+		// below must use the upgraded one.
+		passwordHash = s.upgradePasswordHash(username, password, passwordHash)
 		// Account has TOTP enabled: hold at the second factor before issuing
 		// a real session.
 		if userConfig != nil && userConfig.Auth.TOTPSecret != "" {
-			rev := auth.SessionRev(userConfig.Auth.PasswordHash)
+			rev := auth.SessionRev(passwordHash)
 			w.Header().Set("Set-Cookie", auth.SetPendingCookie(s.sessionSecret, pendingTTLSeconds, username, rev, secure))
 			http.Redirect(w, r, "/login/2fa?next="+url.QueryEscape(next), http.StatusFound)
 			return
@@ -795,6 +800,33 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	s.loginLimiter.RecordFailure(rateKey)
 	sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
+}
+
+// upgradePasswordHash rewrites a legacy (pre-bcrypt) password hash after a
+// successful login, so existing accounts migrate without a forced reset. It
+// returns the hash that is now authoritative: the upgraded one on success, or
+// the original when the write fails (read-only config) or the hash was already
+// bcrypt.
+func (s *Server) upgradePasswordHash(username, password, current string) string {
+	if !auth.IsLegacyHash(current) {
+		return current
+	}
+	user := s.registry.GetUser(username)
+	if user == nil {
+		return current
+	}
+	upgraded := auth.HashPassword(password)
+	if err := config.UpdatePasswordHash(user.ConfigPath, upgraded); err != nil {
+		// Keep the session flow working: verification already succeeded, so a
+		// read-only config must not block the login.
+		log.Printf("[goprox] password hash upgrade for %s failed: %v", username, err)
+		return current
+	}
+	log.Printf("[goprox] password hash for %s upgraded to bcrypt", username)
+	// Reload so the session-revision cache (mtime/size keyed) sees the new hash
+	// before any cookie is issued.
+	s.registry.Reload()
+	return upgraded
 }
 
 // ---- two-factor authentication (TOTP) ----
