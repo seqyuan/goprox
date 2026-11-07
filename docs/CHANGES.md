@@ -8,6 +8,23 @@
   避免静默放宽权限；`goprox check` 输出生效的白名单
 - 配套单元/集成测试：白名单内子目录放行、外部拒绝、符号链接逃逸拒绝、留空保持宽松
 
+## 文件浏览
+
+- **按用户的挂载白名单**：用户 YAML 顶层新增 `files_roots`，在该用户的文件卡片上再收一层
+  （与 `server.files_roots` 取交集，按 `EvalSymlinks` 判断，符号链接逃逸拒绝）；仪表盘/API
+  不读写该字段，用户无法自我放宽；列表非法时该用户的文件卡片**全部停用**（失败即关闭）。
+  服务增删改/排序不会丢失该字段
+
+## 启动与运维
+
+- **暴露面提醒**：`0.0.0.0`/`::` + 纯 HTTP + 未配置 `trusted_proxy` 时，启动日志打印
+  `WARNING: listening on all interfaces over plain HTTP ...`（不阻塞启动）
+
+## 测试
+
+- `main` 包覆盖率 22.7% → 40.6%：新增选项解析（含非法参数）、监听覆盖语义、暴露面提醒、
+  `check` 预检、`maskSecret`、SSO 参数解析、`checkWritableDir`、`mustAbsPath` 等用例
+
 ## 认证
 
 - **旧版 SHA-256 哈希在登录成功时静默升级为 bcrypt**：升级后的 session / pending-2FA 令牌
