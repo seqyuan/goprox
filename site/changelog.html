@@ -27,6 +27,16 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.9.1 — 2026-11-07（安全修复）</h2>
+    <ul>
+      <li><strong>禁止文件浏览挂载网关配置目录</strong>：<code>kind: files</code> 的 <code>root</code> 若等于 / 包含 / 位于配置目录内（含符号链接，按 <code>EvalSymlinks</code> 解析后判断）一律拒绝——配置加载时跳过并告警，仪表盘 / API 返回可读错误。</li>
+      <li><strong>修复的利用链</strong>：v0.9.0 中任意登录用户可把配置目录挂成卡片，下载 <code>state.yaml</code> 的 <code>session_secret</code> 与 <code>users/*.yaml</code> 的密码哈希 / TOTP 密钥，进而离线伪造任意账号会话。</li>
+      <li><strong>升级建议</strong>：v0.9.0 用户请尽快升级；升级后指向配置目录的卡片会被跳过，需把 <code>root</code> 改为具体数据目录（如 <code>/data/share</code>）。</li>
+      <li>README 补充文件浏览服务的权限边界与最小权限部署建议（专用账号 + ACL / systemd 加固）。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.9.0 — 2026-11-07（内置文件浏览服务）</h2>
     <ul>
       <li><strong>新服务类型 <code>kind: files</code></strong>：卡片只填一个本机目录，网关自己当后端——目录列表、单文件内联预览（图片/PDF/音视频/纯文本）或附件下载，无需再起静态服务。</li>
