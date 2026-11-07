@@ -235,3 +235,39 @@ func writeBobConfig(t *testing.T, configDir string) {
 		t.Fatal(err)
 	}
 }
+
+// server.files_roots must be enforced before the registry accepts a card: a
+// service pointing outside the allowlist is dropped at load, one inside stays.
+func TestFilesServiceRespectsAllowlist(t *testing.T) {
+	base := t.TempDir()
+	allowed := filepath.Join(base, "shared")
+	outside := filepath.Join(base, "private")
+	for _, dir := range []string{allowed, outside} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configDir := filepath.Join(base, "config")
+	filesUser(t, configDir, outside) // card outside the allowlist
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152, FilesRoots: []string{allowed}},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, configDir)
+	if n := srv.ServiceCount(); n != 0 {
+		t.Fatalf("service outside files_roots was loaded (count=%d)", n)
+	}
+
+	// Same card, now inside the allowlist.
+	filesUser(t, configDir, filepath.Join(allowed, "data"))
+	if err := os.MkdirAll(filepath.Join(allowed, "data"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	srv = New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152, FilesRoots: []string{allowed}},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, configDir)
+	if n := srv.ServiceCount(); n != 1 {
+		t.Fatalf("service inside files_roots not loaded (count=%d)", n)
+	}
+	t.Cleanup(func() { config.SetFilesRootAllowlist(nil) })
+}

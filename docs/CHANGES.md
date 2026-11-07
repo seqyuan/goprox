@@ -1,3 +1,20 @@
+# 未发布（Unreleased）
+
+## 安全加固
+
+- **文件浏览挂载白名单 `server.files_roots`**：配置后 `kind: files` 的 `root` 必须落在
+  白名单目录内（按 `EvalSymlinks` 解析后判断，符号链接指向外部会被拒绝）；留空保持
+  「除配置目录外不限制」。`state.yaml` 中非法条目（相对路径/不存在/非目录）启动即报错，
+  避免静默放宽权限；`goprox check` 输出生效的白名单
+- 配套单元/集成测试：白名单内子目录放行、外部拒绝、符号链接逃逸拒绝、留空保持宽松
+
+## CI
+
+- 新增 `.github/workflows/ci.yml`：`push` 到 `main` 与所有 PR 跑 `gofmt -l` + `go vet` +
+  `go test -race`；与 `release.yml`（仅 tag 触发）解耦
+
+---
+
 # GoProx v0.9.1 变更日志（2026-11-07）
 
 ## 安全加固

@@ -66,6 +66,9 @@ func ValidateFileRoot(root, configPath string) (string, error) {
 	if err := assertNotConfigDir(clean, configPath); err != nil {
 		return "", err
 	}
+	if err := assertWithinFilesRoots(clean); err != nil {
+		return "", err
+	}
 	f, err := os.Open(clean)
 	if err != nil {
 		return "", fmt.Errorf("目录无法读取：%v", err)

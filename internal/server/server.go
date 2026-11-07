@@ -62,6 +62,11 @@ func New(state *config.StateConfig, configDir string) *Server {
 	// at it can be rejected as self-loops (write-time and dial-time).
 	config.SetGatewayListenPort(state.Server.Port)
 
+	// Restrict kind:"files" roots before the first registry load, so a card
+	// pointing outside an administrator-configured allowlist is dropped with a
+	// warning at startup instead of serving data.
+	config.SetFilesRootAllowlist(state.Server.FilesRoots)
+
 	registry := config.NewUserRegistry(configDir)
 	registry.Reload()
 

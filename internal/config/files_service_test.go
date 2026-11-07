@@ -225,3 +225,67 @@ func TestAddFilesServiceRejectsConfigDirRoot(t *testing.T) {
 		t.Fatal("AddService accepted a root overlapping the config dir")
 	}
 }
+
+// server.files_roots (allowlist) must confine kind:"files" roots to the
+// configured directories, including through symlinks; an empty list keeps the
+// permissive single-admin behavior.
+func TestFilesRootAllowlist(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	usersDir := filepath.Join(configDir, "users")
+	allowed := filepath.Join(base, "shared")
+	other := filepath.Join(base, "private")
+	for _, dir := range []string{usersDir, allowed, filepath.Join(allowed, "sub"), other} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(usersDir, "alice.yaml")
+	t.Cleanup(func() { SetFilesRootAllowlist(nil) })
+
+	SetFilesRootAllowlist([]string{allowed})
+	if _, err := ValidateFileRoot(filepath.Join(allowed, "sub"), configPath); err != nil {
+		t.Fatalf("allowed subtree rejected: %v", err)
+	}
+	if _, err := ValidateFileRoot(allowed, configPath); err != nil {
+		t.Fatalf("allowed root rejected: %v", err)
+	}
+	if _, err := ValidateFileRoot(other, configPath); err == nil {
+		t.Fatal("root outside the allowlist was accepted")
+	}
+
+	// A symlink inside the allowed tree that points outside must not pass.
+	link := filepath.Join(allowed, "escape")
+	if err := os.Symlink(other, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if _, err := ValidateFileRoot(link, configPath); err == nil {
+		t.Fatal("symlink escaping the allowlist was accepted")
+	}
+
+	// Empty allowlist: permissive again (the config-dir rule still applies).
+	SetFilesRootAllowlist(nil)
+	if _, err := ValidateFileRoot(other, configPath); err != nil {
+		t.Fatalf("empty allowlist should be permissive, got %v", err)
+	}
+}
+
+func TestNormalizeFilesRoots(t *testing.T) {
+	dir := t.TempDir()
+	got, err := NormalizeFilesRoots([]string{dir + "/", dir})
+	if err != nil {
+		t.Fatalf("NormalizeFilesRoots: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("duplicates not collapsed: %v", got)
+	}
+	if _, err := NormalizeFilesRoots([]string{"relative"}); err == nil {
+		t.Fatal("relative entry accepted")
+	}
+	if _, err := NormalizeFilesRoots([]string{filepath.Join(dir, "nope")}); err == nil {
+		t.Fatal("missing directory accepted")
+	}
+	if got, err := NormalizeFilesRoots(nil); err != nil || got != nil {
+		t.Fatalf("empty list = %v, %v", got, err)
+	}
+}

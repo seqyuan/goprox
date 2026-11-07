@@ -78,6 +78,12 @@ type ServerState struct {
 	// CookieDomain makes the session cookie shared across service subdomains
 	// (e.g. ".gw.example.com"). Required when any service declares hostnames.
 	CookieDomain string `yaml:"cookie_domain,omitempty"`
+	// FilesRoots restricts kind:"files" services to these directories (and
+	// their subdirectories). Empty means "anywhere the gateway account can
+	// read", minus the gateway config directory, which is always refused.
+	// Set this on shared gateways so a logged-in user cannot browse arbitrary
+	// parts of the host filesystem.
+	FilesRoots []string `yaml:"files_roots,omitempty"`
 }
 
 type AuthState struct {
@@ -152,6 +158,9 @@ func LoadState(path string) (*StateConfig, error) {
 	}
 	if (s.Server.TLSCert == "") != (s.Server.TLSKey == "") {
 		return nil, fmt.Errorf("server.tls_cert and server.tls_key must be set together")
+	}
+	if s.Server.FilesRoots, err = NormalizeFilesRoots(s.Server.FilesRoots); err != nil {
+		return nil, err
 	}
 
 	// A hand-edited user_header must be a valid header name; anything else
