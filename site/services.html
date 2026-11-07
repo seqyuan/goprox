@@ -170,6 +170,9 @@ services:
     # bwlimit: 10485760    # 可选：限速（字节/秒）</pre>
     <p>访问 <code>/proxy/alice/data/</code> 即可浏览：目录列表带面包屑，图片/PDF/音视频/纯文本内联预览，
       其余类型直接下载；「下载全部（ZIP）」把整个目录流式打包下载（<code>?zip=1</code>）。</p>
+    <p>共享网关可以再收两层权限：<code>state.yaml</code> 的 <code>server.files_roots</code>（网关级）
+      与用户 YAML 顶层的 <code>files_roots</code>（该用户级），两者取交集，按符号链接解析后判断。
+      用户级字段只能由管理员改 YAML，仪表盘/API 不读写它；列表写错时该用户的文件卡片会全部停用（失败即关闭）。</p>
     <div class="note"><strong>只读</strong>：没有上传/删除/重命名，<code>POST/PUT/DELETE</code> 返回 405；
       目录穿越与逃逸符号链接由 <code>os.Root</code> 拦截；内联内容统一 <code>CSP: sandbox</code> + <code>nosniff</code>，
       HTML/SVG 只能下载；别人访问你的卡片得到 404。三种入口（<code>/proxy</code> 前缀、<code>default_service</code> 裸路径、

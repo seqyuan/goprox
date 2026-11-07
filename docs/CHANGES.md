@@ -1,4 +1,4 @@
-# 未发布（Unreleased）
+# GoProx v0.10.0 变更日志（2026-11-07）
 
 ## 安全加固
 
@@ -47,6 +47,14 @@
 
 - 新增 `.github/workflows/ci.yml`：`push` 到 `main` 与所有 PR 跑 `gofmt -l` + `go vet` +
   `go test -race`；与 `release.yml`（仅 tag 触发）解耦
+
+## 升级提示
+
+- 无需改配置即可升级；想要更强隔离时，在 `state.yaml` 配 `server.files_roots`，并在
+  相应用户 YAML 顶部配 `files_roots`（两层取交集）
+- 若用户 YAML 里的 `files_roots` 写错（相对路径 / 不存在 / 非目录），该用户的文件卡片会被
+  停用并在日志告警——这是有意的失败即关闭
+- 旧版 SHA-256 密码哈希会在用户下次登录时自动升级为 bcrypt，无需手动重置
 
 ---
 

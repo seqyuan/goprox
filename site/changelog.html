@@ -27,6 +27,18 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.10.0 — 2026-11-07（用户级文件权限）</h2>
+    <ul>
+      <li><strong>按用户的文件浏览白名单</strong>：用户 YAML 顶层 <code>files_roots</code>，在该用户的文件卡片上再收一层（与 <code>server.files_roots</code> 取交集，按 <code>EvalSymlinks</code> 判断，符号链接逃逸拒绝）。仪表盘 / API 不读写该字段，用户无法自我放宽；列表非法时该用户文件卡片<strong>全部停用</strong>（失败即关闭）。</li>
+      <li><strong>网关级挂载白名单</strong>：<code>server.files_roots</code> 限制所有 <code>kind: files</code> 服务可用的目录；非法条目启动即报错，<code>goprox check</code> 输出生效白名单。</li>
+      <li><strong>暴露面提醒</strong>：监听 <code>0.0.0.0</code>/<code>::</code> + 纯 HTTP + 未配置 <code>trusted_proxy</code> 时，启动日志打印明确 WARNING（不阻塞启动）。</li>
+      <li><strong>旧密码哈希自动升级</strong>：登录成功时把旧版 SHA-256 就地重写为 bcrypt，无需手动重置；配置不可写时只记日志。</li>
+      <li><strong>可维护性与测试</strong>：<code>server.go</code>(1586) 拆为 4 个领域文件、<code>config/user.go</code>(1051) 拆为 3 个、<code>main.go</code>(753) 拆为 5 个（纯搬移）；新增 <code>ci.yml</code>（push/PR 跑 gofmt + vet + <code>go test -race</code>）；<code>main</code> 包覆盖率 22.7% → 40.6%。</li>
+      <li><strong>文档</strong>：四份 2026-07 历史报告移入 <code>docs/archive/</code>；2026-11-07 项目审查收入 <code>docs/reviews/</code> 并附逐条核验与处理状态。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.9.1 — 2026-11-07（安全修复）</h2>
     <ul>
       <li><strong>禁止文件浏览挂载网关配置目录</strong>：<code>kind: files</code> 的 <code>root</code> 若等于 / 包含 / 位于配置目录内（含符号链接，按 <code>EvalSymlinks</code> 解析后判断）一律拒绝——配置加载时跳过并告警，仪表盘 / API 返回可读错误。</li>
