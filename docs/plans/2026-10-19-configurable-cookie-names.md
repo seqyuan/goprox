@@ -1,6 +1,9 @@
 # 配置化 Cookie 名（多实例隔离）方案
 
-> 状态：方案已规划，尚未实现。
+> 状态：**已实现（v0.11.0，方案 C 实例后缀）**。`auth.cookie_suffix` 已落地：
+> `internal/auth.CookieNames`、`config.AuthState.CookieSuffix`（非法值启动失败）、
+> Server/API/路由与 2FA 全部按实例名读写、退出只清理本实例 Cookie、剥离仍按
+> `goprox_` 命名空间整体进行；含同主机双实例集成测试。
 > 日期：2026-10-19
 > 背景：`goprox_session`、`goprox_2fa*`、`goprox_route*` 都是固定名；浏览器 Cookie 不区分端口，同一主机上的多个 goprox 实例会互相覆盖，导致会话丢失或路由串实例。
 

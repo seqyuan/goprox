@@ -36,6 +36,9 @@ func runConfigCheck(opts options) {
 	if roots := config.FilesRootAllowlist(); len(roots) > 0 {
 		fmt.Printf("[goprox] files_roots: %v\n", roots)
 	}
+	if state.Auth.CookieSuffix != "" {
+		fmt.Printf("[goprox] cookie_suffix: %q (instance-isolated cookie names)\n", state.Auth.CookieSuffix)
+	}
 	hosts := srv.HostEntries()
 	fmt.Printf("[goprox] users: %d, services: %d, virtual hosts: %d\n", srv.UserCount(), srv.ServiceCount(), len(hosts))
 	if len(hosts) == 0 {

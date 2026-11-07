@@ -1,3 +1,27 @@
+# 未发布（Unreleased）
+
+## 多实例隔离
+
+- **`auth.cookie_suffix`（配置化 Cookie 名）**：浏览器按主机（忽略端口）存 Cookie，同主机多个
+  goprox 会互相覆盖 session / 2FA / route Cookie。配置后缀后每个实例使用
+  `goprox_session_<suffix>`、`goprox_2fa_<suffix>`、`goprox_2fa_setup_<suffix>`、
+  `goprox_route_<suffix>`、`goprox_route_<suffix>_<hash>`；默认空值保持历史命名，升级无感。
+  非法后缀（非 `[A-Za-z0-9_-]{1,32}`）启动即失败，不静默回退
+- 读写路径全部按实例命名：登录/续期、2FA pending/setup、route 解析与设置；**退出只清理本实例
+  Cookie**，不会把同主机另一实例的用户登出；网关 Cookie 仍按 `goprox_` 命名空间整体从后端请求剥离
+- 配置后缀后该实例用户需重新登录一次（预期的一次性影响）
+- 集成测例：同主机双实例共享浏览器 Cookie jar，先后登录后两者都保持登录且 jar 中并存两个
+  后缀的 session；另有 suffixed session/2FA/route/退出清理与 API 续期用例
+- `goprox check` 输出生效的 `cookie_suffix`
+
+## 测试
+
+- `serve` 启动路径可测化（`startGateway` 返回 error，`gateway.run/serve` 负责服务与优雅退出），
+  新增明文启动 + 登录页 + 监听持久化、`--tls-selfsigned` 真实 HTTPS 与重启复用证书、
+  vhost 配置不全、端口占用、非法 CLI 值等集成用例；`main` 覆盖率 40.6% → 50.9%
+
+---
+
 # GoProx v0.10.0 变更日志（2026-11-07）
 
 ## 安全加固
