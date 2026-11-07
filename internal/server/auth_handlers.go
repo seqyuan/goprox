@@ -97,6 +97,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rateKey := ip + "|" + strings.ToLower(username)
 
 	if s.loginLimiter.IsBlocked(rateKey) {
+		s.recordLogin(username, false, "登录尝试过多，已被限流")
 		sendHTML(w, 429, web.LoginPage(s.siteTitle, "登录尝试过多，请 15 分钟后再试", ""))
 		return
 	}
@@ -111,6 +112,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !config.IsValidUsername(username) || password == "" {
 		s.loginLimiter.RecordFailure(rateKey)
+		s.recordLogin(username, false, "用户名或密码为空/不合法")
 		sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
 		return
 	}
@@ -133,6 +135,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// session revision is derived from the hash, so every token issued
 		// below must use the upgraded one.
 		passwordHash = s.upgradePasswordHash(username, password, passwordHash)
+		if userConfig == nil || userConfig.Auth.TOTPSecret == "" {
+			s.recordLogin(username, true, "密码登录")
+		}
 		// Account has TOTP enabled: hold at the second factor before issuing
 		// a real session.
 		if userConfig != nil && userConfig.Auth.TOTPSecret != "" {
@@ -147,6 +152,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.loginLimiter.RecordFailure(rateKey)
+	s.recordLogin(username, false, loginErrorMsg)
 	sendHTML(w, 401, web.LoginPage(s.siteTitle, loginErrorMsg, next))
 }
 
@@ -279,6 +285,7 @@ func (s *Server) handleTwoFAPost(w http.ResponseWriter, r *http.Request) {
 	ip := auth.ClientIP(r)
 	rateKey := ip + "|2fa|" + strings.ToLower(userID)
 	if s.totpLimiter.IsBlocked(rateKey) {
+		s.recordLogin(userID, false, "两步验证尝试过多，已被限流")
 		sendHTML(w, 429, web.TwoFAPage(s.siteTitle, "验证尝试过多，请 15 分钟后再试", next))
 		return
 	}
@@ -292,11 +299,13 @@ func (s *Server) handleTwoFAPost(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.FormValue("code"))
 	if !auth.VerifyTOTP(uc.Auth.TOTPSecret, code, time.Now()) {
 		s.totpLimiter.RecordFailure(rateKey)
+		s.recordLogin(userID, false, "动态码错误或已过期")
 		sendHTML(w, 401, web.TwoFAPage(s.siteTitle, "动态码错误或已过期", next))
 		return
 	}
 
 	s.totpLimiter.Reset(rateKey)
+	s.recordLogin(userID, true, "密码 + 两步验证登录")
 	secure := auth.IsSecureRequest(r)
 	s.setLoginSessionCookie(w, userID, secure)
 	w.Header().Add("Set-Cookie", s.cookieNames.ClearPendingCookie())

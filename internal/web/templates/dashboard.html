@@ -404,6 +404,19 @@
   }
   .toast.show { display: block; }
 
+  .card-foot { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .card-probe { font:inherit; font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--text-muted); cursor:pointer; }
+  .card-probe:hover { color:var(--text); border-color:var(--text-muted); }
+  .card-probe:disabled { opacity:.55; cursor:default; }
+  .card-status { font-size:13px; line-height:1; color:var(--text-dim, #94a3b8); }
+  .card-status.checking { color:#b8860b; animation:gf-blink 1s linear infinite; }
+  .card-status.ok { color:#2f9e44; }
+  .card-status.fail { color:#e03131; }
+  @keyframes gf-blink { 50%% { opacity:.25 } }
+  .probe-bar { display:flex; gap:8px; align-items:center; margin:0 0 10px; flex-wrap:wrap; }
+  .probe-bar .service-search { flex:1 1 220px; margin:0; }
+  .probe-summary { margin:0 0 12px; font-size:13px; color:var(--text-muted); }
+
   .read-only .drag-handle,
   .read-only .card-move,
   .read-only .card-edit,
@@ -417,6 +430,7 @@
     <div class="account">
       <button type="button" class="account-btn" id="account-toggle" aria-expanded="false" aria-controls="account-menu">%s</button>
       <div class="account-menu" id="account-menu" hidden>
+        <a class="account-item" href="/logs">日志</a>
         <a class="account-item" href="/2fa/setup">%s</a>
         <button type="button" class="account-item" id="theme-toggle"><span class="theme-ico">🌙</span> 外观</button>
         <form method="POST" action="/logout" style="margin:0">
@@ -428,7 +442,11 @@
 </header>
 <main class="main%s">
   %s
-  <input id="service-search" class="service-search" type="search" placeholder="搜索名称或说明" autocomplete="off" aria-label="搜索服务"%s>
+  <div class="probe-bar">
+    <input id="service-search" class="service-search" type="search" placeholder="搜索名称或说明" autocomplete="off" aria-label="搜索服务"%s>
+    <button type="button" class="btn-secondary" id="probe-all" title="依次检测所有卡片的后端连通性">全部测一下</button>
+  </div>
+  <p class="probe-summary" id="probe-summary" hidden></p>
   <div id="dashboard">%s</div>
 </main>
 <datalist id="category-options"></datalist>

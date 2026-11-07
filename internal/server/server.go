@@ -1,17 +1,20 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/seqyuan/goprox/internal/api"
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/eventlog"
 	"github.com/seqyuan/goprox/internal/rate"
 	"github.com/seqyuan/goprox/internal/web"
 )
@@ -43,6 +46,7 @@ type Server struct {
 	totpLimiter   *rate.Limiter
 	apiHandler    *api.Handler
 	transport     *http.Transport
+	events        *eventlog.Log
 }
 
 // New creates a new Server from state config. configDir is where the shared
@@ -73,7 +77,7 @@ func New(state *config.StateConfig, configDir string) *Server {
 		siteTitle = "GoProx"
 	}
 
-	return &Server{
+	srv := &Server{
 		state:         state,
 		registry:      registry,
 		sessionSecret: state.Auth.SessionSecret,
@@ -92,6 +96,7 @@ func New(state *config.StateConfig, configDir string) *Server {
 		// re-validates backend addresses (and pins the validated IP) at dial
 		// time, so the write-time host allowlist cannot be bypassed by a
 		// DNS-rebinding / TOCTOU change to the hostname.
+		events: eventlog.New(eventlog.DefaultPerUser),
 		transport: &http.Transport{
 			DialContext:           config.SafeDialContext,
 			ResponseHeaderTimeout: 30 * time.Second,
@@ -100,6 +105,10 @@ func New(state *config.StateConfig, configDir string) *Server {
 			MaxIdleConnsPerHost:   10,
 		},
 	}
+	// The management API records probes into the same per-user history the
+	// logs page shows.
+	srv.apiHandler.Events = srv.events
+	return srv
 }
 
 // currentSessionRev returns the per-account session revision derived from the
@@ -227,6 +236,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		http.NotFound(w, r)
 	})
+
+	// Per-user history: a page for humans and a JSON endpoint for scripts.
+	mux.HandleFunc("/logs", s.handleLogsPage)
+	mux.HandleFunc("/api/logs", s.handleLogsAPI)
 
 	// Favicon
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
@@ -516,4 +529,56 @@ func isWebSocketUpgrade(r *http.Request) bool {
 	connection := strings.ToLower(r.Header.Get("Connection"))
 	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
 	return strings.Contains(connection, "upgrade") && upgrade == "websocket"
+}
+
+// handleLogsPage renders this user's own history (sign-ins, card accesses,
+// probes). There is no admin view: an account only ever sees its own events.
+func (s *Server) handleLogsPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
+	if !session.Valid || session.UserID == "" {
+		http.Redirect(w, r, "/login?next="+url.QueryEscape("/logs"), http.StatusFound)
+		return
+	}
+	if auth.ShouldRefreshSession(session, s.state.Auth.SessionTTL) {
+		w.Header().Add("Set-Cookie", s.issueSessionCookie(session.UserID, auth.IsSecureRequest(r)))
+	}
+	events := s.events.List(session.UserID, eventlog.DefaultPerUser)
+	failures := 0
+	for _, e := range events {
+		if !e.OK {
+			failures++
+		}
+	}
+	sendHTML(w, http.StatusOK, web.LogsPage(s.siteTitle, session.UserID, events, failures))
+}
+
+// handleLogsAPI returns this user's own history as JSON (newest first).
+func (s *Server) handleLogsAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	session := s.sessionFromCookies(r.Header.Get("Cookie"))
+	if !session.Valid || session.UserID == "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":"Unauthorized"}`+"\n")
+		return
+	}
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= eventlog.DefaultPerUser {
+			limit = n
+		}
+	}
+	events := s.events.List(session.UserID, limit)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(map[string]interface{}{"events": events})
 }

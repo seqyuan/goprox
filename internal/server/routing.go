@@ -10,6 +10,7 @@ import (
 	"net/url"
 	pathpkg "path"
 	"strings"
+	"time"
 
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
@@ -110,10 +111,14 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 }
 
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
+	start := time.Now()
+
 	// A kind:"files" service has no backend: the gateway serves the configured
 	// directory itself (read-only listing, file download, zip export).
 	if svc.Kind == config.ServiceKindFiles {
-		s.serveFilesService(w, r, svc, fc)
+		rec := &statusRecorder{ResponseWriter: w}
+		s.serveFilesService(rec, r, svc, fc)
+		s.recordAccess(fc.Username, svc, r, fc.OriginalPath, rec.statusCode(), time.Since(start), "")
 		return
 	}
 	// Go's http.Server.ReadTimeout caps the whole request body, which would
@@ -138,6 +143,7 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 	rp.ErrorLog = log.New(io.Discard, "", 0)
 	// Add error handler: log the full error server-side, reply generically so
 	// backend host/port details are not leaked to clients.
+	failure := ""
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		// The client went away (tab closed / navigation during a stream); the
 		// connection is dead, so there is nothing to write and the "context
@@ -145,6 +151,7 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 		if r.Context().Err() != nil {
 			return
 		}
+		failure = err.Error()
 		log.Printf("[goprox] proxy error: service=%s, path=%s, error=%v", svc.ID, r.URL.Path, err)
 		switch {
 		case strings.Contains(err.Error(), "connection refused"):
@@ -156,6 +163,7 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 		}
 	}
 	rp.ServeHTTP(w, r)
+	s.recordAccess(fc.Username, svc, r, fc.OriginalPath, 0, time.Since(start), failure)
 }
 
 // serveFilesService answers a request for a kind:"files" service from the

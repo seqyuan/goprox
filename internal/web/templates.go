@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/eventlog"
 )
 
 //go:embed templates/base.css
@@ -328,7 +329,11 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
         %s
       </div>
     </a>
-    %s
+    <div class="card-foot">
+      <button type="button" class="card-probe" data-probe-id="%s" title="检测后端是否可连（只读，不会影响后端）">测一下</button>
+      <span class="card-status unknown" id="status-%s" title="未检测" aria-label="未检测">●</span>
+      %s
+    </div>
   </div>`,
 		esc(s.ID),
 		esc(ternary(s.Category != "", s.Category, config.DefaultCategory)),
@@ -337,6 +342,8 @@ func renderCard(s config.ServiceConfig, username string, writable bool, index, t
 		faviconHTML,
 		esc(s.Name),
 		desc,
+		esc(s.ID),
+		esc(s.ID),
 		vhostLink,
 	)
 }
@@ -370,3 +377,98 @@ func ternary(cond bool, a, b string) string {
 	}
 	return b
 }
+
+// LogsPage renders the per-user history: sign-ins, card accesses and probes.
+// It is server-rendered (no script), so it keeps working even when the very
+// problem being investigated is a broken front-end asset.
+func LogsPage(siteTitle, username string, events []eventlog.Event, failures int) string {
+	kindLabel := map[string]string{
+		eventlog.KindLogin:  "登录",
+		eventlog.KindAccess: "访问",
+		eventlog.KindProbe:  "检测",
+	}
+
+	var rows strings.Builder
+	for _, e := range events {
+		label := kindLabel[e.Kind]
+		if label == "" {
+			label = e.Kind
+		}
+		result := `<span class="lg-ok">成功</span>`
+		if !e.OK {
+			result = `<span class="lg-fail">失败</span>`
+		}
+		ms := ""
+		if e.Millis > 0 {
+			ms = fmt.Sprintf("%d ms", e.Millis)
+		}
+		rows.WriteString(fmt.Sprintf(
+			`<tr><td class="lg-time">%s</td><td>%s</td><td>%s</td><td>%s</td><td class="lg-num">%s</td><td class="lg-detail">%s</td></tr>`,
+			esc(e.Time.Local().Format("01-02 15:04:05")), esc(label),
+			esc(e.Service), result, ms, esc(e.Detail),
+		))
+	}
+
+	summary := "暂无记录。"
+	if len(events) > 0 {
+		summary = fmt.Sprintf("最近 %d 条记录", len(events))
+		if failures > 0 {
+			summary += fmt.Sprintf("，其中 %d 条失败", failures)
+		}
+	}
+
+	empty := ""
+	if len(events) == 0 {
+		empty = `<p class="lg-empty">这里还没有记录。打开一张卡片、点一次「测一下」，或者重新登录后就会出现在这里。</p>`
+	}
+
+	body := fmt.Sprintf(`
+<div class="lg-wrap">
+  <div class="lg-card">
+    <div class="lg-head">
+      <div>
+        <h1>日志</h1>
+        <p class="lg-sub">只显示 <strong>%s</strong> 自己的记录 · %s</p>
+      </div>
+      <div class="lg-actions">
+        <a class="lg-btn" href="/logs">刷新</a>
+        <a class="lg-btn lg-secondary" href="/">返回仪表盘</a>
+      </div>
+    </div>
+    %s
+    %s
+  </div>
+</div>
+%s`,
+		esc(username), esc(summary),
+		empty,
+		func() string {
+			if len(events) == 0 {
+				return ""
+			}
+			return `<table class="lg-table"><thead><tr><th>时间</th><th>类型</th><th>卡片</th><th>结果</th><th class="lg-num">耗时</th><th>说明</th></tr></thead><tbody>` + rows.String() + `</tbody></table>`
+		}(),
+		logsStyle,
+	)
+	return PageShell(siteTitle, "日志", body)
+}
+
+const logsStyle = `<style>
+.lg-wrap{max-width:1080px;margin:32px auto;padding:0 16px}
+.lg-card{background:var(--bg-panel,#fff);border:1px solid var(--border,#e2e8f0);border-radius:14px;padding:20px 22px}
+.lg-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.lg-head h1{font-size:19px;margin:0 0 4px}
+.lg-sub{margin:0;color:var(--text-muted,#64748b);font-size:13px}
+.lg-actions{display:flex;gap:8px}
+.lg-btn{display:inline-block;padding:6px 12px;border-radius:8px;border:1px solid var(--border,#e2e8f0);background:var(--accent,#3b6ef5);color:#fff;text-decoration:none;font-size:13px}
+.lg-secondary{background:transparent;color:var(--text,#1e293b)}
+.lg-table{width:100%;border-collapse:collapse;font-size:13.5px}
+.lg-table th,.lg-table td{padding:7px 10px;border-bottom:1px solid var(--border,#e2e8f0);text-align:left;vertical-align:top}
+.lg-table th{font-weight:600;color:var(--text-muted,#64748b);font-size:12px}
+.lg-time{white-space:nowrap;color:var(--text-muted,#64748b)}
+.lg-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.lg-detail{word-break:break-all;color:var(--text,#1e293b)}
+.lg-ok{color:#2f6f4f;white-space:nowrap}
+.lg-fail{color:#b42318;white-space:nowrap;font-weight:600}
+.lg-empty{color:var(--text-muted,#64748b);font-size:13px}
+</style>`

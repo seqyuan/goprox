@@ -1,15 +1,21 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/seqyuan/goprox/internal/auth"
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/eventlog"
 )
 
 // Handler handles REST API requests for service management.
@@ -21,6 +27,9 @@ type Handler struct {
 	PublicHost    string
 	// CookieNames are this gateway instance's cookie names (auth.cookie_suffix).
 	CookieNames auth.CookieNames
+	// Events records connectivity probes into the per-user history shown on the
+	// logs page ("" is fine in tests: the log is a no-op without a user).
+	Events *eventlog.Log
 }
 
 // NewHandler creates a new API handler. cookieDomain/publicHost are used for
@@ -80,6 +89,9 @@ func (h *Handler) isGatewayRoute(path, method string) bool {
 		return method == http.MethodPut || method == http.MethodDelete
 	case strings.HasPrefix(path, "/api/services/"):
 		id := strings.TrimPrefix(path, "/api/services/")
+		if strings.HasSuffix(id, "/probe") {
+			return method == http.MethodPost && len(id) > len("/probe")
+		}
 		if id == "" || strings.Contains(id, "/") {
 			return false
 		}
@@ -127,6 +139,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) bool {
 	case strings.HasPrefix(path, "/api/services/") && r.Method == "PUT":
 		id := strings.TrimPrefix(path, "/api/services/")
 		h.handleUpdateService(w, r, username, id)
+	case strings.HasSuffix(path, "/probe") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/services/"), "/probe")
+		h.handleProbeService(w, username, id)
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
@@ -525,4 +540,69 @@ func writeBodyError(w http.ResponseWriter, err error) {
 
 func isWritable(path string) bool {
 	return config.IsWritable(path)
+}
+
+// handleProbeService answers "is this card's backend reachable right now?".
+// Read-only: a TCP connect (proxy cards) or a directory check (files cards), so
+// pressing it can never change anything on the backend.
+func (h *Handler) handleProbeService(w http.ResponseWriter, username, id string) {
+	user := h.Registry.GetUser(username)
+	if user == nil {
+		writeJSON(w, 404, map[string]string{"error": "user config not found"})
+		return
+	}
+	svc := config.ServiceByID(user.Config.Services, id)
+	if svc == nil {
+		writeJSON(w, 404, map[string]string{"error": "service not found"})
+		return
+	}
+
+	start := time.Now()
+	ok, detail := probeService(svc)
+	ms := time.Since(start).Milliseconds()
+	if h.Events != nil {
+		h.Events.Add(username, eventlog.Event{
+			Kind: eventlog.KindProbe, OK: ok, Service: svc.Name, Detail: detail, Millis: ms,
+		})
+	}
+	writeJSON(w, 200, map[string]interface{}{"ok": ok, "detail": detail, "ms": ms})
+}
+
+// probeTimeout bounds a probe so a black-holed backend cannot hang the request.
+const probeTimeout = 3 * time.Second
+
+func probeService(svc *config.ServiceConfig) (bool, string) {
+	if svc.Kind == config.ServiceKindFiles {
+		if strings.TrimSpace(svc.Root) == "" {
+			return false, "未配置目录路径"
+		}
+		info, err := os.Stat(svc.Root)
+		if err != nil {
+			return false, "目录不可用：" + err.Error()
+		}
+		if !info.IsDir() {
+			return false, svc.Root + " 不是目录"
+		}
+		f, err := os.Open(svc.Root)
+		if err != nil {
+			return false, "目录无法读取：" + err.Error()
+		}
+		defer f.Close()
+		if _, err := f.ReadDir(1); err != nil && !errors.Is(err, io.EOF) {
+			return false, "目录无法读取：" + err.Error()
+		}
+		return true, "目录可读：" + svc.Root
+	}
+
+	addr := net.JoinHostPort(svc.Host, strconv.Itoa(svc.Port))
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	// SafeDialContext re-validates the address (private/loopback only) and pins
+	// the resolved IP, so a probe cannot be used to reach elsewhere.
+	conn, err := config.SafeDialContext(ctx, "tcp", addr)
+	if err != nil {
+		return false, "连不上 " + addr + "：" + err.Error()
+	}
+	conn.Close()
+	return true, "端口可连：" + addr
 }

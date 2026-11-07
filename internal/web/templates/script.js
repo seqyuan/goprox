@@ -596,6 +596,69 @@
     });
   }
 
+  // ---- 连通性检测（只读探测：TCP 连接 / 目录可读） ----
+  // 状态灯：灰=未测，黄=检测中，绿=通，红=不通。失败时把原因放进 tooltip，
+  // 指向 /logs 可以看到完整历史。
+  function setProbeStatus(id, state, detail) {
+    var el = $("#status-" + id);
+    if (!el) return;
+    el.className = "card-status " + state;
+    el.title = detail || (state === "ok" ? "连通正常" : state === "fail" ? "连接失败" : "未检测");
+  }
+  function probeOne(id) {
+    setProbeStatus(id, "checking", "检测中…");
+    return jsonFetch("/api/services/" + encodeURIComponent(id) + "/probe", { method: "POST" })
+      .then(function(d) {
+        setProbeStatus(id, d.ok ? "ok" : "fail", (d.ok ? "通" : "不通") + "：" + (d.detail || "") + (d.ms ? "（" + d.ms + " ms）" : ""));
+        return d;
+      })
+      .catch(function(err) {
+        setProbeStatus(id, "fail", err.message);
+        throw err;
+      });
+  }
+  function updateProbeSummary(ok, fail) {
+    var el = $("#probe-summary");
+    if (!el) return;
+    if (ok + fail === 0) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = "连通性检测：" + ok + " 个正常" + (fail ? " · " + fail + " 个异常（把鼠标放在红点上可看原因，或打开「日志」页）" : "");
+  }
+  document.addEventListener("click", function(ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest("[data-probe-id]") : null;
+    if (!btn) return;
+    ev.preventDefault();
+    var id = btn.getAttribute("data-probe-id");
+    btn.disabled = true;
+    probeOne(id).then(function(d) {
+      if (!d.ok) showToast("连接失败：" + (d.detail || "未知原因"));
+    }).catch(function(err) {
+      showToast("检测失败：" + err.message);
+    }).finally(function() { btn.disabled = false; });
+  });
+
+  var probeAll = $("#probe-all");
+  if (probeAll) {
+    probeAll.addEventListener("click", function() {
+      var cards = state.services || [];
+      if (!cards.length) return;
+      probeAll.disabled = true;
+      var ok = 0, fail = 0, i = 0;
+      (function next() {
+        if (i >= cards.length) {
+          updateProbeSummary(ok, fail);
+          probeAll.disabled = false;
+          if (fail) showToast("有 " + fail + " 张卡片连不上，详见日志页");
+          return;
+        }
+        var id = cards[i++].id;
+        probeOne(id).then(function(d) { if (d.ok) ok++; else fail++; })
+          .catch(function() { fail++; })
+          .finally(next);
+      })();
+    });
+  }
+
   function openEditModal(svc) {
     closeAccount();
     fillCategoryList();

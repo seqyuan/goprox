@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/seqyuan/goprox/internal/config"
+	"github.com/seqyuan/goprox/internal/eventlog"
 )
 
 // marshalScriptJSON must produce valid JSON that never closes the surrounding
@@ -392,5 +394,30 @@ func TestDashboardExposesFilesServiceFields(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("dashboard missing %q", want)
 		}
+	}
+}
+
+// The logs page must render rows, failure highlighting, and an empty state
+// without relying on JavaScript.
+func TestLogsPage(t *testing.T) {
+	now := time.Now()
+	events := []eventlog.Event{
+		{Time: now, Kind: eventlog.KindLogin, OK: true, Detail: "密码登录"},
+		{Time: now.Add(-time.Minute), Kind: eventlog.KindAccess, OK: false, Service: "数据盘", Detail: "dial tcp: connection refused", Millis: 12},
+		{Time: now.Add(-2 * time.Minute), Kind: eventlog.KindProbe, OK: true, Service: "App", Detail: "端口可连：127.0.0.1:8080", Millis: 3},
+	}
+	page := LogsPage("GoProx", "alice", events, 1)
+	for _, want := range []string{"日志", "alice", "登录", "访问", "检测", "数据盘", "connection refused", "失败", "成功", "12 ms"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("logs page missing %q", want)
+		}
+	}
+	if strings.Contains(page, "<script src=") {
+		t.Error("logs page must not depend on external scripts")
+	}
+
+	empty := LogsPage("GoProx", "bob", nil, 0)
+	if !strings.Contains(empty, "还没有记录") {
+		t.Error("empty state missing")
 	}
 }
