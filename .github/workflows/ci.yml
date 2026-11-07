@@ -1,0 +1,44 @@
+name: ci
+
+# 日常门禁：每次 push 到 main、以及所有 PR 都跑格式化 / 静态检查 / 测试。
+# release.yml 只在打 v* tag 时跑（它负责构建产物），两者刻意解耦：
+# CI 快、失败早，发布流程不受影响。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # gofmt 只用于发现漏格式化；直接改文件不在这里做。
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "以下文件需要 gofmt："
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race：反向代理、限流、registry 都有并发路径，普通测试跑不出数据竞争。
+      - name: go test -race
+        run: go test -race ./...
