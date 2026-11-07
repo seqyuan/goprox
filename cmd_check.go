@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/seqyuan/goprox/internal/config"
 	"github.com/seqyuan/goprox/internal/server"
@@ -46,24 +45,6 @@ func runConfigCheck(opts options) {
 		fmt.Printf("  %s -> %s/%s\n", h.Host, h.Username, h.ServiceID)
 	}
 	fmt.Println("[goprox] config check OK")
-}
-
-func checkWritableDir(dir string) error {
-	f, err := os.CreateTemp(dir, ".goprox-write-test-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	f.Close()
-	return os.Remove(name)
-}
-
-func mustAbsPath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		log.Fatalf("resolve path %s: %v", path, err)
-	}
-	return abs
 }
 
 // passwordReader is shared across readPassword calls: a fresh bufio.Reader per

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -19,28 +20,54 @@ import (
 	"github.com/seqyuan/goprox/internal/server"
 )
 
+// gateway is a fully prepared, already-listening server that has not started
+// serving yet. Splitting "prepare" from "serve" keeps the startup path testable
+// (config load, CLI overrides, TLS, vhost validation, bind, persistence) instead
+// of hiding it behind a blocking function that exits on error.
+type gateway struct {
+	configDir string
+	statePath string
+	state     *config.StateConfig
+	srv       *server.Server
+	http      *http.Server
+	listener  net.Listener
+	tls       bool
+}
+
 func runServer(opts options) {
+	g, err := startGateway(opts)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if err := g.run(); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
+
+// startGateway performs every startup step up to and including the bind. It
+// returns an error (never exits) so tests can assert the same behavior.
+func startGateway(opts options) (*gateway, error) {
 	configDir := opts.configDir
 
 	// Ensure the config dir exists and is writable before doing anything else.
 	if err := os.MkdirAll(configDir, 0700); err != nil {
-		log.Fatalf("create config dir %s: %v", configDir, err)
+		return nil, fmt.Errorf("create config dir %s: %w", configDir, err)
 	}
 	if err := checkWritableDir(configDir); err != nil {
-		log.Fatalf("config dir %s is not writable: %v\nhint: copy the goprox binary to a writable directory (do NOT use a symlink)", configDir, err)
+		return nil, fmt.Errorf("config dir %s is not writable: %v\nhint: copy the goprox binary to a writable directory (do NOT use a symlink)", configDir, err)
 	}
 	// Create config/users up front. A fresh install has no user configs yet;
 	// without this directory every registry scan fails (and logs) until the
 	// first `goprox user` command runs.
 	if err := os.MkdirAll(config.UsersDir(configDir), 0700); err != nil {
-		log.Fatalf("create users dir %s: %v", config.UsersDir(configDir), err)
+		return nil, fmt.Errorf("create users dir %s: %w", config.UsersDir(configDir), err)
 	}
 
 	statePath := config.StatePath(configDir)
 
 	state, err := config.LoadState(statePath)
 	if err != nil {
-		log.Fatalf("load state: %v", err)
+		return nil, fmt.Errorf("load state: %w", err)
 	}
 
 	// Apply CLI overrides. Host/port are persisted in state.yaml, so only an
@@ -50,7 +77,7 @@ func runServer(opts options) {
 		state.Server.TrustedProxy = opts.trustedProxy
 	}
 	if !config.IsValidTrustedProxy(state.Server.TrustedProxy) {
-		log.Fatalf("invalid --trusted-proxy %q (must be an IP or CIDR)", state.Server.TrustedProxy)
+		return nil, fmt.Errorf("invalid --trusted-proxy %q (must be an IP or CIDR)", state.Server.TrustedProxy)
 	}
 	if opts.title != "" {
 		state.Server.Title = opts.title
@@ -62,7 +89,7 @@ func runServer(opts options) {
 	if opts.tlsSelfSigned {
 		cert, key, err := ensureSelfSignedCert(filepath.Join(configDir, "tls"))
 		if err != nil {
-			log.Fatalf("generate self-signed cert: %v", err)
+			return nil, fmt.Errorf("generate self-signed cert: %w", err)
 		}
 		state.Server.TLSCert = mustAbsPath(cert)
 		state.Server.TLSKey = mustAbsPath(key)
@@ -70,37 +97,37 @@ func runServer(opts options) {
 	if opts.publicHost != "" {
 		v, err := config.NormalizePublicHost(opts.publicHost)
 		if err != nil {
-			log.Fatalf("invalid --public-host: %v", err)
+			return nil, fmt.Errorf("invalid --public-host: %w", err)
 		}
 		state.Server.PublicHost = v
 	}
 	if opts.publicScheme != "" {
 		v, err := config.NormalizePublicScheme(opts.publicScheme)
 		if err != nil {
-			log.Fatalf("invalid --public-scheme: %v", err)
+			return nil, fmt.Errorf("invalid --public-scheme: %w", err)
 		}
 		state.Server.PublicScheme = v
 	}
 	if opts.cookieDomain != "" {
 		v, err := config.NormalizeCookieDomain(opts.cookieDomain)
 		if err != nil {
-			log.Fatalf("invalid --cookie-domain: %v", err)
+			return nil, fmt.Errorf("invalid --cookie-domain: %w", err)
 		}
 		state.Server.CookieDomain = v
 	}
 	tlsEnabled := state.Server.TLSCert != "" && state.Server.TLSKey != ""
 	if tlsEnabled {
 		if _, err := os.Stat(state.Server.TLSCert); err != nil {
-			log.Fatalf("tls cert %s: %v", state.Server.TLSCert, err)
+			return nil, fmt.Errorf("tls cert %s: %w", state.Server.TLSCert, err)
 		}
 		if _, err := os.Stat(state.Server.TLSKey); err != nil {
-			log.Fatalf("tls key %s: %v", state.Server.TLSKey, err)
+			return nil, fmt.Errorf("tls key %s: %w", state.Server.TLSKey, err)
 		}
 	}
 
 	srv := server.New(state, configDir)
 	if err := srv.ValidateVHosts(); err != nil {
-		log.Fatalf("invalid virtual-host config: %v", err)
+		return nil, fmt.Errorf("invalid virtual-host config: %w", err)
 	}
 
 	httpServer := &http.Server{
@@ -122,11 +149,11 @@ func runServer(opts options) {
 		log.Printf("WARNING: %s", warn)
 	}
 
-	// Bind the listener before writing the pidfile so that a failed bind
-	// (e.g. port already in use) aborts here instead of leaving a stale pidfile.
+	// Bind before persisting: a failed bind (port already in use) must abort
+	// here instead of overwriting state.yaml with a port we never bound.
 	listener, err := net.Listen("tcp", httpServer.Addr)
 	if err != nil {
-		log.Fatalf("listen on %s: %v", httpServer.Addr, err)
+		return nil, fmt.Errorf("listen on %s: %w", httpServer.Addr, err)
 	}
 
 	// Persist server config only after the listener is up. Persisting before
@@ -140,11 +167,24 @@ func runServer(opts options) {
 		log.Printf("[goprox] WARNING: failed to persist server config to %s: %v", statePath, err)
 	}
 
-	// Start config scanner
-	stopScan := make(chan struct{})
-	go srv.ScanLoop(10*time.Second, stopScan)
+	return &gateway{
+		configDir: configDir,
+		statePath: statePath,
+		state:     state,
+		srv:       srv,
+		http:      httpServer,
+		listener:  listener,
+		tls:       tlsEnabled,
+	}, nil
+}
 
-	// Graceful shutdown
+// run serves until a termination signal, then shuts down gracefully.
+func (g *gateway) run() error {
+	g.logStartup()
+
+	stopScan := make(chan struct{})
+	go g.srv.ScanLoop(10*time.Second, stopScan)
+
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -153,46 +193,53 @@ func runServer(opts options) {
 		close(stopScan)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(ctx); err != nil {
+		if err := g.http.Shutdown(ctx); err != nil {
 			log.Printf("graceful shutdown: %v; forcing close", err)
-			httpServer.Close()
+			g.http.Close()
 		}
 	}()
 
+	if err := g.serve(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// serve blocks in the HTTP server (plain HTTP or TLS).
+func (g *gateway) serve() error {
+	if g.tls {
+		return g.http.ServeTLS(g.listener, g.state.Server.TLSCert, g.state.Server.TLSKey)
+	}
+	return g.http.Serve(g.listener)
+}
+
+func (g *gateway) logStartup() {
 	scheme := "http"
-	if tlsEnabled {
+	if g.tls {
 		scheme = "https"
 	}
-	log.Printf("listening on %s://%s:%d", scheme, state.Server.Host, state.Server.Port)
-	log.Printf("config: %s", configDir)
-	log.Printf("users: %s", config.UsersDir(configDir))
-	log.Printf("%d user(s) loaded", srv.UserCount())
-	if tlsEnabled {
-		log.Printf("tls: %s (cert), %s (key)", state.Server.TLSCert, state.Server.TLSKey)
+	log.Printf("listening on %s://%s:%d", scheme, g.state.Server.Host, g.state.Server.Port)
+	log.Printf("config: %s", g.configDir)
+	log.Printf("users: %s", config.UsersDir(g.configDir))
+	log.Printf("%d user(s) loaded", g.srv.UserCount())
+	if g.tls {
+		log.Printf("tls: %s (cert), %s (key)", g.state.Server.TLSCert, g.state.Server.TLSKey)
 	}
-	if state.Server.TrustedProxy != "" {
-		if config.IsTrustedProxyTooBroad(state.Server.TrustedProxy) {
-			log.Printf("WARNING: trusted proxy %q covers the whole address space; any client can spoof X-Forwarded-* headers and defeat login rate limiting", state.Server.TrustedProxy)
+	if g.state.Server.TrustedProxy != "" {
+		if config.IsTrustedProxyTooBroad(g.state.Server.TrustedProxy) {
+			log.Printf("WARNING: trusted proxy %q covers the whole address space; any client can spoof X-Forwarded-* headers and defeat login rate limiting", g.state.Server.TrustedProxy)
 		}
-		log.Printf("trusted proxy: %s (X-Forwarded-For/Proto trusted only from this CIDR)", state.Server.TrustedProxy)
+		log.Printf("trusted proxy: %s (X-Forwarded-For/Proto trusted only from this CIDR)", g.state.Server.TrustedProxy)
 	} else {
 		log.Printf("trusted proxy: none (X-Forwarded-* headers ignored)")
 	}
 
-	if state.SSO.UserHeader != "" {
+	if g.state.SSO.UserHeader != "" {
 		mode := "unsigned (backend must be network-isolated)"
-		if state.SSO.HMACSecret != "" {
+		if g.state.SSO.HMACSecret != "" {
 			mode = "HMAC-signed"
 		}
-		log.Printf("sso: %s = <username> (%s)", state.SSO.UserHeader, mode)
-	}
-
-	if tlsEnabled {
-		if err := httpServer.ServeTLS(listener, state.Server.TLSCert, state.Server.TLSKey); err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
-		}
-	} else if err := httpServer.Serve(listener); err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+		log.Printf("sso: %s = <username> (%s)", g.state.SSO.UserHeader, mode)
 	}
 }
 
@@ -215,3 +262,23 @@ func listenExposureWarning(host string, tlsEnabled bool, trustedProxy string) st
 
 // mustAbsPath resolves a persisted file path (TLS cert/key) to an absolute one,
 // so a later restart from a different working directory still finds it.
+func mustAbsPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
+
+// checkWritableDir verifies the gateway can create files in dir (a copy of the
+// binary in a read-only location would break every config write).
+func checkWritableDir(dir string) error {
+	probe := filepath.Join(dir, ".goprox-write-test")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	os.Remove(probe)
+	return nil
+}
