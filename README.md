@@ -460,6 +460,17 @@ services:
 > 目录不存在或不可读时，加载配置会跳过该服务并打印一次警告（`skip files service ...`），
 > 而不是让卡片变成 500。
 
+⚠️ **权限边界**：文件浏览卡片由**登录用户**自行配置，网关能读什么它就能显示什么。
+因此：
+
+- **网关配置目录（含 `state.yaml`、`users/*.yaml`）被硬性禁止挂载**——包括它的上级目录
+  和指向它的符号链接（校验按 `EvalSymlinks` 后的路径做重叠判断）。否则任何普通账号都能
+  读到 `session_secret` 与所有人的密码哈希/TOTP 密钥，进而伪造任意账号会话；
+- 请用**最小权限账号**运行 goprox，并配合文件系统 ACL / systemd 加固
+  （`ProtectHome=`、`ProtectSystem=strict`、`ReadOnlyPaths=`）限制它能看到的数据；
+- 多人共用网关且需要更强隔离时，建议只把共享数据目录（如 `/data/share`）挂成卡片，
+  不要把 `/`、`/home`、`/opt` 一类上级目录交给普通用户。
+
 ### 网关状态 (`config/state.yaml`)
 
 ```yaml

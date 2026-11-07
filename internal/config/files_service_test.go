@@ -159,3 +159,69 @@ func TestNormalizeServiceKind(t *testing.T) {
 		}
 	}
 }
+
+// A files root must never overlap the gateway config directory: a logged-in
+// user could otherwise download state.yaml (session secret) and every user's
+// password hash / TOTP secret, then forge sessions for any account.
+func TestFilesRootRejectsConfigDirOverlap(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	usersDir := filepath.Join(configDir, "users")
+	share := filepath.Join(base, "share")
+	for _, dir := range []string{usersDir, share} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(usersDir, "alice.yaml")
+
+	for _, root := range []string{
+		configDir,                   // the config dir itself
+		usersDir,                    // the users dir
+		base,                        // an ancestor containing the config dir
+		filepath.Join(base, "link"), // symlink to the config dir (below)
+	} {
+		if root == filepath.Join(base, "link") {
+			if err := os.Symlink(configDir, root); err != nil {
+				t.Skipf("symlink: %v", err)
+			}
+		}
+		if _, err := ValidateFileRoot(root, configPath); err == nil {
+			t.Errorf("ValidateFileRoot(%q) accepted a config-dir overlap", root)
+		}
+	}
+
+	// A sibling directory is fine.
+	if got, err := ValidateFileRoot(share, configPath); err != nil || got != share {
+		t.Fatalf("ValidateFileRoot(share) = %q, %v", got, err)
+	}
+}
+
+// The loader must drop a hand-written config that tries the same thing.
+func TestLoadFilesServiceSkipsConfigDirRoot(t *testing.T) {
+	dir := t.TempDir()
+	usersDir := filepath.Join(dir, "users")
+	if err := os.MkdirAll(usersDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	root := dir // contains the config dir
+	path := writeUserYAML(t, dir, "alice",
+		"services:\n  - id: data\n    name: d\n    kind: files\n    path: /data\n    root: "+root+"\n")
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 0 {
+		t.Fatalf("service must be skipped, got %+v", cfg.Services)
+	}
+}
+
+// The API is the user-facing entry point: creating or editing a card that
+// points at the config dir must fail with a clear error.
+func TestAddFilesServiceRejectsConfigDirRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := writeUserYAML(t, dir, "alice", "services: []\n")
+	if _, err := AddService(path, ServiceConfig{Name: "cfg", Kind: ServiceKindFiles, Path: "/cfg", Root: dir}); err == nil {
+		t.Fatal("AddService accepted a root overlapping the config dir")
+	}
+}
