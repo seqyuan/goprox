@@ -27,6 +27,15 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.12.0 — 2026-11-07（日志页与卡片体检）</h2>
+    <ul>
+      <li><strong>每用户日志页 <code>/logs</code></strong>（账号菜单入口）：登录（成功 / 失败原因）、卡片访问（成功 / 失败 / 耗时 / 原因）、连通性检测结果；服务端渲染，前端资源坏了也能看；另有 <code>GET /api/logs?limit=N</code> 返回 JSON。只显示本人记录，不引入管理员角色。</li>
+      <li><strong>卡片「测一下」/「全部测一下」</strong>：只读探测（代理卡片 3 秒 TCP 连接、文件卡片检查目录可读），状态灯 灰/黄/绿/红 + 悬停原因；<code>POST /api/services/{id}/probe</code>。可用来回答「这张卡片到底通不通、为什么不通」。</li>
+      <li><strong>记录策略</strong>：每账号 500 条内存历史，重启清空；静态资源（JS/CSS/图片）不记录；登录失败只对已存在账号记录，避免随机用户名撑大内存；探测仍受私网 allowlist 约束。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.11.0 — 2026-11-07（同主机多实例隔离）</h2>
     <ul>
       <li><strong><code>auth.cookie_suffix</code></strong>：浏览器按主机（忽略端口）存 Cookie，同主机多个 goprox 会互相覆盖 session / 2FA / route Cookie。配置后缀后每个实例使用 <code>goprox_session_&lt;suffix&gt;</code>、<code>goprox_2fa_&lt;suffix&gt;</code>、<code>goprox_2fa_setup_&lt;suffix&gt;</code>、<code>goprox_route_&lt;suffix&gt;</code>；默认空值保持历史命名，升级无感。</li>
