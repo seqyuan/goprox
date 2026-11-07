@@ -30,7 +30,7 @@ func NormalizeServiceKind(kind string) (string, bool) {
 // account. The check runs on the symlink-resolved paths, so a link cannot be
 // used to reach the config directory either.
 
-func ValidateFileRoot(root, configPath string) (string, error) {
+func ValidateFileRoot(root, configPath string, userRoots []string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return "", fmt.Errorf("目录路径不能为空（填写服务端绝对路径，例如 /data/share）")
@@ -50,6 +50,9 @@ func ValidateFileRoot(root, configPath string) (string, error) {
 		return "", err
 	}
 	if err := assertWithinFilesRoots(clean); err != nil {
+		return "", err
+	}
+	if err := assertWithinUserRoots(clean, userRoots); err != nil {
 		return "", err
 	}
 	f, err := os.Open(clean)

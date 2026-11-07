@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,13 +187,13 @@ func TestFilesRootRejectsConfigDirOverlap(t *testing.T) {
 				t.Skipf("symlink: %v", err)
 			}
 		}
-		if _, err := ValidateFileRoot(root, configPath); err == nil {
+		if _, err := ValidateFileRoot(root, configPath, nil); err == nil {
 			t.Errorf("ValidateFileRoot(%q) accepted a config-dir overlap", root)
 		}
 	}
 
 	// A sibling directory is fine.
-	if got, err := ValidateFileRoot(share, configPath); err != nil || got != share {
+	if got, err := ValidateFileRoot(share, configPath, nil); err != nil || got != share {
 		t.Fatalf("ValidateFileRoot(share) = %q, %v", got, err)
 	}
 }
@@ -244,13 +245,13 @@ func TestFilesRootAllowlist(t *testing.T) {
 	t.Cleanup(func() { SetFilesRootAllowlist(nil) })
 
 	SetFilesRootAllowlist([]string{allowed})
-	if _, err := ValidateFileRoot(filepath.Join(allowed, "sub"), configPath); err != nil {
+	if _, err := ValidateFileRoot(filepath.Join(allowed, "sub"), configPath, nil); err != nil {
 		t.Fatalf("allowed subtree rejected: %v", err)
 	}
-	if _, err := ValidateFileRoot(allowed, configPath); err != nil {
+	if _, err := ValidateFileRoot(allowed, configPath, nil); err != nil {
 		t.Fatalf("allowed root rejected: %v", err)
 	}
-	if _, err := ValidateFileRoot(other, configPath); err == nil {
+	if _, err := ValidateFileRoot(other, configPath, nil); err == nil {
 		t.Fatal("root outside the allowlist was accepted")
 	}
 
@@ -259,13 +260,13 @@ func TestFilesRootAllowlist(t *testing.T) {
 	if err := os.Symlink(other, link); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
-	if _, err := ValidateFileRoot(link, configPath); err == nil {
+	if _, err := ValidateFileRoot(link, configPath, nil); err == nil {
 		t.Fatal("symlink escaping the allowlist was accepted")
 	}
 
 	// Empty allowlist: permissive again (the config-dir rule still applies).
 	SetFilesRootAllowlist(nil)
-	if _, err := ValidateFileRoot(other, configPath); err != nil {
+	if _, err := ValidateFileRoot(other, configPath, nil); err != nil {
 		t.Fatalf("empty allowlist should be permissive, got %v", err)
 	}
 }
@@ -289,3 +290,121 @@ func TestNormalizeFilesRoots(t *testing.T) {
 		t.Fatalf("empty list = %v, %v", got, err)
 	}
 }
+
+// A user-level files_roots list narrows that user's file cards further; an
+// invalid list fails closed (all of the user's files cards are dropped).
+func TestUserFilesRoots(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	home := filepath.Join(base, "home-alice")
+	other := filepath.Join(base, "home-bob")
+	for _, dir := range []string{filepath.Join(configDir, "users"), home, filepath.Join(home, "data"), other} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := "services:\n  - id: data\n    name: d\n    kind: files\n    path: /data\n    root: %s\n"
+
+	// Inside the user's list: kept.
+	path := writeUserYAML(t, configDir, "alice", "files_roots:\n  - "+home+"\n"+fmt.Sprintf(svc, filepath.Join(home, "data")))
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 1 {
+		t.Fatalf("allowed user root was dropped: %+v", cfg.Services)
+	}
+
+	// Outside the user's list: dropped.
+	path = writeUserYAML(t, configDir, "alice", "files_roots:\n  - "+home+"\n"+fmt.Sprintf(svc, other))
+	cfg, err = LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 0 {
+		t.Fatalf("user root outside files_roots was loaded: %+v", cfg.Services)
+	}
+
+	// A symlink inside the allowed tree pointing outside is resolved and
+	// refused.
+	link := filepath.Join(home, "escape")
+	if err := os.Symlink(other, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	path = writeUserYAML(t, configDir, "alice", "files_roots:\n  - "+home+"\n"+fmt.Sprintf(svc, link))
+	cfg, err = LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 0 {
+		t.Fatalf("symlink escaping user files_roots was loaded: %+v", cfg.Services)
+	}
+
+	// Invalid list (relative path): fail closed even for a valid root.
+	path = writeUserYAML(t, configDir, "alice", "files_roots:\n  - relative\n"+fmt.Sprintf(svc, filepath.Join(home, "data")))
+	cfg, err = LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 0 {
+		t.Fatalf("invalid files_roots must disable the user's files services: %+v", cfg.Services)
+	}
+}
+
+// The API path (AddService/UpdateService) must enforce the user list too.
+func TestAddFilesServiceRespectsUserRoots(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{home, outside} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	path := writeUserYAML(t, dir, "alice", "files_roots:\n  - "+home+"\nservices: []\n")
+
+	if _, err := AddService(path, ServiceConfig{Name: "ok", Kind: ServiceKindFiles, Path: "/ok", Root: home}); err != nil {
+		t.Fatalf("root inside user files_roots rejected: %v", err)
+	}
+	if _, err := AddService(path, ServiceConfig{Name: "bad", Kind: ServiceKindFiles, Path: "/bad", Root: outside}); err == nil {
+		t.Fatal("root outside user files_roots accepted")
+	}
+}
+
+// Service CRUD rewrites the services block only: an administrator-managed
+// files_roots list must survive add/update/layout writes.
+func TestUserFilesRootsSurviveServiceWrites(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := writeUserYAML(t, dir, "alice", "files_roots:\n  - "+home+"\nservices: []\n")
+
+	added, err := AddService(path, ServiceConfig{Name: "data", Kind: ServiceKindFiles, Path: "/data", Root: home})
+	if err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+	if err := UpdateService(path, added.ID, ServiceUpdate{Name: stringPtr("数据"), ShowHidden: boolPtr(true)}); err != nil {
+		t.Fatalf("UpdateService: %v", err)
+	}
+	if err := UpdateServicesLayout(path, []LayoutItem{{ID: added.ID, Order: 0, Category: "共享"}}); err != nil {
+		t.Fatalf("UpdateServicesLayout: %v", err)
+	}
+
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.FilesRoots) != 1 || cfg.FilesRoots[0] != home {
+		t.Fatalf("files_roots lost by service writes: %+v", cfg.FilesRoots)
+	}
+	if len(cfg.Services) != 1 || !cfg.Services[0].ShowHidden {
+		t.Fatalf("service update not applied: %+v", cfg.Services)
+	}
+}
+
+func stringPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool       { return &b }

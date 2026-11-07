@@ -72,6 +72,9 @@ cd /opt/goprox
 暴露到公网前，请先在网关前放一个反向代理终结 TLS（Caddy / nginx），
 并让 GoProx 只监听回环 + 设置 `--trusted-proxy`。详见 **[docs/reverse-proxy-tls.md](docs/reverse-proxy-tls.md)**。
 
+> 如果启动时是「监听所有网卡 + 纯 HTTP + 未配置 trusted_proxy」，网关会在日志里打印一条
+> `WARNING: listening on all interfaces over plain HTTP ...` 提醒你这一组合不能直接暴露到公网。
+
 如果走 **Cloudflare 隧道（cloudflared）** 把公网域名转发到本机 HTTPS 端口，
 注意 cloudflared 会严格校验 origin 证书（自签证书会被拒、Origin CA 存在
 hostname 不匹配问题）——正解是本地 CA + `localhost` SAN + 系统信任库 +
@@ -469,6 +472,11 @@ services:
 - **共享网关建议配置白名单**：`state.yaml` 里写 `server.files_roots: ["/data", "/share"]`，
   之后 `root` 必须落在这些目录内（子目录可以；符号链接指向外部会被解析后拒绝）。留空则
   保持「除配置目录外不限制」；
+- **按用户再加一层**：在 `config/users/<用户>.yaml` 顶部写
+  `files_roots: ["/data/alice"]`，该用户的文件卡片只能落在自己的目录内（同样按
+  `EvalSymlinks` 判断）。这个字段只能由管理员改 YAML——仪表盘/API 不会读写它，所以用户
+  无法给自己放宽；列表写错（相对路径/不存在/非目录）时**该用户所有文件卡片都会被停用**
+  （失败即关闭，避免手滑放宽权限）；
 - 请用**最小权限账号**运行 goprox，并配合文件系统 ACL / systemd 加固
   （`ProtectHome=`、`ProtectSystem=strict`、`ReadOnlyPaths=`）限制它能看到的数据；
 - 多人共用网关且需要更强隔离时，建议只把共享数据目录（如 `/data/share`）挂成卡片，

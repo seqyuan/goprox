@@ -23,6 +23,11 @@ type UserConfig struct {
 	// SPAs (Nuxt/Next client routers that cannot understand a /proxy/ prefix)
 	// then work at the gateway root with zero app changes.
 	DefaultService string `yaml:"default_service,omitempty"`
+	// FilesRoots optionally narrows this user's kind:"files" services to the
+	// listed directories (on top of the gateway-wide server.files_roots). Only
+	// an administrator editing the YAML can set it: the dashboard/API never
+	// touch this field, so a user cannot widen their own access.
+	FilesRoots []string `yaml:"files_roots,omitempty"`
 }
 
 type UserAuthConfig struct {
@@ -225,6 +230,39 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		cfg.Services = []ServiceConfig{}
 	}
 
+	// Per-user file-browsing allowlist. An invalid entry must fail closed: a
+	// typo would otherwise silently widen access, so every kind:"files" service
+	// of this user is dropped until the list is fixed.
+	userFilesRoots, filesRootsErr := normalizeFilesRoots("files_roots", cfg.FilesRoots)
+	if filesRootsErr != nil {
+		key := path + "\x00files-roots"
+		if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+			log.Printf("[goprox] %s: invalid files_roots (%v); all files services of this user are disabled", path, filesRootsErr)
+		}
+	} else {
+		cfg.FilesRoots = userFilesRoots
+		// Diagnostic: a user list wider than the gateway allowlist is not an
+		// error (the gateway bound still applies), but it is almost always a
+		// mistake and silently surfaces as "card refused" later.
+		if global := FilesRootAllowlist(); len(global) > 0 {
+			for _, r := range cfg.FilesRoots {
+				inside := false
+				for _, g := range global {
+					if within(r, g) {
+						inside = true
+						break
+					}
+				}
+				if !inside {
+					key := path + "\x00files-roots-global\x00" + r
+					if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+						log.Printf("[goprox] %s: files_roots entry %s is outside server.files_roots and will be refused", path, r)
+					}
+				}
+			}
+		}
+	}
+
 	// Normalize service paths. Services with characters that would break
 	// proxied pages (<base> injection), route cookies, or routing are skipped
 	// and reported once so the operator can fix the config.
@@ -269,7 +307,15 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 		}
 		cfg.Services[i].Kind = kind
 		if kind == ServiceKindFiles {
-			root, err := ValidateFileRoot(cfg.Services[i].Root, path)
+			if filesRootsErr != nil {
+				key := path + "\x00" + cfg.Services[i].ID + "\x00root-disabled"
+				if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {
+					log.Printf("[goprox] skip files service %q of %s: files_roots is invalid", cfg.Services[i].ID, path)
+				}
+				cfg.Services = append(cfg.Services[:i], cfg.Services[i+1:]...)
+				continue
+			}
+			root, err := ValidateFileRoot(cfg.Services[i].Root, path, cfg.FilesRoots)
 			if err != nil {
 				key := path + "\x00" + cfg.Services[i].ID + "\x00root"
 				if _, loaded := warnedInvalidPath.LoadOrStore(key, struct{}{}); !loaded {

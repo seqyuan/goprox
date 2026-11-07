@@ -102,7 +102,7 @@ func AddService(configPath string, svc ServiceConfig) (ServiceConfig, error) {
 		}
 		svc.Kind = kind
 		if kind == ServiceKindFiles {
-			root, err := ValidateFileRoot(svc.Root, configPath)
+			root, err := ValidateFileRoot(svc.Root, configPath, cfg.FilesRoots)
 			if err != nil {
 				return err
 			}
@@ -387,7 +387,7 @@ func UpdateService(configPath, id string, update ServiceUpdate) error {
 				}
 				cfg.Services[i].Kind = kind
 				if kind == ServiceKindFiles {
-					root, err := ValidateFileRoot(cfg.Services[i].Root, configPath)
+					root, err := ValidateFileRoot(cfg.Services[i].Root, configPath, cfg.FilesRoots)
 					if err != nil {
 						return err
 					}

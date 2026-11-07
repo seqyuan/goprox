@@ -47,6 +47,12 @@ func FilesRootAllowlist() []string {
 
 // NormalizeFilesRoots validates and normalizes server.files_roots.
 func NormalizeFilesRoots(roots []string) ([]string, error) {
+	return normalizeFilesRoots("server.files_roots", roots)
+}
+
+// normalizeFilesRoots is NormalizeFilesRoots with a label for error messages, so
+// a per-user list does not report itself as a server setting.
+func normalizeFilesRoots(label string, roots []string) ([]string, error) {
 	if len(roots) == 0 {
 		return nil, nil
 	}
@@ -58,15 +64,15 @@ func NormalizeFilesRoots(roots []string) ([]string, error) {
 			continue
 		}
 		if !filepath.IsAbs(raw) {
-			return nil, fmt.Errorf("server.files_roots entry %q must be an absolute path", raw)
+			return nil, fmt.Errorf("%s entry %q must be an absolute path", label, raw)
 		}
 		clean := filepath.Clean(raw)
 		st, err := os.Stat(clean)
 		if err != nil {
-			return nil, fmt.Errorf("server.files_roots entry %q: %w", raw, err)
+			return nil, fmt.Errorf("%s entry %q: %w", label, raw, err)
 		}
 		if !st.IsDir() {
-			return nil, fmt.Errorf("server.files_roots entry %q is not a directory", raw)
+			return nil, fmt.Errorf("%s entry %q is not a directory", label, raw)
 		}
 		key := resolveSymlinks(clean)
 		if seen[key] {
@@ -94,4 +100,21 @@ func assertWithinFilesRoots(root string) error {
 	}
 	return fmt.Errorf("目录 %s 不在允许挂载的白名单内（state.yaml 的 server.files_roots）：%s",
 		root, strings.Join(allowed, ", "))
+}
+
+// assertWithinUserRoots enforces a user-level files_roots list (narrower than
+// the gateway-wide allowlist). Set by an administrator in
+// config/users/<name>.yaml; the dashboard/API never write this field.
+func assertWithinUserRoots(root string, userRoots []string) error {
+	if len(userRoots) == 0 {
+		return nil
+	}
+	resolved := resolveSymlinks(root)
+	for _, dir := range userRoots {
+		if within(resolved, dir) {
+			return nil
+		}
+	}
+	return fmt.Errorf("目录 %s 不在该用户允许挂载的目录内（用户配置的 files_roots）：%s",
+		root, strings.Join(userRoots, ", "))
 }
