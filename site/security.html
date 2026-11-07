@@ -44,6 +44,7 @@
     <ul>
       <li><strong>登出改为 POST</strong>：GET <code>/logout</code> 只渲染确认页，不改变会话；POST 校验 Origin，并同时清理 Domain / host-only session、2FA pending/setup 与全部 route Cookie。</li>
       <li><strong>网关 Cookie 命名空间</strong>：所有 <code>goprox_*</code> Cookie 在转发给后端前剥离；后端设置的 <code>goprox_*</code> Cookie 也会被丢弃。防止 2FA setup Cookie 携带的 TOTP 密钥泄漏，也防止裸路径下后端覆盖 session/route Cookie（Cookie tossing）。</li>
+      <li><strong>同主机多实例隔离（v0.11.0）</strong>：<code>auth.cookie_suffix</code> 让每个实例使用 <code>goprox_session_&lt;suffix&gt;</code> 等独立 Cookie 名，避免忽略端口的浏览器把两个实例的会话互相覆盖；退出登录只清理本实例的 Cookie。</li>
       <li><strong>2FA 令牌绑定</strong>：setup token 绑定当前用户，pending token 绑定密码哈希 rev；共享浏览器不能跨账号绑定，改密后未完成的登录步骤失效。</li>
       <li><strong>Referer 同源</strong>：只有与当前访问地址同 authority 的 Referer 才参与裸路径/root_absolute 路由，外部页面不能用自己的路径影响转发。</li>
       <li><strong>转发头加固</strong>：<code>X-Real-IP</code> 覆盖为真实客户端；清理 <code>Forwarded</code>、<code>X-Original-URL</code>、<code>X-Rewrite-URL</code>、<code>X-Forwarded-Port/Server</code>；XFF 从右向左取第一个非可信跳点。</li>

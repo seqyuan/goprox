@@ -27,6 +27,16 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.11.0 — 2026-11-07（同主机多实例隔离）</h2>
+    <ul>
+      <li><strong><code>auth.cookie_suffix</code></strong>：浏览器按主机（忽略端口）存 Cookie，同主机多个 goprox 会互相覆盖 session / 2FA / route Cookie。配置后缀后每个实例使用 <code>goprox_session_&lt;suffix&gt;</code>、<code>goprox_2fa_&lt;suffix&gt;</code>、<code>goprox_2fa_setup_&lt;suffix&gt;</code>、<code>goprox_route_&lt;suffix&gt;</code>；默认空值保持历史命名，升级无感。</li>
+      <li>读写路径全部按实例命名（登录/续期、2FA pending/setup、route）；<strong>退出只清理本实例 Cookie</strong>，不会把同主机另一实例的用户登出；网关 Cookie 仍按 <code>goprox_</code> 命名空间整体从后端请求剥离。</li>
+      <li>非法后缀（非 <code>[A-Za-z0-9_-]{1,32}</code>）启动即失败，不静默回退；<code>goprox check</code> 输出生效后缀；配置后缀后该实例用户需重新登录一次。</li>
+      <li><strong>serve 启动路径可测化</strong>：拆出 <code>startGateway</code>（返回 error）+ <code>gateway.run/serve</code>，新增明文启动/登录页/监听持久化、<code>--tls-selfsigned</code> 真实 HTTPS 与重启复用证书、vhost 配置不全、端口占用、非法 CLI 值等集成测试；<code>main</code> 覆盖率 40.6% → 50.9%。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.10.0 — 2026-11-07（用户级文件权限）</h2>
     <ul>
       <li><strong>按用户的文件浏览白名单</strong>：用户 YAML 顶层 <code>files_roots</code>，在该用户的文件卡片上再收一层（与 <code>server.files_roots</code> 取交集，按 <code>EvalSymlinks</code> 判断，符号链接逃逸拒绝）。仪表盘 / API 不读写该字段，用户无法自我放宽；列表非法时该用户文件卡片<strong>全部停用</strong>（失败即关闭）。</li>

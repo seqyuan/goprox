@@ -560,6 +560,8 @@ if !hmac.Equal([]byte(sig), []byte(base64.RawURLEncoding.EncodeToString(mac.Sum(
 
 ### 同一主机多个实例（`cookie_suffix`）
 
+> 适用版本：v0.11.0+。
+
 浏览器按 **主机** 存 Cookie、忽略端口，所以同一台机器上跑两个 goprox（例如 1907 / 1908
 两个实验室项目）默认会互相覆盖 session、2FA 与 route Cookie——表现为「登录 A 之后 B 掉线」
 「在 B 里点链接却回到 A 的服务」。
