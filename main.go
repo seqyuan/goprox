@@ -508,6 +508,9 @@ func runConfigCheck(opts options) {
 	fmt.Printf("[goprox] public_host: %q\n", state.Server.PublicHost)
 	fmt.Printf("[goprox] public_scheme: %q\n", state.Server.PublicScheme)
 	fmt.Printf("[goprox] cookie_domain: %q\n", state.Server.CookieDomain)
+	if roots := config.FilesRootAllowlist(); len(roots) > 0 {
+		fmt.Printf("[goprox] files_roots: %v\n", roots)
+	}
 	hosts := srv.HostEntries()
 	fmt.Printf("[goprox] users: %d, services: %d, virtual hosts: %d\n", srv.UserCount(), srv.ServiceCount(), len(hosts))
 	if len(hosts) == 0 {
