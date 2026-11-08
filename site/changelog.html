@@ -27,6 +27,16 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.13.0 — 2026-11-09（日志落盘）</h2>
+    <ul>
+      <li><strong><code>/logs</code> 历史持久化</strong>：事件写入 <code>&lt;配置目录&gt;/logs/events-YYYY-MM-DD.jsonl</code>（每日一个文件），默认保留 <strong>7 天</strong>并自动清理；网关重启后历史仍在。</li>
+      <li><strong>三个开关</strong>：<code>server.log_retention_days</code> 取 1–3650；<code>0</code> = 只存内存（不建目录）；缺省 7；越界启动报错。<code>goprox check</code> 会打印日志目录与保留天数。</li>
+      <li><strong>稳健性</strong>：读取按天文件从新到旧聚合（单文件最多 8 MB）；崩溃留下的半行 JSON 自动跳过；日志目录不可写时告警并退回内存模式，网关照常运行。</li>
+      <li><strong>安全</strong>：盘上只记录账号 / 类型 / 卡片 / 结果 / 原因 / 耗时，不含密码、Cookie 或后端响应体；文件权限 <code>0600</code>、目录 <code>0700</code>；页面与 API 仍只返回本人记录。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.12.0 — 2026-11-07（日志页与卡片体检）</h2>
     <ul>
       <li><strong>每用户日志页 <code>/logs</code></strong>（账号菜单入口）：登录（成功 / 失败原因）、卡片访问（成功 / 失败 / 耗时 / 原因）、连通性检测结果；服务端渲染，前端资源坏了也能看；另有 <code>GET /api/logs?limit=N</code> 返回 JSON。只显示本人记录，不引入管理员角色。</li>
