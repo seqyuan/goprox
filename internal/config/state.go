@@ -78,6 +78,10 @@ type ServerState struct {
 	// CookieDomain makes the session cookie shared across service subdomains
 	// (e.g. ".gw.example.com"). Required when any service declares hostnames.
 	CookieDomain string `yaml:"cookie_domain,omitempty"`
+	// LogRetentionDays controls how long the per-user event history (the /logs
+	// page) is kept on disk, in days. nil keeps the default (7); 0 disables disk
+	// logging entirely (memory only, cleared on restart).
+	LogRetentionDays *int `yaml:"log_retention_days,omitempty"`
 	// FilesRoots restricts kind:"files" services to these directories (and
 	// their subdirectories). Empty means "anywhere the gateway account can
 	// read", minus the gateway config directory, which is always refused.
@@ -171,6 +175,12 @@ func LoadState(path string) (*StateConfig, error) {
 	}
 	if s.Auth.CookieSuffix, err = NormalizeCookieSuffix(s.Auth.CookieSuffix); err != nil {
 		return nil, err
+	}
+	if s.Server.LogRetentionDays != nil {
+		v := *s.Server.LogRetentionDays
+		if v < 0 || v > 3650 {
+			return nil, fmt.Errorf("server.log_retention_days %d must be between 0 (memory only) and 3650", v)
+		}
 	}
 
 	// A hand-edited user_header must be a valid header name; anything else
@@ -278,3 +288,16 @@ func writeStateFile(path string, v interface{}) error {
 	// 0600: state.yaml holds the session_secret.
 	return writeFileAtomic(path, data, 0600)
 }
+
+// LogRetention returns the number of days the per-user event history is kept on
+// disk (0 = memory only). Unset means DefaultEventLogRetentionDays.
+func (s ServerState) LogRetention() int {
+	if s.LogRetentionDays == nil {
+		return DefaultEventLogRetentionDays
+	}
+	return *s.LogRetentionDays
+}
+
+// DefaultEventLogRetentionDays is how long /logs history is kept when
+// server.log_retention_days is not set.
+const DefaultEventLogRetentionDays = 7

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -180,5 +181,43 @@ func TestNormalizeCookieSuffix(t *testing.T) {
 		if _, err := NormalizeCookieSuffix(bad); err == nil {
 			t.Errorf("NormalizeCookieSuffix(%q) accepted", bad)
 		}
+	}
+}
+
+// server.log_retention_days: unset means 7 days, 0 means memory only, and
+// out-of-range values fail startup.
+func TestLogRetention(t *testing.T) {
+	state := ServerState{}
+	if got := state.LogRetention(); got != DefaultEventLogRetentionDays {
+		t.Fatalf("default retention = %d", got)
+	}
+	zero := 0
+	state.LogRetentionDays = &zero
+	if got := state.LogRetention(); got != 0 {
+		t.Fatalf("explicit 0 = %d", got)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.yaml")
+	for _, bad := range []int{-1, 3651} {
+		body := "server:\n  log_retention_days: " + strconv.Itoa(bad) + "\n"
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadState(path); err == nil {
+			t.Errorf("log_retention_days %d accepted", bad)
+		}
+	}
+
+	body := "server:\n  log_retention_days: 3\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Server.LogRetention() != 3 {
+		t.Fatalf("retention = %d", st.Server.LogRetention())
 	}
 }

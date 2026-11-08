@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -67,6 +68,13 @@ func New(state *config.StateConfig, configDir string) *Server {
 	// warning at startup instead of serving data.
 	config.SetFilesRootAllowlist(state.Server.FilesRoots)
 
+	// The per-user history behind /logs: persisted under <configDir>/logs with a
+	// daily rotation, falling back to memory when the directory is unusable.
+	events, err := eventlog.NewWithDisk(filepath.Join(configDir, "logs"), eventlog.DefaultPerUser, state.Server.LogRetention())
+	if err != nil {
+		log.Printf("[goprox] WARNING: 事件日志无法落盘（%v）；本次只保留内存记录（重启清空）", err)
+	}
+
 	registry := config.NewUserRegistry(configDir)
 	registry.Reload()
 
@@ -96,7 +104,7 @@ func New(state *config.StateConfig, configDir string) *Server {
 		// re-validates backend addresses (and pins the validated IP) at dial
 		// time, so the write-time host allowlist cannot be bypassed by a
 		// DNS-rebinding / TOCTOU change to the hostname.
-		events: eventlog.New(eventlog.DefaultPerUser),
+		events: events,
 		transport: &http.Transport{
 			DialContext:           config.SafeDialContext,
 			ResponseHeaderTimeout: 30 * time.Second,

@@ -165,3 +165,68 @@ func TestEventLogIsPerUser(t *testing.T) {
 		t.Fatalf("alice events = %d", n)
 	}
 }
+
+// The history must survive a gateway restart: a second Server built on the same
+// config dir sees the events written by the first one.
+func TestLogsPersistAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	filesUser(t, dir, t.TempDir())
+	state := func() *config.StateConfig {
+		return &config.StateConfig{
+			Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
+			Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+		}
+	}
+
+	srv := New(state(), dir)
+	req := httptest.NewRequest("GET", "/proxy/alice/data/", nil)
+	req.Host = "gw"
+	req.Header.Set("Cookie", aliceSessionCookie())
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	srv.events.Add("alice", eventlog.Event{Kind: eventlog.KindLogin, OK: true, Detail: "密码登录"})
+
+	// "Restart": a fresh Server (and so a fresh in-memory ring) on the same dir.
+	restarted := New(state(), dir)
+	events := restarted.events.List("alice", 0)
+	if len(events) < 2 {
+		t.Fatalf("history lost across restart: %+v", events)
+	}
+	var sawAccess, sawLogin bool
+	for _, e := range events {
+		if e.Kind == eventlog.KindAccess && e.OK && e.Service == "数据盘" {
+			sawAccess = true
+		}
+		if e.Kind == eventlog.KindLogin && strings.Contains(e.Detail, "密码") {
+			sawLogin = true
+		}
+	}
+	if !sawAccess || !sawLogin {
+		t.Fatalf("missing events after restart: %+v", events)
+	}
+	if n := len(restarted.events.List("bob", 0)); n != 0 {
+		t.Fatalf("bob sees %d of alice's events after restart", n)
+	}
+}
+
+// log_retention_days: 0 keeps the history in memory only (no files).
+func TestLogsMemoryOnlyWhenRetentionZero(t *testing.T) {
+	dir := t.TempDir()
+	filesUser(t, dir, t.TempDir())
+	zero := 0
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152, LogRetentionDays: &zero},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, dir)
+
+	req := httptest.NewRequest("GET", "/proxy/alice/data/", nil)
+	req.Host = "gw"
+	req.Header.Set("Cookie", aliceSessionCookie())
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	if _, err := os.Stat(filepath.Join(dir, "logs")); !os.IsNotExist(err) {
+		t.Fatal("retention 0 must not create a logs directory")
+	}
+	if len(srv.events.List("alice", 0)) != 1 {
+		t.Fatal("memory history should still work")
+	}
+}

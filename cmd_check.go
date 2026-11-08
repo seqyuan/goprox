@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/seqyuan/goprox/internal/config"
 	"github.com/seqyuan/goprox/internal/server"
@@ -38,6 +39,11 @@ func runConfigCheck(opts options) {
 	}
 	if state.Auth.CookieSuffix != "" {
 		fmt.Printf("[goprox] cookie_suffix: %q (instance-isolated cookie names)\n", state.Auth.CookieSuffix)
+	}
+	if days := state.Server.LogRetention(); days == 0 {
+		fmt.Println("[goprox] event log: memory only (server.log_retention_days = 0)")
+	} else {
+		fmt.Printf("[goprox] event log: %s (retention %d days)\n", filepath.Join(configDir, "logs"), days)
 	}
 	hosts := srv.HostEntries()
 	fmt.Printf("[goprox] users: %d, services: %d, virtual hosts: %d\n", srv.UserCount(), srv.ServiceCount(), len(hosts))

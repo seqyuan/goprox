@@ -3,9 +3,14 @@
 // connectivity probes.
 //
 // It exists so the person hitting "跳转异常 / 打不开" can look at the logs page
-// and see which hop failed, instead of guessing. History is per user (nobody
-// sees another account's activity) and lives in memory only: a restart clears
-// it, while the full gateway log stays available on stdout/journalctl.
+// and see which hop failed, instead of guessing. History is per user: nobody
+// sees another account's activity.
+//
+// Two modes:
+//   - New: memory only (tests, and the fallback when the disk is unusable).
+//   - NewWithDisk: append JSON lines to <dir>/events-YYYY-MM-DD.jsonl and keep
+//     the last N days. Reads then come from disk, so the history survives a
+//     restart; the in-memory ring stays as a fallback for read/write errors.
 package eventlog
 
 import (
@@ -35,6 +40,7 @@ type Log struct {
 	mu     sync.Mutex
 	events map[string][]Event
 	cap    int
+	disk   *diskStore // nil = memory only
 }
 
 // DefaultPerUser is how many events are kept per account.
@@ -58,6 +64,11 @@ func (l *Log) Add(username string, e Event) {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
+	// Disk first: the in-memory ring is only a fallback for reads, but keeping
+	// both in sync means a disk write error never hides the newest events.
+	if l.disk != nil {
+		_ = l.disk.append(username, e)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.events == nil {
@@ -72,10 +83,17 @@ func (l *Log) Add(username string, e Event) {
 	l.events[username] = buf
 }
 
-// List returns up to limit events for a user, newest first.
+// List returns up to limit events for a user, newest first. With a disk store,
+// the answer comes from the files (so it survives restarts); the in-memory ring
+// is used when disk logging is disabled or the read failed.
 func (l *Log) List(username string, limit int) []Event {
 	if l == nil || username == "" {
 		return nil
+	}
+	if l.disk != nil {
+		if events, err := l.disk.list(username, limit); err == nil {
+			return events
+		}
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
