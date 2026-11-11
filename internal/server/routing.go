@@ -113,11 +113,19 @@ func (s *Server) forwardAsIs(w http.ResponseWriter, r *http.Request, match *conf
 func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *config.ServiceConfig, fc proxy.ProxyForwardContext) {
 	start := time.Now()
 
+	// Wrap the response so the access history records the status the client
+	// actually received. A card does not only fail when the proxy cannot reach
+	// the backend: the backend's own 4xx/5xx (expired token, dead session,
+	// crashed kernel) is exactly what the logs page must show. The recorder
+	// stays transparent for Flusher/Hijacker/ReaderFrom and exposes Unwrap, so
+	// streaming, WebSocket upgrades and sendfile keep working.
+	rec := &statusRecorder{ResponseWriter: w}
+	w = rec
+
 	// A kind:"files" service has no backend: the gateway serves the configured
 	// directory itself (read-only listing, file download, zip export).
 	if svc.Kind == config.ServiceKindFiles {
-		rec := &statusRecorder{ResponseWriter: w}
-		s.serveFilesService(rec, r, svc, fc)
+		s.serveFilesService(w, r, svc, fc)
 		s.recordAccess(fc.Username, svc, r, fc.OriginalPath, rec.statusCode(), time.Since(start), "")
 		return
 	}
@@ -163,7 +171,7 @@ func (s *Server) forwardToBackend(w http.ResponseWriter, r *http.Request, svc *c
 		}
 	}
 	rp.ServeHTTP(w, r)
-	s.recordAccess(fc.Username, svc, r, fc.OriginalPath, 0, time.Since(start), failure)
+	s.recordAccess(fc.Username, svc, r, fc.OriginalPath, rec.statusCode(), time.Since(start), failure)
 }
 
 // serveFilesService answers a request for a kind:"files" service from the

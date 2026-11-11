@@ -1,9 +1,11 @@
 package server
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -141,6 +143,91 @@ func TestLogsRecordProxyFailure(t *testing.T) {
 	}
 	if events[0].OK || events[0].Kind != eventlog.KindAccess || !strings.Contains(events[0].Detail, "connection refused") {
 		t.Fatalf("failure not recorded with reason: %+v", events[0])
+	}
+}
+
+// A backend that answers with its own 4xx/5xx is a failed card access, not a
+// successful one: the status the client received must drive the record.
+// (Regression: every proxied access was logged as ok because recordAccess was
+// handed status 0 and only proxy-level transport errors carried a reason.)
+func TestLogsRecordBackendErrorStatus(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/missing":
+			http.Error(w, "gone", http.StatusNotFound)
+		case "/boom":
+			http.Error(w, "kaboom", http.StatusInternalServerError)
+		default:
+			w.Header().Set("Content-Type", "text/plain")
+			io.WriteString(w, "ok")
+		}
+	}))
+	defer backend.Close()
+	u, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portStr, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	cfgPath := config.UserConfigPath(dir, "alice")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "auth:\n  password_hash: \"" + strings.Repeat("1", 64) + "\"\nservices:\n" +
+		"  - id: app\n    name: App\n    host: " + host + "\n    port: " + portStr +
+		"\n    path: /app\n    websocket: true\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(&config.StateConfig{
+		Server: config.ServerState{Host: "127.0.0.1", Port: 30152},
+		Auth:   config.AuthState{SessionSecret: "testsecret", SessionTTL: 86400},
+	}, dir)
+
+	for _, path := range []string{
+		"/proxy/alice/app/hello",
+		"/proxy/alice/app/missing",
+		"/proxy/alice/app/boom",
+	} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = "gw"
+		req.Header.Set("Cookie", aliceSessionCookie())
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code == 0 {
+			t.Fatalf("%s: no status", path)
+		}
+	}
+
+	events := srv.events.List("alice", 0)
+	if len(events) != 3 {
+		t.Fatalf("events = %+v", events)
+	}
+	// List returns newest first: 500, 404, 200.
+	want := []struct {
+		ok   bool
+		code string
+	}{
+		{false, "500"},
+		{false, "404"},
+		{true, ""},
+	}
+	for i, w := range want {
+		e := events[i]
+		if e.Kind != eventlog.KindAccess || e.OK != w.ok {
+			t.Fatalf("event %d = %+v, want ok=%v", i, e, w.ok)
+		}
+		if w.code != "" && !strings.Contains(e.Detail, w.code) {
+			t.Fatalf("event %d detail = %q, want it to mention %s", i, e.Detail, w.code)
+		}
+	}
+	// A failing record still names the request that failed.
+	if !strings.Contains(events[0].Detail, "/proxy/alice/app/boom") {
+		t.Fatalf("detail lost the request path: %q", events[0].Detail)
 	}
 }
 

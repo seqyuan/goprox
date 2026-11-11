@@ -4,6 +4,8 @@ package server
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -27,8 +29,8 @@ func (s *Server) recordLogin(username string, ok bool, detail string) {
 }
 
 // recordAccess stores one card access. failure carries the proxy's error text
-// (empty on success); status is used for locally served cards (files), where no
-// proxy error handler exists.
+// (empty when the proxy itself worked); status is the status code the client
+// actually received, so a backend's own 4xx/5xx is recorded as a failure too.
 func (s *Server) recordAccess(username string, svc *config.ServiceConfig, r *http.Request, originalPath string, status int, d time.Duration, failure string) {
 	if s.events == nil || username == "" || svc == nil || !loggableRequest(r) {
 		return
@@ -49,7 +51,9 @@ func (s *Server) recordAccess(username string, svc *config.ServiceConfig, r *htt
 	if failure != "" {
 		ev.Detail = failure
 	} else if status >= http.StatusBadRequest {
-		ev.Detail = http.StatusText(status)
+		// Keep the request line: "500 Internal Server Error · GET /proxy/u/s/x"
+		// says which request failed, not only that something did.
+		ev.Detail = fmt.Sprintf("%d %s · %s", status, http.StatusText(status), ev.Detail)
 	}
 	s.events.Add(username, ev)
 }
@@ -80,19 +84,42 @@ func loggableRequest(r *http.Request) bool {
 	return true
 }
 
-// statusRecorder captures the status code of a locally served response. It
-// passes through the optional interfaces an HTTP handler may rely on
-// (Flusher/Hijacker/Pusher/ReaderFrom) so wrapping never changes behavior.
+// statusRecorder captures the status code of a card response (locally served
+// files, or a proxied backend). It passes through the optional interfaces an
+// HTTP handler may rely on (Flusher/Hijacker/Pusher/ReaderFrom) and exposes
+// Unwrap, so wrapping never changes behavior — SSE/WebSocket and sendfile
+// downloads included.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer, so
+// SetReadDeadline/SetWriteDeadline (the idle-timeout wrapper on uploads) and
+// deadline-based flushes keep working through the recorder.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *statusRecorder) WriteHeader(code int) {
-	if r.status == 0 {
+	// 1xx informational responses (other than a 101 upgrade) are followed by
+	// the real status, so recording them would mislabel the request.
+	if r.status == 0 && (code >= 200 || code == http.StatusSwitchingProtocols) {
 		r.status = code
 	}
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// ReadFrom keeps the underlying writer's ReaderFrom (sendfile) fast path for
+// large proxied downloads; without it io.Copy falls back to a plain copy loop.
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(r.ResponseWriter, src)
 }
 
 func (r *statusRecorder) Write(b []byte) (int, error) {
