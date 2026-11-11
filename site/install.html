@@ -30,6 +30,8 @@
     <h2>安装</h2>
     <pre>go install github.com/seqyuan/goprox@latest</pre>
     <p>安装后 <code>goprox</code> 位于 <code>$GOPATH/bin</code>（通常是 <code>~/go/bin</code>）。</p>
+    <div class="note"><strong>平台</strong>：Linux / macOS / BSD 均可直接 <code>go build</code> / <code>go install</code>（创建账号时密码输入不回显）；
+      Windows 也能编译，但没有终端 ioctl，输入密码会回显。官方预编译产物只发布 Linux（amd64 / arm64）。</div>
     <div class="warn"><strong>请把二进制拷贝（不是链接）到独立目录再运行。</strong>
       所有配置都存放在<strong>二进制旁边的 <code>config/</code> 目录</strong>，整个目录可以整体拷贝、备份、迁移。
       <code>os.Executable</code> 会解析符号链接，所以<strong>不要用 <code>ln -s</code> 链接</strong>，

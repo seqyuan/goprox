@@ -27,6 +27,17 @@
   <p class="page-sub">完整的逐条记录见仓库 <code>docs/CHANGES.md</code>。</p>
 
   <div class="card">
+    <h2>v0.14.0 — 2026-11-11（可编译性、日志状态码与运维可用性）</h2>
+    <ul>
+      <li><strong>macOS / BSD 可编译</strong>：终端 ioctl 按平台拆分（Linux <code>TCGETS/TCSETS</code>、macOS/BSD <code>TIOCGETA/TIOCSETA</code>），<code>go install</code> 在 Mac 上不再编译失败，且<strong>密码输入仍不回显</strong>；Windows 可编译但密码会回显。预编译产物依旧只发 Linux。</li>
+      <li><strong>访问日志记录后端真实状态码</strong>：后端自己返回的 4xx/5xx 以前被记成「成功」，现在如实记录，明细形如 <code>404 Not Found · GET /proxy/u/s/x</code>；包装对 SSE 流式刷新、WebSocket 升级、大文件下载均透明。</li>
+      <li><strong><code>cookie_domain</code> 域外登录明确报错</strong>：启用虚拟主机后会话 Cookie 带父域，用 IP 或其他域名登录会被浏览器丢弃，原先表现为「登录后又回到登录页」。现在直接说明原因并给出可用地址；启动日志与 <code>goprox check</code> 也会提示作用域。</li>
+      <li><strong>运维提示与参数</strong>：存在文件浏览卡片但没配 <code>server.files_roots</code> 时启动告警；<code>goprox -d DIR user alice</code> 与 <code>goprox user alice -d DIR</code> 等价；后端响应头超时 30s → 120s（慢报表不再误判 504）。</li>
+      <li><strong>其他</strong>：用户目录扫描串行化；<code>/2fa/setup</code> 刷新不再让上一个二维码失效。</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>v0.13.0 — 2026-11-09（日志落盘）</h2>
     <ul>
       <li><strong><code>/logs</code> 历史持久化</strong>：事件写入 <code>&lt;配置目录&gt;/logs/events-YYYY-MM-DD.jsonl</code>（每日一个文件），默认保留 <strong>7 天</strong>并自动清理；网关重启后历史仍在。</li>

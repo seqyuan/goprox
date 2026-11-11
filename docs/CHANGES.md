@@ -1,3 +1,51 @@
+# GoProx v0.14.0 变更日志（2026-11-11）
+
+## 可移植性：macOS / BSD 可编译
+
+- `terminal_unix.go` 之前用 `//go:build !windows` 却引用 Linux 专属的
+  `syscall.TCGETS/TCSETS`，`GOOS=darwin` 编译期即报 `undefined`——README 首推的
+  `go install` 在 Mac 上直接失败；Windows 另缺 `makeRaw/restore`
+- 拆为「共享逻辑 + 每平台 ioctl 常量」：Linux 用 `TCGETS/TCSETS`，macOS/BSD 用
+  `TIOCGETA/TIOCSETA`（**仍然真正关闭密码回显**）；其余平台走桩实现，
+  `readPassword` 沿既有降级路径继续工作
+- README 安装段补平台说明；11 个 GOOS/GOARCH 组合交叉编译通过
+
+## 排障：访问日志记录后端真实状态码
+
+- 代理卡片之前固定以 `status=0` 记录，后端自己返回的 4xx/5xx 全部显示「成功」；
+  现在统一用状态码包装记录客户端实际收到的状态，失败明细形如
+  `404 Not Found · GET /proxy/u/s/x`
+- 包装对 SSE 流式刷新、WebSocket 101 升级、大文件 sendfile 下载均透明
+- `goprox check` 与启动日志同步输出会话 Cookie 域、`files_roots` 白名单状态
+
+## 配置与 CLI 可用性
+
+- **`cookie_domain` 域外登录明确报错**：启用虚拟主机后会话 Cookie 带父域 `Domain`，
+  浏览器在 IP 或其他域名上不会保存，原先表现为「登录成功后又回到登录页」且无任何提示。
+  现在 `GET/POST /login` 在 Host 不属于 `cookie_domain` 时直接说明原因并给出可用地址
+  （在密码校验之前返回，不发出无用会话/2FA pending Cookie）
+- **`files_roots` 缺失告警**：存在 `kind:"files"` 卡片但没有
+  `server.files_roots` 白名单时，启动日志与 `goprox check` 打 WARNING
+- **CLI 参数位置**：`goprox -d /opt/gw user alice` 与 `goprox user alice -d /opt/gw`
+  等价（之前前者报 `unknown option: user`）
+- **后端响应头超时** 30s → 120s：只作用于响应头，不影响 SSE/长轮询；慢查询、慢报表
+  不再被误判 504
+- **用户目录扫描串行化**：10 秒阈值刚过时不再被并发请求放大成全目录重复解析
+- **`/2fa/setup` 复用 pending secret**：刷新或开第二个标签页不再让上一个二维码失效
+  （此前表现为「正确动态码却提示过期」）
+
+## 升级提示
+
+- **vhost 部署请用 `cookie_domain` 内的主机名访问**（如 `https://gw.example.com/`）：
+  用 IP 或其他域名登录现在会**明确报错**。这类地址之前也登不上，只是症状是
+  「登录后跳回登录页」，现在会看到原因
+- **日志页会开始出现失败条目**：后端 4xx/5xx 从前被记成成功，现在如实记录（含状态码
+  与请求行）。升级后看到新的红色条目属预期，不是新增故障
+- **后端响应头超时放宽到 120s**：以前 504 的慢接口现在可能成功，或等待更久
+- 无需改任何配置：全部为增量行为，`state.yaml` / 用户 YAML 格式不变
+
+---
+
 # GoProx v0.13.0 变更日志（2026-11-09）
 
 ## 日志落盘
