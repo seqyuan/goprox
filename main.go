@@ -22,7 +22,7 @@ const usage = `Usage:
                                 header forwarded to backends; see below)
   goprox check [options]        Validate state/users/virtual hosts, don't start
 
-Options:
+Options (may appear before or after the subcommand):
   -d, --config-dir <dir>  Config directory (default: <program dir>/config)
   --host <host>           Listen address (default: 0.0.0.0)
   --port <port>           Gateway listen port (default: 30152)
@@ -92,24 +92,23 @@ func main() {
 		}
 	}
 
-	// Determine subcommand
-	cmd := "serve"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd = args[0]
-		args = args[1:]
-	}
+	// The subcommand may appear before or after the global options: both
+	// `goprox -d /opt/gw user alice` and `goprox user alice -d /opt/gw` are
+	// accepted, matching how every other Go CLI behaves (and how the Options
+	// block in --help reads).
+	cmd, args := splitSubcommand(args)
 
 	// user/passwd/del/2fa-reset take a positional username.
 	var username string
 	switch cmd {
 	case "user", "passwd", "del", "2fa-reset":
-		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		var ok bool
+		username, args, ok = takePositional(args)
+		if !ok {
 			fmt.Fprintf(os.Stderr, "error: %s requires a username\n", cmd)
 			printUsage()
 			os.Exit(1)
 		}
-		username = args[0]
-		args = args[1:]
 		if !config.IsValidUsername(username) {
 			fmt.Fprintf(os.Stderr, "error: invalid username %q\n", username)
 			os.Exit(1)
@@ -152,6 +151,65 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+// valueOptions lists every option that consumes the following argument, from
+// both the serve option set and the sso one. The subcommand may sit between two
+// of them, so locating it requires knowing which tokens are values.
+var valueOptions = map[string]bool{
+	"-d": true, "--config-dir": true,
+	"--host": true, "--port": true, "--trusted-proxy": true,
+	"--tls-cert": true, "--tls-key": true, "--title": true,
+	"--public-host": true, "--public-scheme": true, "--cookie-domain": true,
+	"--user-header": true, "--hmac-secret": true,
+}
+
+// splitSubcommand pulls the subcommand token out of args wherever it appears,
+// returning it plus the remaining arguments in their original order. Tokens that
+// are the value of a preceding option are never mistaken for a subcommand, so
+// `goprox -d /opt/gw user alice` works. With no subcommand token the default is
+// "serve", which is what `goprox --port 8080` has always meant.
+func splitSubcommand(args []string) (string, []string) {
+	rest := make([]string, 0, len(args))
+	cmd := ""
+	expectValue := false
+	for _, a := range args {
+		switch {
+		case expectValue:
+			expectValue = false
+		case cmd == "" && !strings.HasPrefix(a, "-"):
+			cmd = a
+			continue
+		case valueOptions[a]:
+			expectValue = true
+		}
+		rest = append(rest, a)
+	}
+	if cmd == "" {
+		cmd = "serve"
+	}
+	return cmd, rest
+}
+
+// takePositional removes and returns the first positional argument (the
+// username of user/passwd/del/2fa-reset), leaving every option and its value in
+// place for the shared option parser. ok is false when no positional remains.
+func takePositional(args []string) (value string, rest []string, ok bool) {
+	rest = make([]string, 0, len(args))
+	expectValue := false
+	for _, a := range args {
+		switch {
+		case expectValue:
+			expectValue = false
+		case valueOptions[a]:
+			expectValue = true
+		case !ok && !strings.HasPrefix(a, "-"):
+			value, ok = a, true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return value, rest, ok
 }
 
 type options struct {

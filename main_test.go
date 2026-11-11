@@ -295,3 +295,60 @@ func TestParseSSOArgs(t *testing.T) {
 		t.Fatalf("unexpected sso args: %+v", sa)
 	}
 }
+
+// The subcommand may appear before or after the global options; both spellings
+// must resolve to the same command and leave every option for the parser.
+func TestSplitSubcommand(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantCmd  string
+		wantRest []string
+	}{
+		{"no args", nil, "serve", nil},
+		{"serve explicit", []string{"serve", "--port", "8080"}, "serve", []string{"--port", "8080"}},
+		{"flags first", []string{"-d", "/opt/gw", "user", "alice"}, "user", []string{"-d", "/opt/gw", "alice"}},
+		{"flags last", []string{"user", "alice", "-d", "/opt/gw"}, "user", []string{"alice", "-d", "/opt/gw"}},
+		{"flags both sides", []string{"--port", "8080", "check", "-d", "/opt/gw"}, "check", []string{"--port", "8080", "-d", "/opt/gw"}},
+		{"value looks like a command", []string{"-d", "user", "check"}, "check", []string{"-d", "user"}},
+		{"bare flags only", []string{"--port", "8080"}, "serve", []string{"--port", "8080"}},
+		{"sso with its own options", []string{"-d", "/opt/gw", "sso", "--user-header", "X-User"}, "sso", []string{"-d", "/opt/gw", "--user-header", "X-User"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, rest := splitSubcommand(tc.args)
+			if cmd != tc.wantCmd {
+				t.Fatalf("cmd = %q, want %q", cmd, tc.wantCmd)
+			}
+			if strings.Join(rest, " ") != strings.Join(tc.wantRest, " ") {
+				t.Fatalf("rest = %v, want %v", rest, tc.wantRest)
+			}
+		})
+	}
+}
+
+func TestTakePositional(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		wantValue string
+		wantOK    bool
+		wantRest  []string
+	}{
+		{"plain", []string{"alice"}, "alice", true, nil},
+		{"after option", []string{"-d", "/opt/gw", "alice"}, "alice", true, []string{"-d", "/opt/gw"}},
+		{"before option", []string{"alice", "-d", "/opt/gw"}, "alice", true, []string{"-d", "/opt/gw"}},
+		{"missing", []string{"-d", "/opt/gw"}, "", false, []string{"-d", "/opt/gw"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, rest, ok := takePositional(tc.args)
+			if value != tc.wantValue || ok != tc.wantOK {
+				t.Fatalf("value = %q ok=%v, want %q/%v", value, ok, tc.wantValue, tc.wantOK)
+			}
+			if strings.Join(rest, " ") != strings.Join(tc.wantRest, " ") {
+				t.Fatalf("rest = %v, want %v", rest, tc.wantRest)
+			}
+		})
+	}
+}
