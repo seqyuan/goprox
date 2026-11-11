@@ -1,5 +1,4 @@
-//go:build !windows
-// +build !windows
+//go:build linux || darwin || freebsd || netbsd || openbsd || dragonfly
 
 package main
 
@@ -8,10 +7,14 @@ import (
 	"unsafe"
 )
 
+// makeRaw disables echo and line buffering on fd so a password prompt does not
+// print what is typed. The ioctl request numbers differ between the Linux
+// (TCGETS/TCSETS) and BSD/macOS (TIOCGETA/TIOCSETA) families, so they live in
+// terminal_ioctl_*.go; everything else is shared.
 func makeRaw(fd int) (*syscall.Termios, error) {
 	var oldState syscall.Termios
 	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
-		syscall.TCGETS, uintptr(unsafe.Pointer(&oldState)), 0, 0, 0); err != 0 {
+		ioctlGetTermios, uintptr(unsafe.Pointer(&oldState)), 0, 0, 0); err != 0 {
 		return nil, err
 	}
 
@@ -21,7 +24,7 @@ func makeRaw(fd int) (*syscall.Termios, error) {
 	newState.Cc[syscall.VTIME] = 0
 
 	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
-		syscall.TCSETS, uintptr(unsafe.Pointer(&newState)), 0, 0, 0); err != 0 {
+		ioctlSetTermios, uintptr(unsafe.Pointer(&newState)), 0, 0, 0); err != 0 {
 		return nil, err
 	}
 
@@ -30,6 +33,6 @@ func makeRaw(fd int) (*syscall.Termios, error) {
 
 func restore(fd int, state *syscall.Termios) error {
 	_, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
-		syscall.TCSETS, uintptr(unsafe.Pointer(state)), 0, 0, 0)
+		ioctlSetTermios, uintptr(unsafe.Pointer(state)), 0, 0, 0)
 	return err
 }
