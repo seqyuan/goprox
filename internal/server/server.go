@@ -106,8 +106,14 @@ func New(state *config.StateConfig, configDir string) *Server {
 		// DNS-rebinding / TOCTOU change to the hostname.
 		events: events,
 		transport: &http.Transport{
-			DialContext:           config.SafeDialContext,
-			ResponseHeaderTimeout: 30 * time.Second,
+			DialContext: config.SafeDialContext,
+			// Bounds how long a backend may take to produce its *response
+			// headers* — not the body, so SSE/long polling are unaffected. Many
+			// frameworks send headers only with the first byte of the answer, so
+			// a slow report or a long query would hit the old 30s limit and
+			// return 504 while the identical direct request succeeds. 120s keeps
+			// a bound on a black-holed backend without cutting off slow work.
+			ResponseHeaderTimeout: 120 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   10,
@@ -491,6 +497,22 @@ func (s *Server) ServiceCount() int {
 	n := 0
 	for _, user := range s.registry.ListUsers() {
 		n += len(user.Config.Services)
+	}
+	return n
+}
+
+// FilesServiceCount returns how many loaded cards are kind:"files" (the gateway
+// serves those from the local filesystem, so they are the ones server.files_roots
+// constrains).
+
+func (s *Server) FilesServiceCount() int {
+	n := 0
+	for _, user := range s.registry.ListUsers() {
+		for _, svc := range user.Config.Services {
+			if svc.Kind == config.ServiceKindFiles {
+				n++
+			}
+		}
 	}
 	return n
 }

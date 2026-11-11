@@ -17,8 +17,13 @@ type UserRegistry struct {
 	hosts         map[string]*HostTarget
 	hostConflicts map[string][]string
 	mu            sync.RWMutex
-	lastScan      time.Time
-	scanEvery     time.Duration
+	// scanMu serializes directory scans. EnsureFresh runs on the request path,
+	// so without it every request arriving just after scanEvery elapsed would
+	// walk and parse all user configs at the same time (a thundering herd on
+	// the filesystem, and a stutter for the users who triggered it).
+	scanMu    sync.Mutex
+	lastScan  time.Time
+	scanEvery time.Duration
 }
 
 // HostTarget maps a virtual hostname to the owning user's service.
@@ -49,6 +54,13 @@ func NewUserRegistry(configDir string) *UserRegistry {
 // The registry map is only swapped in after a fully successful scan, so a
 // transient read error keeps the previous snapshot instead of dropping all users.
 func (r *UserRegistry) Reload() {
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
+	r.reload()
+}
+
+// reload is Reload's body. Callers must hold r.scanMu.
+func (r *UserRegistry) reload() {
 	usersDir := UsersDir(r.configDir)
 	entries, err := os.ReadDir(usersDir)
 	if err != nil {
@@ -243,9 +255,22 @@ func (r *UserRegistry) EnsureFresh() {
 	r.mu.RLock()
 	last := r.lastScan
 	r.mu.RUnlock()
-	if time.Since(last) > r.scanEvery {
-		r.Reload()
+	if time.Since(last) <= r.scanEvery {
+		return
 	}
+
+	// Only one goroutine scans; the others wait here and then re-check, so a
+	// burst of requests that all observed a stale snapshot still costs exactly
+	// one directory walk.
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
+	r.mu.RLock()
+	last = r.lastScan
+	r.mu.RUnlock()
+	if time.Since(last) <= r.scanEvery {
+		return
+	}
+	r.reload()
 }
 
 // GetUser returns a user record by username.

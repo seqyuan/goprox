@@ -332,6 +332,9 @@ https://hugo.gw.example.com/     → Hugo，路径原样转发（/docs/ → /doc
 
 部署要求：
 
+- **网关只能用 `cookie_domain` 内的主机名访问**（例如 `https://gw.example.com/`）。会话 Cookie 带父域
+  `Domain`，浏览器在 IP 地址或其他域上不会保存它；这类地址现在会在登录页直接报错说明原因
+  （启动日志也会打印 `WARNING: session cookie domain is ...`）。
 - 需要通配 DNS（如 `*.gw.example.com`）和覆盖这些域名的证书；
 - 推荐由 Caddy/nginx 终止 TLS 并反代到 GoProx，设置
   `server.trusted_proxy` 为反代地址，`public_scheme: https`；

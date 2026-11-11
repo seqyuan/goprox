@@ -34,8 +34,13 @@ func runConfigCheck(opts options) {
 	fmt.Printf("[goprox] public_host: %q\n", state.Server.PublicHost)
 	fmt.Printf("[goprox] public_scheme: %q\n", state.Server.PublicScheme)
 	fmt.Printf("[goprox] cookie_domain: %q\n", state.Server.CookieDomain)
+	if state.Server.CookieDomain != "" {
+		fmt.Printf("[goprox] session cookies are Domain-scoped: only hostnames inside %s can stay logged in (IP access is refused at login)\n", state.Server.CookieDomain)
+	}
 	if roots := config.FilesRootAllowlist(); len(roots) > 0 {
 		fmt.Printf("[goprox] files_roots: %v\n", roots)
+	} else if n := srv.FilesServiceCount(); n > 0 {
+		fmt.Printf("[goprox] WARNING: %d file-browsing card(s) and no server.files_roots allowlist: any logged-in user can mount any directory this account can read\n", n)
 	}
 	if state.Auth.CookieSuffix != "" {
 		fmt.Printf("[goprox] cookie_suffix: %q (instance-isolated cookie names)\n", state.Auth.CookieSuffix)

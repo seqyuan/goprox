@@ -234,6 +234,24 @@ func (g *gateway) logStartup() {
 		log.Printf("trusted proxy: none (X-Forwarded-* headers ignored)")
 	}
 
+	// With a parent cookie domain every session cookie is Domain-scoped, so only
+	// hosts inside it can hold a login. A browser on an IP address or another
+	// zone would otherwise appear to log in and immediately bounce back.
+	if g.state.Server.CookieDomain != "" {
+		who := g.state.Server.CookieDomain
+		if g.state.Server.PublicHost != "" {
+			who += "（主入口：" + g.state.Server.PublicHost + "）"
+		}
+		log.Printf("WARNING: session cookie domain is %s: only hostnames inside that domain can stay logged in; IP-address and other-host access is refused at login", who)
+	}
+
+	// kind:"files" cards are served from the local filesystem by the gateway
+	// account, so without an allowlist a logged-in user can browse anything that
+	// account can read — including other users' home directories.
+	if n := g.srv.FilesServiceCount(); n > 0 && len(config.FilesRootAllowlist()) == 0 {
+		log.Printf("WARNING: %d file-browsing card(s) and no server.files_roots allowlist: any logged-in user can mount any directory this account can read; set server.files_roots for a shared gateway", n)
+	}
+
 	if g.state.SSO.UserHeader != "" {
 		mode := "unsigned (backend must be network-isolated)"
 		if g.state.SSO.HMACSecret != "" {

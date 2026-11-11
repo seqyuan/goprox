@@ -3,6 +3,7 @@ package server
 // 登录、登出与两步验证（TOTP）的 HTTP 处理器。
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,14 @@ import (
 )
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	// A session cannot be stored on an authority outside cookie_domain (the
+	// session cookie carries a parent Domain), so a login attempt there would
+	// silently bounce back to this page. Say so instead of showing a form that
+	// cannot work.
+	if msg := s.loginHostMismatch(r); msg != "" {
+		sendHTML(w, 200, web.LoginPage(s.siteTitle, msg, ""))
+		return
+	}
 	next := r.URL.Query().Get("next")
 	// Pre-auth we only require that an absolute target is one of the
 	// configured service hosts; the post-auth check narrows it to the user.
@@ -25,6 +34,31 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		next = ""
 	}
 	sendHTML(w, 200, web.LoginPage(s.siteTitle, "", next))
+}
+
+// loginHostMismatch reports why no session can be established on the authority
+// this request addressed, or "" when login is possible here.
+//
+// With server.cookie_domain set (required for virtual hosts), every session
+// cookie is issued with a parent Domain. A browser on a host outside that
+// domain (an IP address, a short hostname, another zone) refuses to store it,
+// so the login "succeeds" and the very next request lands back on the login
+// page with no error anywhere. That silent loop is the single most confusing
+// vhost misconfiguration, so it is refused explicitly.
+func (s *Server) loginHostMismatch(r *http.Request) string {
+	if s.cookieDomain == "" {
+		return ""
+	}
+	host := config.HostFromHostPort(r.Host)
+	if host == "" || config.HostWithinCookieDomain(host, s.cookieDomain) {
+		return ""
+	}
+	example := s.publicAuthority(r)
+	if example == "" {
+		example = strings.TrimPrefix(s.cookieDomain, ".")
+	}
+	return fmt.Sprintf("当前访问地址 %s 不在网关的会话 Cookie 域 %s 内：浏览器不会保存会话 Cookie，登录后会立刻回到登录页。请改用该域内的地址访问，例如 %s",
+		host, s.cookieDomain, example)
 }
 
 // validLoginNext restricts post-login redirects to in-site proxy URLs or a
@@ -81,6 +115,13 @@ func (s *Server) validLoginNext(r *http.Request, next, username string) bool {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Refuse a login the browser could never keep: see loginHostMismatch. This
+	// runs before the password step so no session cookie (and no 2FA pending
+	// cookie) is issued for an authority outside cookie_domain.
+	if msg := s.loginHostMismatch(r); msg != "" {
+		sendHTML(w, http.StatusBadRequest, web.LoginPage(s.siteTitle, msg, ""))
+		return
+	}
 	// Parse the form before rate limiting: the limit key combines the client
 	// IP with the submitted username so a shared-NAT office/lab does not lock
 	// out everyone on one user's typos, and an attacker cannot freeze a whole
@@ -334,14 +375,33 @@ func (s *Server) handleTwoFASetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enabled := s.twoFAEnabled(session.UserID)
-	secret, err := auth.GenerateTOTPSecret()
-	if err != nil {
-		sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "生成密钥失败", "", enabled))
-		return
+	// Reuse the secret already in flight for this user: a refresh, a second tab
+	// or a browser back-navigation must not invalidate the QR code the user is
+	// currently scanning — that surfaced as "动态码错误或已过期" on a correct
+	// code. Only a missing/expired/foreign cookie mints a fresh secret.
+	secret := s.pendingSetupSecret(r, session.UserID)
+	if secret == "" {
+		var err error
+		secret, err = auth.GenerateTOTPSecret()
+		if err != nil {
+			sendHTML(w, 500, web.TwoFASetupPage(s.siteTitle, "生成密钥失败", "", enabled))
+			return
+		}
 	}
 	secure := auth.IsSecureRequest(r)
 	w.Header().Set("Set-Cookie", s.cookieNames.SetSetupCookie(session.UserID, secret, s.sessionSecret, pendingTTLSeconds, secure))
 	sendHTML(w, 200, web.TwoFASetupPage(s.siteTitle, "", secret, enabled))
+}
+
+// pendingSetupSecret returns the not-yet-saved TOTP secret carried by this
+// user's setup cookie, or "" when there is none to reuse.
+func (s *Server) pendingSetupSecret(r *http.Request, username string) string {
+	cookies := auth.ParseCookies(r.Header.Get("Cookie"))
+	setupUser, secret, ok := auth.ValidateSetupToken(cookies[s.cookieNames.TOTASetup()], s.sessionSecret)
+	if !ok || setupUser != username {
+		return ""
+	}
+	return secret
 }
 
 func (s *Server) handleTwoFASetupPost(w http.ResponseWriter, r *http.Request, username string) {
